@@ -15,11 +15,11 @@
       "policy": "appVersion"
     },
     "updates": {
-      "url": "https://u.expo.dev/PASTE_YOUR_EXPO_PROJECT_ID_HERE"
+      "url": "https://u.expo.dev/4706e5eb-66c4-458a-86b4-9833fcb78c9e"
     },
     "extra": {
       "eas": {
-        "projectId": "PASTE_YOUR_EXPO_PROJECT_ID_HERE"
+        "projectId": "4706e5eb-66c4-458a-86b4-9833fcb78c9e"
       }
     }
   }
