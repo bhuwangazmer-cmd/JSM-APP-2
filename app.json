@@ -5,6 +5,9 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#0C2D57"
+    },
     "android": {
       "package": "com.jsmapp.official"
     },
