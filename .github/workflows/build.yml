@@ -1,0 +1,39 @@
+name: EAS Cloud Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies & create lockfile via npm
+        run: |
+          npm install --legacy-peer-deps
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          git commit -m "chore: generate package-lock.json [skip ci]" || echo "Lockfile already up to date"
+          git push || true
+
+      - name: Install EAS CLI via npm
+        run: npm install -g eas-cli
+
+      - name: Trigger Android APK Build on Expo EAS
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: eas build --platform android --profile preview --non-interactive --no-wait
