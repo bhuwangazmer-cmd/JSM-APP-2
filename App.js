@@ -15,12 +15,12 @@ import {
   Platform,
   UIManager,
   StatusBar,
-  SafeAreaView,
   Switch,
   ActivityIndicator,
   KeyboardAvoidingView,
   Linking,
 } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Updates from 'expo-updates';
 import * as Print from 'expo-print';
@@ -121,6 +121,16 @@ const normalizeISODate = (rawStr) => {
   const month = parseInt(match[2], 10);
   const day = parseInt(match[3], 10);
   if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+  const checkDate = new Date(year, month - 1, day);
+  if (
+    checkDate.getFullYear() !== year ||
+    checkDate.getMonth() !== month - 1 ||
+    checkDate.getDate() !== day
+  ) {
+    return null;
+  }
+
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 };
 
@@ -144,8 +154,10 @@ const formatReadableLocalDate = (isoDateStr) => {
   const year = parseInt(parts[0], 10);
   const monthIndex = parseInt(parts[1], 10) - 1;
   const day = parseInt(parts[2], 10);
-  if (isNaN(year) || isNaN(monthIndex) || isNaN(day)) return isoDateStr;
-  return `${day} ${MONTHS_SHORT[monthIndex] || ''} ${year}`;
+  if (isNaN(year) || isNaN(monthIndex) || isNaN(day) || !MONTHS_SHORT[monthIndex]) {
+    return isoDateStr;
+  }
+  return `${day} ${MONTHS_SHORT[monthIndex]} ${year}`;
 };
 
 const getMonthYearFromISO = (isoDateStr) => {
@@ -171,7 +183,7 @@ const isWithinLastTwoLocalMonths = (isoDateStr) => {
   const currentTotalMonths = now.getFullYear() * 12 + now.getMonth();
   const recordTotalMonths = recordYear * 12 + recordMonth;
   const diff = currentTotalMonths - recordTotalMonths;
-  return diff >= -1 && diff <= 1;
+  return diff >= 0 && diff <= 1;
 };
 
 const getDaysRemainingInTrash = (deletedAtMs) => {
@@ -191,7 +203,10 @@ const escapeHtml = (unsafe) => {
 };
 
 const sanitizeCurrency = (val) => {
-  return String(val ?? '').replace(/[^0-9.]/g, '');
+  const cleaned = String(val ?? '').replace(/[^0-9.]/g, '');
+  const parts = cleaned.split('.');
+  if (parts.length <= 1) return cleaned;
+  return `${parts[0]}.${parts.slice(1).join('').slice(0, 2)}`;
 };
 
 // ==========================================
@@ -218,7 +233,7 @@ const AnimatedScreen = ({ children, triggerKey }) => {
         useNativeDriver: true,
       }),
     ]).start();
-  }, [triggerKey]);
+  }, [triggerKey, fadeAnim, slideAnim]);
 
   return (
     <Animated.View
@@ -313,6 +328,7 @@ export default function App() {
     entityType: null,
     item: null,
     title: '',
+    reopenSubjectsModal: false,
   });
 
   // Modals & Forms
@@ -334,7 +350,7 @@ export default function App() {
     joinedDate: getTodayISO(),
   });
 
-  // Separate Inline Profile Forms vs Modal Edit Forms to prevent ID contamination
+  // Separate Inline Profile Forms vs Modal Edit Forms
   const [inlineLessonForm, setInlineLessonForm] = useState({
     date: getTodayISO(),
     technique: '',
@@ -446,7 +462,14 @@ export default function App() {
       collection(db, 'activities'),
       (snap) => {
         const list = [];
-        snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
+        snap.forEach((d) => {
+          const data = d.data();
+          if (data.timestamp && Date.now() - Number(data.timestamp) > THIRTY_DAYS_MS) {
+            deleteDoc(doc(db, 'activities', d.id)).catch(() => {});
+          } else {
+            list.push({ id: d.id, ...data });
+          }
+        });
         list.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         setActivities(list);
       },
@@ -521,25 +544,25 @@ export default function App() {
   const activeLessons = useMemo(
     () =>
       lessons
-        .filter((l) => !l.isDeleted)
+        .filter((l) => !l.isDeleted && studentMap[l.studentId] && !studentMap[l.studentId].isDeleted)
         .sort((a, b) => (b.date || '').localeCompare(a.date || '')),
-    [lessons]
+    [lessons, studentMap]
   );
 
   const activeAttendance = useMemo(
     () =>
       attendance
-        .filter((a) => !a.isDeleted)
+        .filter((a) => !a.isDeleted && studentMap[a.studentId] && !studentMap[a.studentId].isDeleted)
         .sort((a, b) => (b.date || '').localeCompare(a.date || '')),
-    [attendance]
+    [attendance, studentMap]
   );
 
   const activeFees = useMemo(
     () =>
       fees
-        .filter((f) => !f.isDeleted)
+        .filter((f) => !f.isDeleted && studentMap[f.studentId] && !studentMap[f.studentId].isDeleted)
         .sort((a, b) => (b.date || '').localeCompare(a.date || '')),
-    [fees]
+    [fees, studentMap]
   );
 
   const globalFeeTotals = useMemo(() => {
@@ -595,7 +618,7 @@ export default function App() {
       setNoteDraft(selectedStudent.notes || '');
       setPriorityDraft(Boolean(selectedStudent.priorityNote));
     }
-  }, [selectedStudentId, selectedStudent?.notes, selectedStudent?.priorityNote]);
+  }, [selectedStudentId, selectedStudent]);
 
   // ==========================================
   // 8. STRICT MATHEMATICAL & FEE LOGIC
@@ -763,17 +786,24 @@ export default function App() {
   // ==========================================
   // 10. CRUD & LONG-PRESS HANDLERS
   // ==========================================
-  const openLongPressMenu = (entityType, item, title) => {
+  const openLongPressMenu = (entityType, item, title, reopenSubjectsModal = false) => {
     setContextMenu({
       visible: true,
       entityType,
       item,
       title,
+      reopenSubjectsModal,
     });
   };
 
   const closeContextMenu = () => {
-    setContextMenu({ visible: false, entityType: null, item: null, title: '' });
+    setContextMenu({
+      visible: false,
+      entityType: null,
+      item: null,
+      title: '',
+      reopenSubjectsModal: false,
+    });
   };
 
   const handleSoftDelete = async (collectionName, item, label) => {
@@ -818,7 +848,7 @@ export default function App() {
   };
 
   const handleContextAction = async (action) => {
-    const { entityType, item, title } = contextMenu;
+    const { entityType, item, title, reopenSubjectsModal } = contextMenu;
     closeContextMenu();
     if (!item) return;
 
@@ -831,12 +861,14 @@ export default function App() {
         fee: 'fees',
       };
       await handleSoftDelete(colMap[entityType], item, title);
+      if (reopenSubjectsModal) setSubjectsModal(true);
       return;
     }
 
     if (action === 'moveUp' || action === 'moveDown') {
       if (entityType !== 'subject') return;
       await handleMoveSubjectOrder(item, action);
+      if (reopenSubjectsModal) setSubjectsModal(true);
       return;
     }
 
@@ -922,7 +954,11 @@ export default function App() {
       Alert.alert('Validation', 'Student Name and Subject are required.');
       return;
     }
-    const validDate = normalizeISODate(studentForm.joinedDate) || getTodayISO();
+    const validDate = normalizeISODate(studentForm.joinedDate);
+    if (!validDate) {
+      Alert.alert('Validation', 'Please enter a valid enrollment date in YYYY-MM-DD format.');
+      return;
+    }
     try {
       triggerLayoutAnimation();
       const payload = {
@@ -1055,19 +1091,35 @@ export default function App() {
     }
     try {
       triggerLayoutAnimation();
-      const payload = {
-        studentId: selectedStudentId,
-        date: validDate,
-        status: inlineAttendanceForm.status,
-        remarks: inlineAttendanceForm.remarks.trim(),
-        isDeleted: false,
-        deletedAt: null,
-      };
-      await addDoc(collection(db, 'attendance'), payload);
-      await logActivity(
-        'Marked Attendance',
-        `${studentMap[selectedStudentId]?.name || 'Student'} • ${payload.status}`
+      const existingRecord = activeAttendance.find(
+        (a) => a.studentId === selectedStudentId && a.date === validDate
       );
+
+      if (existingRecord) {
+        await updateDoc(doc(db, 'attendance', existingRecord.id), {
+          status: inlineAttendanceForm.status,
+          remarks: inlineAttendanceForm.remarks.trim(),
+        });
+        await logActivity(
+          'Updated Attendance',
+          `${studentMap[selectedStudentId]?.name || 'Student'} • ${inlineAttendanceForm.status}`
+        );
+      } else {
+        const payload = {
+          studentId: selectedStudentId,
+          date: validDate,
+          status: inlineAttendanceForm.status,
+          remarks: inlineAttendanceForm.remarks.trim(),
+          isDeleted: false,
+          deletedAt: null,
+        };
+        await addDoc(collection(db, 'attendance'), payload);
+        await logActivity(
+          'Marked Attendance',
+          `${studentMap[selectedStudentId]?.name || 'Student'} • ${payload.status}`
+        );
+      }
+
       setInlineAttendanceForm({
         date: getTodayISO(),
         status: 'Present',
@@ -1097,8 +1149,28 @@ export default function App() {
         remarks: attendanceModalForm.remarks.trim(),
       };
 
+      const duplicateRecord = activeAttendance.find(
+        (a) =>
+          a.studentId === payload.studentId &&
+          a.date === validDate &&
+          a.id !== attendanceModalForm.id
+      );
+
       if (attendanceModalForm.id) {
+        if (duplicateRecord) {
+          Alert.alert(
+            'Duplicate Date',
+            'An attendance entry already exists for this student on that date.'
+          );
+          return;
+        }
         await updateDoc(doc(db, 'attendance', attendanceModalForm.id), payload);
+        await logActivity(
+          'Updated Attendance',
+          `${studentMap[payload.studentId]?.name || 'Student'} • ${payload.status}`
+        );
+      } else if (duplicateRecord) {
+        await updateDoc(doc(db, 'attendance', duplicateRecord.id), payload);
         await logActivity(
           'Updated Attendance',
           `${studentMap[payload.studentId]?.name || 'Student'} • ${payload.status}`
@@ -1241,7 +1313,22 @@ export default function App() {
   const handlePermanentDeleteItem = async (item) => {
     try {
       triggerLayoutAnimation();
-      await deleteDoc(doc(db, item._col, item.id));
+      const batch = writeBatch(db);
+      batch.delete(doc(db, item._col, item.id));
+
+      if (item._col === 'students') {
+        lessons
+          .filter((l) => l.studentId === item.id)
+          .forEach((l) => batch.delete(doc(db, 'lessons', l.id)));
+        attendance
+          .filter((a) => a.studentId === item.id)
+          .forEach((a) => batch.delete(doc(db, 'attendance', a.id)));
+        fees
+          .filter((f) => f.studentId === item.id)
+          .forEach((f) => batch.delete(doc(db, 'fees', f.id)));
+      }
+
+      await batch.commit();
       await logActivity('Permanently Deleted', item._label);
     } catch (e) {
       Alert.alert('Error', 'Could not delete item.');
@@ -1262,9 +1349,35 @@ export default function App() {
             try {
               triggerLayoutAnimation();
               const batch = writeBatch(db);
-              trashItems.slice(0, 450).forEach((item) => {
-                batch.delete(doc(db, item._col, item.id));
+              const deletedStudentIds = new Set(
+                trashItems.filter((i) => i._col === 'students').map((i) => i.id)
+              );
+
+              const docsToDelete = new Map();
+              trashItems.forEach((item) => {
+                docsToDelete.set(`${item._col}/${item.id}`, { col: item._col, id: item.id });
               });
+
+              if (deletedStudentIds.size > 0) {
+                lessons
+                  .filter((l) => deletedStudentIds.has(l.studentId))
+                  .forEach((l) => docsToDelete.set(`lessons/${l.id}`, { col: 'lessons', id: l.id }));
+                attendance
+                  .filter((a) => deletedStudentIds.has(a.studentId))
+                  .forEach((a) =>
+                    docsToDelete.set(`attendance/${a.id}`, { col: 'attendance', id: a.id })
+                  );
+                fees
+                  .filter((f) => deletedStudentIds.has(f.studentId))
+                  .forEach((f) => docsToDelete.set(`fees/${f.id}`, { col: 'fees', id: f.id }));
+              }
+
+              Array.from(docsToDelete.values())
+                .slice(0, 450)
+                .forEach((entry) => {
+                  batch.delete(doc(db, entry.col, entry.id));
+                });
+
               await batch.commit();
               await logActivity('Emptied Trash Archive', `${trashItems.length} items removed`);
             } catch (e) {
@@ -2347,865 +2460,871 @@ export default function App() {
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="light-content" backgroundColor={COLORS.navy} />
+    <SafeAreaProvider>
+      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+        <StatusBar barStyle="light-content" backgroundColor={COLORS.navy} />
 
-      <View style={styles.topHeader}>
-        <TouchableOpacity
-          onPress={openDrawer}
-          style={styles.hamburgerBtn}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
-          <Ionicons name="menu" size={26} color={COLORS.gold} />
-        </TouchableOpacity>
-        <View style={{ alignItems: 'center' }}>
-          <Text style={styles.headerTitle}>JSM APP</Text>
-          <Text style={styles.headerCrest}>EST. 2022</Text>
-        </View>
-        <View style={{ width: 28 }} />
-      </View>
-
-      <AnimatedScreen triggerKey={`${activeTab}-${selectedStudentId || 'list'}`}>
-        {activeTab === 'Home' && renderHomeTab()}
-        {activeTab === 'Students' && renderStudentsTab()}
-        {activeTab === 'Attendance' && renderAttendanceTab()}
-        {activeTab === 'Fees' && renderFeesTab()}
-        {activeTab === 'Trash' && renderTrashTab()}
-      </AnimatedScreen>
-
-      <View style={styles.bottomTabBar}>
-        {[
-          { key: 'Home', icon: 'grid-outline', label: 'Home' },
-          { key: 'Students', icon: 'people-outline', label: 'Students' },
-          { key: 'Attendance', icon: 'calendar-check-outline', label: 'Attendance', mci: true },
-          { key: 'Fees', icon: 'card-outline', label: 'Fees' },
-          { key: 'Trash', icon: 'trash-outline', label: 'Trash' },
-        ].map((tab) => {
-          const isFocused = activeTab === tab.key;
-          return (
-            <TouchableOpacity
-              key={tab.key}
-              style={styles.bottomTabItem}
-              onPress={() => {
-                if (tab.key !== 'Students') setSelectedStudentId(null);
-                setActiveTab(tab.key);
-              }}
-            >
-              <View>
-                {tab.mci ? (
-                  <MaterialCommunityIcons
-                    name={tab.icon}
-                    size={22}
-                    color={isFocused ? COLORS.gold : COLORS.silver}
-                  />
-                ) : (
-                  <Ionicons
-                    name={tab.icon}
-                    size={22}
-                    color={isFocused ? COLORS.gold : COLORS.silver}
-                  />
-                )}
-                {tab.key === 'Trash' && trashItems.length > 0 && (
-                  <View style={styles.trashTabBadge}>
-                    <Text style={styles.trashTabBadgeText}>{trashItems.length}</Text>
-                  </View>
-                )}
-              </View>
-              <Text style={[styles.bottomTabLabel, isFocused && styles.bottomTabLabelActive]}>
-                {tab.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      {/* ANIMATED SLIDE DRAWER */}
-      <Modal visible={drawerOpen} transparent animationType="none" onRequestClose={() => closeDrawer()}>
-        <View style={styles.drawerOverlay}>
-          <Animated.View
-            style={[
-              styles.drawerContainer,
-              { transform: [{ translateX: drawerSlideAnim }] },
-            ]}
+        <View style={styles.topHeader}>
+          <TouchableOpacity
+            onPress={openDrawer}
+            style={styles.hamburgerBtn}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            <View style={styles.drawerHeader}>
-              <Text style={styles.crestBadgeText}>★ JSM APP ★</Text>
-              <Text style={styles.drawerTitle}>Music School Portal</Text>
-              <Text style={styles.drawerSub}>Est. 2022 • Official Edition</Text>
-            </View>
+            <Ionicons name="menu" size={26} color={COLORS.gold} />
+          </TouchableOpacity>
+          <View style={{ alignItems: 'center' }}>
+            <Text style={styles.headerTitle}>JSM APP</Text>
+            <Text style={styles.headerCrest}>EST. 2022</Text>
+          </View>
+          <View style={{ width: 28 }} />
+        </View>
 
-            <View style={{ padding: 16, gap: 10 }}>
-              {[
-                { label: 'Home Dashboard', tab: 'Home', icon: 'grid-outline' },
-                { label: 'Student Directory', tab: 'Students', icon: 'people-outline' },
-                { label: 'Global Attendance', tab: 'Attendance', icon: 'calendar-outline' },
-                { label: 'Global Fee Register', tab: 'Fees', icon: 'card-outline' },
-                { label: `Trash Archive (${trashItems.length})`, tab: 'Trash', icon: 'trash-outline' },
-              ].map((nav) => (
+        <AnimatedScreen triggerKey={`${activeTab}-${selectedStudentId || 'list'}`}>
+          {activeTab === 'Home' && renderHomeTab()}
+          {activeTab === 'Students' && renderStudentsTab()}
+          {activeTab === 'Attendance' && renderAttendanceTab()}
+          {activeTab === 'Fees' && renderFeesTab()}
+          {activeTab === 'Trash' && renderTrashTab()}
+        </AnimatedScreen>
+
+        <View style={styles.bottomTabBar}>
+          {[
+            { key: 'Home', icon: 'grid-outline', label: 'Home' },
+            { key: 'Students', icon: 'people-outline', label: 'Students' },
+            { key: 'Attendance', icon: 'calendar-check-outline', label: 'Attendance', mci: true },
+            { key: 'Fees', icon: 'card-outline', label: 'Fees' },
+            { key: 'Trash', icon: 'trash-outline', label: 'Trash' },
+          ].map((tab) => {
+            const isFocused = activeTab === tab.key;
+            return (
+              <TouchableOpacity
+                key={tab.key}
+                style={styles.bottomTabItem}
+                onPress={() => {
+                  if (tab.key !== 'Students') setSelectedStudentId(null);
+                  setActiveTab(tab.key);
+                }}
+              >
+                <View>
+                  {tab.mci ? (
+                    <MaterialCommunityIcons
+                      name={tab.icon}
+                      size={22}
+                      color={isFocused ? COLORS.gold : COLORS.silver}
+                    />
+                  ) : (
+                    <Ionicons
+                      name={tab.icon}
+                      size={22}
+                      color={isFocused ? COLORS.gold : COLORS.silver}
+                    />
+                  )}
+                  {tab.key === 'Trash' && trashItems.length > 0 && (
+                    <View style={styles.trashTabBadge}>
+                      <Text style={styles.trashTabBadgeText}>{trashItems.length}</Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={[styles.bottomTabLabel, isFocused && styles.bottomTabLabelActive]}>
+                  {tab.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* ANIMATED SLIDE DRAWER */}
+        <Modal visible={drawerOpen} transparent animationType="none" onRequestClose={() => closeDrawer()}>
+          <View style={styles.drawerOverlay}>
+            <Animated.View
+              style={[
+                styles.drawerContainer,
+                { transform: [{ translateX: drawerSlideAnim }] },
+              ]}
+            >
+              <View style={styles.drawerHeader}>
+                <Text style={styles.crestBadgeText}>★ JSM APP ★</Text>
+                <Text style={styles.drawerTitle}>Music School Portal</Text>
+                <Text style={styles.drawerSub}>Est. 2022 • Official Edition</Text>
+              </View>
+
+              <View style={{ padding: 16, gap: 10 }}>
+                {[
+                  { label: 'Home Dashboard', tab: 'Home', icon: 'grid-outline' },
+                  { label: 'Student Directory', tab: 'Students', icon: 'people-outline' },
+                  { label: 'Global Attendance', tab: 'Attendance', icon: 'calendar-outline' },
+                  { label: 'Global Fee Register', tab: 'Fees', icon: 'card-outline' },
+                  { label: `Trash Archive (${trashItems.length})`, tab: 'Trash', icon: 'trash-outline' },
+                ].map((nav) => (
+                  <TouchableOpacity
+                    key={nav.tab}
+                    style={[
+                      styles.drawerNavItem,
+                      activeTab === nav.tab && styles.drawerNavItemActive,
+                    ]}
+                    onPress={() => {
+                      closeDrawer(() => {
+                        setSelectedStudentId(null);
+                        setActiveTab(nav.tab);
+                      });
+                    }}
+                  >
+                    <Ionicons
+                      name={nav.icon}
+                      size={18}
+                      color={activeTab === nav.tab ? COLORS.gold : COLORS.navy}
+                    />
+                    <Text
+                      style={[
+                        styles.drawerNavText,
+                        activeTab === nav.tab && styles.drawerNavTextActive,
+                      ]}
+                    >
+                      {nav.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+
+                <View style={styles.drawerDivider} />
+
                 <TouchableOpacity
-                  key={nav.tab}
-                  style={[
-                    styles.drawerNavItem,
-                    activeTab === nav.tab && styles.drawerNavItemActive,
-                  ]}
+                  style={styles.drawerNavItem}
                   onPress={() => {
                     closeDrawer(() => {
-                      setSelectedStudentId(null);
-                      setActiveTab(nav.tab);
+                      setSubjectForm({ id: null, name: '' });
+                      setSubjectsModal(true);
                     });
                   }}
                 >
-                  <Ionicons
-                    name={nav.icon}
-                    size={18}
-                    color={activeTab === nav.tab ? COLORS.gold : COLORS.navy}
-                  />
-                  <Text
-                    style={[
-                      styles.drawerNavText,
-                      activeTab === nav.tab && styles.drawerNavTextActive,
-                    ]}
-                  >
-                    {nav.label}
-                  </Text>
+                  <Ionicons name="musical-notes-outline" size={18} color={COLORS.navy} />
+                  <Text style={styles.drawerNavText}>Manage Instruments & Order</Text>
                 </TouchableOpacity>
-              ))}
 
-              <View style={styles.drawerDivider} />
-
-              <TouchableOpacity
-                style={styles.drawerNavItem}
-                onPress={() => {
-                  closeDrawer(() => {
-                    setSubjectForm({ id: null, name: '' });
-                    setSubjectsModal(true);
-                  });
-                }}
-              >
-                <Ionicons name="musical-notes-outline" size={18} color={COLORS.navy} />
-                <Text style={styles.drawerNavText}>Manage Instruments & Order</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.drawerNavItem}
-                onPress={handleCheckOTA}
-                disabled={checkingOTA}
-              >
-                {checkingOTA ? (
-                  <ActivityIndicator size="small" color={COLORS.navy} />
-                ) : (
-                  <>
-                    <Ionicons name="cloud-download-outline" size={18} color={COLORS.navy} />
-                    <Text style={styles.drawerNavText}>Check for OTA Update</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
-          </Animated.View>
-          <Pressable style={{ flex: 1 }} onPress={() => closeDrawer()} />
-        </View>
-      </Modal>
-
-      {/* LONG-PRESS CONTEXT MENU */}
-      <Modal visible={contextMenu.visible} transparent animationType="fade" onRequestClose={closeContextMenu}>
-        <Pressable style={styles.modalBackdrop} onPress={closeContextMenu}>
-          <Pressable style={styles.contextSheet} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.contextSheetHeader}>{contextMenu.title}</Text>
-            <View style={styles.contextDivider} />
-
-            <TouchableOpacity
-              style={styles.contextOptionBtn}
-              onPress={() => handleContextAction('edit')}
-            >
-              <Text style={styles.contextOptionText}>Edit Record</Text>
-            </TouchableOpacity>
-
-            {contextMenu.entityType === 'subject' && (
-              <>
                 <TouchableOpacity
-                  style={styles.contextOptionBtn}
-                  onPress={() => handleContextAction('moveUp')}
+                  style={styles.drawerNavItem}
+                  onPress={handleCheckOTA}
+                  disabled={checkingOTA}
                 >
-                  <Text style={styles.contextOptionText}>Reorder: Move Up</Text>
+                  {checkingOTA ? (
+                    <ActivityIndicator size="small" color={COLORS.navy} />
+                  ) : (
+                    <>
+                      <Ionicons name="cloud-download-outline" size={18} color={COLORS.navy} />
+                      <Text style={styles.drawerNavText}>Check for OTA Update</Text>
+                    </>
+                  )}
                 </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.contextOptionBtn}
-                  onPress={() => handleContextAction('moveDown')}
-                >
-                  <Text style={styles.contextOptionText}>Reorder: Move Down</Text>
-                </TouchableOpacity>
-              </>
-            )}
-
-            <TouchableOpacity
-              style={styles.contextOptionBtn}
-              onPress={() => handleContextAction('delete')}
-            >
-              <Text style={[styles.contextOptionText, { color: COLORS.danger }]}>
-                Delete (Move to Trash)
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.secondaryButton,
-                { marginTop: 10, alignSelf: 'stretch', alignItems: 'center' },
-              ]}
-              onPress={closeContextMenu}
-            >
-              <Text style={styles.secondaryButtonText}>Cancel</Text>
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      {/* NOTICE READ MODAL */}
-      <Modal visible={noticeReadModal} transparent animationType="slide" onRequestClose={() => setNoticeReadModal(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <Text style={styles.sectionTitle}>JSM APP OFFICIAL NOTICE</Text>
-            {noticeUpdatedAt ? (
-              <Text style={styles.silverMeta}>
-                Posted {formatReadableLocalDate(noticeUpdatedAt)}
-              </Text>
-            ) : null}
-            <ScrollView style={{ maxHeight: 260, marginVertical: 14 }}>
-              <Text style={styles.noticeFullText}>
-                {noticeText || 'No active notice has been posted.'}
-              </Text>
-            </ScrollView>
-            <TouchableOpacity
-              style={styles.primaryNavyButton}
-              onPress={() => setNoticeReadModal(false)}
-            >
-              <Text style={styles.primaryNavyButtonText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* NOTICE EDIT MODAL */}
-      <Modal visible={noticeEditModal} transparent animationType="slide" onRequestClose={() => setNoticeEditModal(false)}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalBackdrop}
-        >
-          <View style={styles.modalCard}>
-            <Text style={styles.sectionTitle}>UPDATE NOTICE BOARD</Text>
-            <TextInput
-              style={[styles.input, { height: 120, textAlignVertical: 'top', marginTop: 10 }]}
-              multiline
-              value={noticeInput}
-              onChangeText={setNoticeInput}
-              placeholder="Type new JSM announcement..."
-            />
-            <View style={styles.modalBtnRow}>
-              <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={() => setNoticeEditModal(false)}
-              >
-                <Text style={styles.secondaryButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.primaryNavyButton} onPress={handleUpdateNotice}>
-                <Text style={styles.primaryNavyButtonText}>Publish Notice</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* TODAY'S AUDIT LOG MODAL */}
-      <Modal visible={todayLogModal} transparent animationType="slide" onRequestClose={() => setTodayLogModal(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <Text style={styles.sectionTitle}>
-              TODAY'S AUDIT LOG ({formatReadableLocalDate(getTodayISO())})
-            </Text>
-            <ScrollView style={{ maxHeight: 320, marginVertical: 12 }}>
-              {activities.filter((a) => a.dateISO === getTodayISO()).length === 0 ? (
-                <Text style={styles.emptyText}>No actions logged today.</Text>
-              ) : (
-                activities
-                  .filter((a) => a.dateISO === getTodayISO())
-                  .map((act) => (
-                    <View key={act.id} style={styles.activityItem}>
-                      <View style={styles.activityDot} />
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.activityTitle}>{act.title}</Text>
-                        <Text style={styles.activitySub}>{act.subtitle}</Text>
-                      </View>
-                    </View>
-                  ))
-              )}
-            </ScrollView>
-            <TouchableOpacity
-              style={styles.primaryNavyButton}
-              onPress={() => setTodayLogModal(false)}
-            >
-              <Text style={styles.primaryNavyButtonText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* MANAGE SUBJECTS MODAL */}
-      <Modal visible={subjectsModal} transparent animationType="slide" onRequestClose={() => setSubjectsModal(false)}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalBackdrop}
-        >
-          <View style={styles.modalCard}>
-            <Text style={styles.sectionTitle}>MANAGE INSTRUMENTS & SUBJECTS</Text>
-            <Text style={styles.silverMeta}>
-              Use the action buttons or long-press any subject to reorder, edit, or delete.
-            </Text>
-
-            <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
-              <TextInput
-                style={[styles.input, { flex: 1, marginBottom: 0 }]}
-                value={subjectForm.name}
-                onChangeText={(t) => setSubjectForm({ ...subjectForm, name: t })}
-                placeholder="e.g., Piano, Violin, Guitar"
-              />
-              <TouchableOpacity style={styles.primaryNavyButton} onPress={handleSaveSubject}>
-                <Text style={styles.primaryNavyButtonText}>
-                  {subjectForm.id ? 'Update' : 'Add'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView style={{ maxHeight: 280, marginVertical: 14 }}>
-              {activeSubjects.length === 0 ? (
-                <Text style={styles.emptyText}>No subjects added yet.</Text>
-              ) : (
-                activeSubjects.map((subj, idx) => (
-                  <Pressable
-                    key={subj.id}
-                    style={styles.cleanRecordCard}
-                    onLongPress={() => {
-                      setSubjectsModal(false);
-                      setTimeout(() => openLongPressMenu('subject', subj, subj.name), 200);
-                    }}
-                    delayLongPress={300}
-                  >
-                    <Text style={[styles.recordPrimaryTitle, { flex: 1 }]}>
-                      {idx + 1}. {subj.name}
-                    </Text>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      <TouchableOpacity
-                        style={styles.iconActionBtn}
-                        disabled={idx === 0}
-                        onPress={() => handleMoveSubjectOrder(subj, 'moveUp')}
-                      >
-                        <Ionicons
-                          name="arrow-up"
-                          size={15}
-                          color={idx === 0 ? COLORS.silver : COLORS.navy}
-                        />
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.iconActionBtn}
-                        disabled={idx === activeSubjects.length - 1}
-                        onPress={() => handleMoveSubjectOrder(subj, 'moveDown')}
-                      >
-                        <Ionicons
-                          name="arrow-down"
-                          size={15}
-                          color={idx === activeSubjects.length - 1 ? COLORS.silver : COLORS.navy}
-                        />
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.iconActionBtn}
-                        onPress={() => setSubjectForm({ id: subj.id, name: subj.name })}
-                      >
-                        <Ionicons name="pencil" size={15} color={COLORS.navy} />
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.iconActionBtn}
-                        onPress={() => handleSoftDelete('subjects', subj, `Subject: ${subj.name}`)}
-                      >
-                        <Ionicons name="trash-outline" size={15} color={COLORS.danger} />
-                      </TouchableOpacity>
-                    </View>
-                  </Pressable>
-                ))
-              )}
-            </ScrollView>
-
-            <TouchableOpacity
-              style={[styles.secondaryButton, { alignSelf: 'flex-end' }]}
-              onPress={() => {
-                setSubjectForm({ id: null, name: '' });
-                setSubjectsModal(false);
-              }}
-            >
-              <Text style={styles.secondaryButtonText}>Done</Text>
-            </TouchableOpacity>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* REGISTER / EDIT STUDENT MODAL */}
-      <Modal visible={studentModal} transparent animationType="slide" onRequestClose={() => setStudentModal(false)}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalBackdrop}
-        >
-          <View style={styles.modalCard}>
-            <Text style={styles.sectionTitle}>
-              {studentForm.id ? 'EDIT STUDENT DETAILS' : 'REGISTER NEW STUDENT'}
-            </Text>
-            <ScrollView style={{ maxHeight: 380 }}>
-              <Text style={styles.inputLabel}>Full Name *</Text>
-              <TextInput
-                style={styles.input}
-                value={studentForm.name}
-                onChangeText={(t) => setStudentForm({ ...studentForm, name: t })}
-                placeholder="Student Full Name"
-              />
-
-              <Text style={styles.inputLabel}>Select Subject / Instrument *</Text>
-              <View style={styles.chipRow}>
-                {activeSubjects.map((s) => (
-                  <TouchableOpacity
-                    key={s.id}
-                    style={[
-                      styles.choiceChip,
-                      studentForm.subjectId === s.id && styles.choiceChipSelected,
-                    ]}
-                    onPress={() => setStudentForm({ ...studentForm, subjectId: s.id })}
-                  >
-                    <Text
-                      style={[
-                        styles.choiceChipText,
-                        studentForm.subjectId === s.id && styles.choiceChipTextSelected,
-                      ]}
-                    >
-                      {s.name}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
               </View>
-
-              <Text style={styles.inputLabel}>Phone / WhatsApp</Text>
-              <TextInput
-                style={styles.input}
-                value={studentForm.phone}
-                onChangeText={(t) => setStudentForm({ ...studentForm, phone: t })}
-                keyboardType="phone-pad"
-                placeholder="+91 98765 43210"
-              />
-
-              <Text style={styles.inputLabel}>Parent / Guardian Name</Text>
-              <TextInput
-                style={styles.input}
-                value={studentForm.guardian}
-                onChangeText={(t) => setStudentForm({ ...studentForm, guardian: t })}
-                placeholder="Optional"
-              />
-
-              <Text style={styles.inputLabel}>Enrollment Date (YYYY-MM-DD)</Text>
-              <QuickDateRow
-                currentDate={studentForm.joinedDate}
-                onSelectDate={(d) => setStudentForm({ ...studentForm, joinedDate: d })}
-              />
-              <TextInput
-                style={styles.input}
-                value={studentForm.joinedDate}
-                onChangeText={(t) => setStudentForm({ ...studentForm, joinedDate: t })}
-              />
-            </ScrollView>
-
-            <View style={styles.modalBtnRow}>
-              <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={() => setStudentModal(false)}
-              >
-                <Text style={styles.secondaryButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.primaryNavyButton} onPress={handleSaveStudent}>
-                <Text style={styles.primaryNavyButtonText}>Save Student</Text>
-              </TouchableOpacity>
-            </View>
+            </Animated.View>
+            <Pressable style={{ flex: 1 }} onPress={() => closeDrawer()} />
           </View>
-        </KeyboardAvoidingView>
-      </Modal>
+        </Modal>
 
-      {/* EDIT LESSON MODAL */}
-      <Modal visible={lessonEditModal} transparent animationType="slide" onRequestClose={() => setLessonEditModal(false)}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalBackdrop}
-        >
-          <View style={styles.modalCard}>
-            <Text style={styles.sectionTitle}>EDIT LESSON RECORD</Text>
-            <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
-            <QuickDateRow
-              currentDate={lessonEditForm.date}
-              onSelectDate={(d) => setLessonEditForm({ ...lessonEditForm, date: d })}
-            />
-            <TextInput
-              style={styles.input}
-              value={lessonEditForm.date}
-              onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, date: t })}
-            />
-            <Text style={styles.inputLabel}>Technique</Text>
-            <TextInput
-              style={styles.input}
-              value={lessonEditForm.technique}
-              onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, technique: t })}
-            />
-            <Text style={styles.inputLabel}>Repertoire</Text>
-            <TextInput
-              style={styles.input}
-              value={lessonEditForm.repertoire}
-              onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, repertoire: t })}
-            />
-            <Text style={styles.inputLabel}>Assignment</Text>
-            <TextInput
-              style={styles.input}
-              value={lessonEditForm.assignment}
-              onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, assignment: t })}
-            />
-            <View style={styles.modalBtnRow}>
+        {/* LONG-PRESS CONTEXT MENU */}
+        <Modal visible={contextMenu.visible} transparent animationType="fade" onRequestClose={closeContextMenu}>
+          <Pressable style={styles.modalBackdrop} onPress={closeContextMenu}>
+            <Pressable style={styles.contextSheet} onPress={(e) => e.stopPropagation()}>
+              <Text style={styles.contextSheetHeader}>{contextMenu.title}</Text>
+              <View style={styles.contextDivider} />
+
               <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={() => setLessonEditModal(false)}
+                style={styles.contextOptionBtn}
+                onPress={() => handleContextAction('edit')}
               >
-                <Text style={styles.secondaryButtonText}>Cancel</Text>
+                <Text style={styles.contextOptionText}>Edit Record</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.primaryNavyButton}
-                onPress={handleSaveEditedLesson}
-              >
-                <Text style={styles.primaryNavyButtonText}>Update Lesson</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
 
-      {/* MARK / EDIT ATTENDANCE MODAL */}
-      <Modal visible={attendanceModal} transparent animationType="slide" onRequestClose={() => setAttendanceModal(false)}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalBackdrop}
-        >
-          <View style={styles.modalCard}>
-            <Text style={styles.sectionTitle}>
-              {attendanceModalForm.id ? 'EDIT ATTENDANCE' : 'MARK GLOBAL ATTENDANCE'}
-            </Text>
-            <ScrollView style={{ maxHeight: 360 }}>
-              <Text style={styles.inputLabel}>Select Student *</Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={{ marginBottom: 8 }}
-              >
-                <View style={{ flexDirection: 'row', gap: 6 }}>
-                  {activeStudents.map((st) => (
-                    <TouchableOpacity
-                      key={st.id}
-                      style={[
-                        styles.choiceChip,
-                        attendanceModalForm.studentId === st.id && styles.choiceChipSelected,
-                      ]}
-                      onPress={() =>
-                        setAttendanceModalForm({ ...attendanceModalForm, studentId: st.id })
-                      }
-                    >
-                      <Text
-                        style={[
-                          styles.choiceChipText,
-                          attendanceModalForm.studentId === st.id &&
-                            styles.choiceChipTextSelected,
-                        ]}
-                      >
-                        {st.name}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </ScrollView>
-
-              <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
-              <QuickDateRow
-                currentDate={attendanceModalForm.date}
-                onSelectDate={(d) =>
-                  setAttendanceModalForm({ ...attendanceModalForm, date: d })
-                }
-              />
-              <TextInput
-                style={styles.input}
-                value={attendanceModalForm.date}
-                onChangeText={(t) =>
-                  setAttendanceModalForm({ ...attendanceModalForm, date: t })
-                }
-              />
-
-              <Text style={styles.inputLabel}>Attendance Status</Text>
-              <View style={styles.chipRow}>
-                {ATTENDANCE_STATUSES.map((st) => (
-                  <TouchableOpacity
-                    key={st}
-                    style={[
-                      styles.choiceChip,
-                      attendanceModalForm.status === st && styles.choiceChipSelected,
-                    ]}
-                    onPress={() =>
-                      setAttendanceModalForm({ ...attendanceModalForm, status: st })
-                    }
-                  >
-                    <Text
-                      style={[
-                        styles.choiceChipText,
-                        attendanceModalForm.status === st && styles.choiceChipTextSelected,
-                      ]}
-                    >
-                      {st}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={styles.inputLabel}>Remarks</Text>
-              <TextInput
-                style={styles.input}
-                value={attendanceModalForm.remarks}
-                onChangeText={(t) =>
-                  setAttendanceModalForm({ ...attendanceModalForm, remarks: t })
-                }
-                placeholder="Optional remarks"
-              />
-            </ScrollView>
-
-            <View style={styles.modalBtnRow}>
-              <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={() => setAttendanceModal(false)}
-              >
-                <Text style={styles.secondaryButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.primaryNavyButton}
-                onPress={handleSaveModalAttendance}
-              >
-                <Text style={styles.primaryNavyButtonText}>Save</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* RECORD / EDIT FEE MODAL */}
-      <Modal visible={feeModal} transparent animationType="slide" onRequestClose={() => setFeeModal(false)}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalBackdrop}
-        >
-          <View style={styles.modalCard}>
-            <Text style={styles.sectionTitle}>
-              {feeForm.id ? 'EDIT FEE TRANSACTION' : 'RECORD FEE'}
-            </Text>
-            <ScrollView style={{ maxHeight: 420 }}>
-              <Text style={styles.inputLabel}>Select Student *</Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={{ marginBottom: 8 }}
-              >
-                <View style={{ flexDirection: 'row', gap: 6 }}>
-                  {activeStudents.map((st) => (
-                    <TouchableOpacity
-                      key={st.id}
-                      style={[
-                        styles.choiceChip,
-                        feeForm.studentId === st.id && styles.choiceChipSelected,
-                      ]}
-                      onPress={() => setFeeForm({ ...feeForm, studentId: st.id })}
-                    >
-                      <Text
-                        style={[
-                          styles.choiceChipText,
-                          feeForm.studentId === st.id && styles.choiceChipTextSelected,
-                        ]}
-                      >
-                        {st.name}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </ScrollView>
-
-              <Text style={styles.inputLabel}>Fee Type</Text>
-              <View style={styles.chipRow}>
-                {FEE_TYPES.map((ft) => (
-                  <TouchableOpacity
-                    key={ft}
-                    style={[
-                      styles.choiceChip,
-                      feeForm.feeType === ft && styles.choiceChipSelected,
-                    ]}
-                    onPress={() => setFeeForm({ ...feeForm, feeType: ft })}
-                  >
-                    <Text
-                      style={[
-                        styles.choiceChipText,
-                        feeForm.feeType === ft && styles.choiceChipTextSelected,
-                      ]}
-                    >
-                      {ft}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              {feeForm.feeType === 'Monthly Fee' && (
+              {contextMenu.entityType === 'subject' && (
                 <>
-                  <Text style={styles.inputLabel}>Month Paid For * (Required for Monthly Fee)</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={feeForm.monthPaidFor}
-                    onChangeText={(t) => setFeeForm({ ...feeForm, monthPaidFor: t })}
-                    placeholder="e.g., October 2026"
-                  />
+                  <TouchableOpacity
+                    style={styles.contextOptionBtn}
+                    onPress={() => handleContextAction('moveUp')}
+                  >
+                    <Text style={styles.contextOptionText}>Reorder: Move Up</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.contextOptionBtn}
+                    onPress={() => handleContextAction('moveDown')}
+                  >
+                    <Text style={styles.contextOptionText}>Reorder: Move Down</Text>
+                  </TouchableOpacity>
                 </>
               )}
 
-              <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
-              <QuickDateRow
-                currentDate={feeForm.date}
-                onSelectDate={(d) => setFeeForm({ ...feeForm, date: d })}
-              />
-              <TextInput
-                style={styles.input}
-                value={feeForm.date}
-                onChangeText={(t) => setFeeForm({ ...feeForm, date: t })}
-              />
-
-              <Text style={styles.inputLabel}>Payment Mode</Text>
-              <View style={styles.chipRow}>
-                {PAYMENT_MODES.map((m) => (
-                  <TouchableOpacity
-                    key={m}
-                    style={[
-                      styles.choiceChip,
-                      feeForm.mode === m && styles.choiceChipSelected,
-                    ]}
-                    onPress={() => setFeeForm({ ...feeForm, mode: m })}
-                  >
-                    <Text
-                      style={[
-                        styles.choiceChipText,
-                        feeForm.mode === m && styles.choiceChipTextSelected,
-                      ]}
-                    >
-                      {m}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={styles.inputLabel}>Fee Status</Text>
-              <View style={styles.chipRow}>
-                {FEE_STATUSES.map((st) => (
-                  <TouchableOpacity
-                    key={st}
-                    style={[
-                      styles.choiceChip,
-                      feeForm.status === st && styles.choiceChipSelected,
-                    ]}
-                    onPress={() => {
-                      if (st === 'Unpaid') {
-                        setFeeForm({ ...feeForm, status: st, amountPaid: '0' });
-                      } else if (st === 'Paid') {
-                        setFeeForm({ ...feeForm, status: st, balanceDue: '0' });
-                      } else {
-                        setFeeForm({ ...feeForm, status: st });
-                      }
-                    }}
-                  >
-                    <Text
-                      style={[
-                        styles.choiceChipText,
-                        feeForm.status === st && styles.choiceChipTextSelected,
-                      ]}
-                    >
-                      {st}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={styles.inputLabel}>
-                Amount Paid (₹) {feeForm.status === 'Unpaid' ? '(Auto-locked to 0)' : '*'}
-              </Text>
-              <TextInput
-                style={[
-                  styles.input,
-                  feeForm.status === 'Unpaid' && {
-                    backgroundColor: '#E5E5E5',
-                    color: COLORS.silver,
-                  },
-                ]}
-                editable={feeForm.status !== 'Unpaid'}
-                keyboardType="numeric"
-                value={feeForm.status === 'Unpaid' ? '0' : feeForm.amountPaid}
-                onChangeText={(t) => setFeeForm({ ...feeForm, amountPaid: sanitizeCurrency(t) })}
-                placeholder="0"
-              />
-
-              <Text style={styles.inputLabel}>
-                Balance Due (₹) {feeForm.status === 'Paid' ? '(Auto-locked to 0)' : '*'}
-              </Text>
-              <TextInput
-                style={[
-                  styles.input,
-                  feeForm.status === 'Paid' && {
-                    backgroundColor: '#E5E5E5',
-                    color: COLORS.silver,
-                  },
-                ]}
-                editable={feeForm.status !== 'Paid'}
-                keyboardType="numeric"
-                value={feeForm.status === 'Paid' ? '0' : feeForm.balanceDue}
-                onChangeText={(t) => setFeeForm({ ...feeForm, balanceDue: sanitizeCurrency(t) })}
-                placeholder="0"
-              />
-
-              <Text style={styles.inputLabel}>Remarks</Text>
-              <TextInput
-                style={styles.input}
-                value={feeForm.remarks}
-                onChangeText={(t) => setFeeForm({ ...feeForm, remarks: t })}
-                placeholder="Optional receipt notes"
-              />
-            </ScrollView>
-
-            <View style={[styles.modalBtnRow, { flexWrap: 'wrap', gap: 8 }]}>
               <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={() => setFeeModal(false)}
+                style={styles.contextOptionBtn}
+                onPress={() => handleContextAction('delete')}
+              >
+                <Text style={[styles.contextOptionText, { color: COLORS.danger }]}>
+                  Delete (Move to Trash)
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.secondaryButton,
+                  { marginTop: 10, alignSelf: 'stretch', alignItems: 'center' },
+                ]}
+                onPress={() => {
+                  const shouldReopen = contextMenu.reopenSubjectsModal;
+                  closeContextMenu();
+                  if (shouldReopen) setSubjectsModal(true);
+                }}
               >
                 <Text style={styles.secondaryButtonText}>Cancel</Text>
               </TouchableOpacity>
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        {/* NOTICE READ MODAL */}
+        <Modal visible={noticeReadModal} transparent animationType="slide" onRequestClose={() => setNoticeReadModal(false)}>
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <Text style={styles.sectionTitle}>JSM APP OFFICIAL NOTICE</Text>
+              {noticeUpdatedAt ? (
+                <Text style={styles.silverMeta}>
+                  Posted {formatReadableLocalDate(noticeUpdatedAt)}
+                </Text>
+              ) : null}
+              <ScrollView style={{ maxHeight: 260, marginVertical: 14 }}>
+                <Text style={styles.noticeFullText}>
+                  {noticeText || 'No active notice has been posted.'}
+                </Text>
+              </ScrollView>
               <TouchableOpacity
                 style={styles.primaryNavyButton}
-                onPress={() => handleSaveFee(false)}
+                onPress={() => setNoticeReadModal(false)}
               >
-                <Text style={styles.primaryNavyButtonText}>Save</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.goldAccentButton}
-                onPress={() => handleSaveFee(true)}
-              >
-                <Text style={styles.goldAccentButtonText}>Save & Share Receipt</Text>
+                <Text style={styles.primaryNavyButtonText}>Close</Text>
               </TouchableOpacity>
             </View>
           </View>
-        </KeyboardAvoidingView>
-      </Modal>
-    </SafeAreaView>
+        </Modal>
+
+        {/* NOTICE EDIT MODAL */}
+        <Modal visible={noticeEditModal} transparent animationType="slide" onRequestClose={() => setNoticeEditModal(false)}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalBackdrop}
+          >
+            <View style={styles.modalCard}>
+              <Text style={styles.sectionTitle}>UPDATE NOTICE BOARD</Text>
+              <TextInput
+                style={[styles.input, { height: 120, textAlignVertical: 'top', marginTop: 10 }]}
+                multiline
+                value={noticeInput}
+                onChangeText={setNoticeInput}
+                placeholder="Type new JSM announcement..."
+              />
+              <View style={styles.modalBtnRow}>
+                <TouchableOpacity
+                  style={styles.secondaryButton}
+                  onPress={() => setNoticeEditModal(false)}
+                >
+                  <Text style={styles.secondaryButtonText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.primaryNavyButton} onPress={handleUpdateNotice}>
+                  <Text style={styles.primaryNavyButtonText}>Publish Notice</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        {/* TODAY'S AUDIT LOG MODAL */}
+        <Modal visible={todayLogModal} transparent animationType="slide" onRequestClose={() => setTodayLogModal(false)}>
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <Text style={styles.sectionTitle}>
+                TODAY'S AUDIT LOG ({formatReadableLocalDate(getTodayISO())})
+              </Text>
+              <ScrollView style={{ maxHeight: 320, marginVertical: 12 }}>
+                {activities.filter((a) => a.dateISO === getTodayISO()).length === 0 ? (
+                  <Text style={styles.emptyText}>No actions logged today.</Text>
+                ) : (
+                  activities
+                    .filter((a) => a.dateISO === getTodayISO())
+                    .map((act) => (
+                      <View key={act.id} style={styles.activityItem}>
+                        <View style={styles.activityDot} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.activityTitle}>{act.title}</Text>
+                          <Text style={styles.activitySub}>{act.subtitle}</Text>
+                        </View>
+                      </View>
+                    ))
+                )}
+              </ScrollView>
+              <TouchableOpacity
+                style={styles.primaryNavyButton}
+                onPress={() => setTodayLogModal(false)}
+              >
+                <Text style={styles.primaryNavyButtonText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+
+        {/* MANAGE SUBJECTS MODAL */}
+        <Modal visible={subjectsModal} transparent animationType="slide" onRequestClose={() => setSubjectsModal(false)}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalBackdrop}
+          >
+            <View style={styles.modalCard}>
+              <Text style={styles.sectionTitle}>MANAGE INSTRUMENTS & SUBJECTS</Text>
+              <Text style={styles.silverMeta}>
+                Use the action buttons or long-press any subject to reorder, edit, or delete.
+              </Text>
+
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                <TextInput
+                  style={[styles.input, { flex: 1, marginBottom: 0 }]}
+                  value={subjectForm.name}
+                  onChangeText={(t) => setSubjectForm({ ...subjectForm, name: t })}
+                  placeholder="e.g., Piano, Violin, Guitar"
+                />
+                <TouchableOpacity style={styles.primaryNavyButton} onPress={handleSaveSubject}>
+                  <Text style={styles.primaryNavyButtonText}>
+                    {subjectForm.id ? 'Update' : 'Add'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView style={{ maxHeight: 280, marginVertical: 14 }}>
+                {activeSubjects.length === 0 ? (
+                  <Text style={styles.emptyText}>No subjects added yet.</Text>
+                ) : (
+                  activeSubjects.map((subj, idx) => (
+                    <Pressable
+                      key={subj.id}
+                      style={styles.cleanRecordCard}
+                      onLongPress={() => {
+                        setSubjectsModal(false);
+                        setTimeout(() => openLongPressMenu('subject', subj, subj.name, true), 200);
+                      }}
+                      delayLongPress={300}
+                    >
+                      <Text style={[styles.recordPrimaryTitle, { flex: 1 }]}>
+                        {idx + 1}. {subj.name}
+                      </Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <TouchableOpacity
+                          style={styles.iconActionBtn}
+                          disabled={idx === 0}
+                          onPress={() => handleMoveSubjectOrder(subj, 'moveUp')}
+                        >
+                          <Ionicons
+                            name="arrow-up"
+                            size={15}
+                            color={idx === 0 ? COLORS.silver : COLORS.navy}
+                          />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.iconActionBtn}
+                          disabled={idx === activeSubjects.length - 1}
+                          onPress={() => handleMoveSubjectOrder(subj, 'moveDown')}
+                        >
+                          <Ionicons
+                            name="arrow-down"
+                            size={15}
+                            color={idx === activeSubjects.length - 1 ? COLORS.silver : COLORS.navy}
+                          />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.iconActionBtn}
+                          onPress={() => setSubjectForm({ id: subj.id, name: subj.name })}
+                        >
+                          <Ionicons name="pencil" size={15} color={COLORS.navy} />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.iconActionBtn}
+                          onPress={() => handleSoftDelete('subjects', subj, `Subject: ${subj.name}`)}
+                        >
+                          <Ionicons name="trash-outline" size={15} color={COLORS.danger} />
+                        </TouchableOpacity>
+                      </View>
+                    </Pressable>
+                  ))
+                )}
+              </ScrollView>
+
+              <TouchableOpacity
+                style={[styles.secondaryButton, { alignSelf: 'flex-end' }]}
+                onPress={() => {
+                  setSubjectForm({ id: null, name: '' });
+                  setSubjectsModal(false);
+                }}
+              >
+                <Text style={styles.secondaryButtonText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        {/* REGISTER / EDIT STUDENT MODAL */}
+        <Modal visible={studentModal} transparent animationType="slide" onRequestClose={() => setStudentModal(false)}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalBackdrop}
+          >
+            <View style={styles.modalCard}>
+              <Text style={styles.sectionTitle}>
+                {studentForm.id ? 'EDIT STUDENT DETAILS' : 'REGISTER NEW STUDENT'}
+              </Text>
+              <ScrollView style={{ maxHeight: 380 }}>
+                <Text style={styles.inputLabel}>Full Name *</Text>
+                <TextInput
+                  style={styles.input}
+                  value={studentForm.name}
+                  onChangeText={(t) => setStudentForm({ ...studentForm, name: t })}
+                  placeholder="Student Full Name"
+                />
+
+                <Text style={styles.inputLabel}>Select Subject / Instrument *</Text>
+                <View style={styles.chipRow}>
+                  {activeSubjects.map((s) => (
+                    <TouchableOpacity
+                      key={s.id}
+                      style={[
+                        styles.choiceChip,
+                        studentForm.subjectId === s.id && styles.choiceChipSelected,
+                      ]}
+                      onPress={() => setStudentForm({ ...studentForm, subjectId: s.id })}
+                    >
+                      <Text
+                        style={[
+                          styles.choiceChipText,
+                          studentForm.subjectId === s.id && styles.choiceChipTextSelected,
+                        ]}
+                      >
+                        {s.name}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <Text style={styles.inputLabel}>Phone / WhatsApp</Text>
+                <TextInput
+                  style={styles.input}
+                  value={studentForm.phone}
+                  onChangeText={(t) => setStudentForm({ ...studentForm, phone: t })}
+                  keyboardType="phone-pad"
+                  placeholder="+91 98765 43210"
+                />
+
+                <Text style={styles.inputLabel}>Parent / Guardian Name</Text>
+                <TextInput
+                  style={styles.input}
+                  value={studentForm.guardian}
+                  onChangeText={(t) => setStudentForm({ ...studentForm, guardian: t })}
+                  placeholder="Optional"
+                />
+
+                <Text style={styles.inputLabel}>Enrollment Date (YYYY-MM-DD)</Text>
+                <QuickDateRow
+                  currentDate={studentForm.joinedDate}
+                  onSelectDate={(d) => setStudentForm({ ...studentForm, joinedDate: d })}
+                />
+                <TextInput
+                  style={styles.input}
+                  value={studentForm.joinedDate}
+                  onChangeText={(t) => setStudentForm({ ...studentForm, joinedDate: t })}
+                />
+              </ScrollView>
+
+              <View style={styles.modalBtnRow}>
+                <TouchableOpacity
+                  style={styles.secondaryButton}
+                  onPress={() => setStudentModal(false)}
+                >
+                  <Text style={styles.secondaryButtonText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.primaryNavyButton} onPress={handleSaveStudent}>
+                  <Text style={styles.primaryNavyButtonText}>Save Student</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        {/* EDIT LESSON MODAL */}
+        <Modal visible={lessonEditModal} transparent animationType="slide" onRequestClose={() => setLessonEditModal(false)}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalBackdrop}
+          >
+            <View style={styles.modalCard}>
+              <Text style={styles.sectionTitle}>EDIT LESSON RECORD</Text>
+              <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+              <QuickDateRow
+                currentDate={lessonEditForm.date}
+                onSelectDate={(d) => setLessonEditForm({ ...lessonEditForm, date: d })}
+              />
+              <TextInput
+                style={styles.input}
+                value={lessonEditForm.date}
+                onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, date: t })}
+              />
+              <Text style={styles.inputLabel}>Technique</Text>
+              <TextInput
+                style={styles.input}
+                value={lessonEditForm.technique}
+                onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, technique: t })}
+              />
+              <Text style={styles.inputLabel}>Repertoire</Text>
+              <TextInput
+                style={styles.input}
+                value={lessonEditForm.repertoire}
+                onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, repertoire: t })}
+              />
+              <Text style={styles.inputLabel}>Assignment</Text>
+              <TextInput
+                style={styles.input}
+                value={lessonEditForm.assignment}
+                onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, assignment: t })}
+              />
+              <View style={styles.modalBtnRow}>
+                <TouchableOpacity
+                  style={styles.secondaryButton}
+                  onPress={() => setLessonEditModal(false)}
+                >
+                  <Text style={styles.secondaryButtonText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.primaryNavyButton}
+                  onPress={handleSaveEditedLesson}
+                >
+                  <Text style={styles.primaryNavyButtonText}>Update Lesson</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        {/* MARK / EDIT ATTENDANCE MODAL */}
+        <Modal visible={attendanceModal} transparent animationType="slide" onRequestClose={() => setAttendanceModal(false)}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalBackdrop}
+          >
+            <View style={styles.modalCard}>
+              <Text style={styles.sectionTitle}>
+                {attendanceModalForm.id ? 'EDIT ATTENDANCE' : 'MARK GLOBAL ATTENDANCE'}
+              </Text>
+              <ScrollView style={{ maxHeight: 360 }}>
+                <Text style={styles.inputLabel}>Select Student *</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={{ marginBottom: 8 }}
+                >
+                  <View style={{ flexDirection: 'row', gap: 6 }}>
+                    {activeStudents.map((st) => (
+                      <TouchableOpacity
+                        key={st.id}
+                        style={[
+                          styles.choiceChip,
+                          attendanceModalForm.studentId === st.id && styles.choiceChipSelected,
+                        ]}
+                        onPress={() =>
+                          setAttendanceModalForm({ ...attendanceModalForm, studentId: st.id })
+                        }
+                      >
+                        <Text
+                          style={[
+                            styles.choiceChipText,
+                            attendanceModalForm.studentId === st.id &&
+                              styles.choiceChipTextSelected,
+                          ]}
+                        >
+                          {st.name}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </ScrollView>
+
+                <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+                <QuickDateRow
+                  currentDate={attendanceModalForm.date}
+                  onSelectDate={(d) =>
+                    setAttendanceModalForm({ ...attendanceModalForm, date: d })
+                  }
+                />
+                <TextInput
+                  style={styles.input}
+                  value={attendanceModalForm.date}
+                  onChangeText={(t) =>
+                    setAttendanceModalForm({ ...attendanceModalForm, date: t })
+                  }
+                />
+
+                <Text style={styles.inputLabel}>Attendance Status</Text>
+                <View style={styles.chipRow}>
+                  {ATTENDANCE_STATUSES.map((st) => (
+                    <TouchableOpacity
+                      key={st}
+                      style={[
+                        styles.choiceChip,
+                        attendanceModalForm.status === st && styles.choiceChipSelected,
+                      ]}
+                      onPress={() =>
+                        setAttendanceModalForm({ ...attendanceModalForm, status: st })
+                      }
+                    >
+                      <Text
+                        style={[
+                          styles.choiceChipText,
+                          attendanceModalForm.status === st && styles.choiceChipTextSelected,
+                        ]}
+                      >
+                        {st}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <Text style={styles.inputLabel}>Remarks</Text>
+                <TextInput
+                  style={styles.input}
+                  value={attendanceModalForm.remarks}
+                  onChangeText={(t) =>
+                    setAttendanceModalForm({ ...attendanceModalForm, remarks: t })
+                  }
+                  placeholder="Optional remarks"
+                />
+              </ScrollView>
+
+              <View style={styles.modalBtnRow}>
+                <TouchableOpacity
+                  style={styles.secondaryButton}
+                  onPress={() => setAttendanceModal(false)}
+                >
+                  <Text style={styles.secondaryButtonText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.primaryNavyButton}
+                  onPress={handleSaveModalAttendance}
+                >
+                  <Text style={styles.primaryNavyButtonText}>Save</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        {/* RECORD / EDIT FEE MODAL */}
+        <Modal visible={feeModal} transparent animationType="slide" onRequestClose={() => setFeeModal(false)}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalBackdrop}
+          >
+            <View style={styles.modalCard}>
+              <Text style={styles.sectionTitle}>
+                {feeForm.id ? 'EDIT FEE TRANSACTION' : 'RECORD FEE'}
+              </Text>
+              <ScrollView style={{ maxHeight: 420 }}>
+                <Text style={styles.inputLabel}>Select Student *</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={{ marginBottom: 8 }}
+                >
+                  <View style={{ flexDirection: 'row', gap: 6 }}>
+                    {activeStudents.map((st) => (
+                      <TouchableOpacity
+                        key={st.id}
+                        style={[
+                          styles.choiceChip,
+                          feeForm.studentId === st.id && styles.choiceChipSelected,
+                        ]}
+                        onPress={() => setFeeForm({ ...feeForm, studentId: st.id })}
+                      >
+                        <Text
+                          style={[
+                            styles.choiceChipText,
+                            feeForm.studentId === st.id && styles.choiceChipTextSelected,
+                          ]}
+                        >
+                          {st.name}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </ScrollView>
+
+                <Text style={styles.inputLabel}>Fee Type</Text>
+                <View style={styles.chipRow}>
+                  {FEE_TYPES.map((ft) => (
+                    <TouchableOpacity
+                      key={ft}
+                      style={[
+                        styles.choiceChip,
+                        feeForm.feeType === ft && styles.choiceChipSelected,
+                      ]}
+                      onPress={() => setFeeForm({ ...feeForm, feeType: ft })}
+                    >
+                      <Text
+                        style={[
+                          styles.choiceChipText,
+                          feeForm.feeType === ft && styles.choiceChipTextSelected,
+                        ]}
+                      >
+                        {ft}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                {feeForm.feeType === 'Monthly Fee' && (
+                  <>
+                    <Text style={styles.inputLabel}>Month Paid For * (Required for Monthly Fee)</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={feeForm.monthPaidFor}
+                      onChangeText={(t) => setFeeForm({ ...feeForm, monthPaidFor: t })}
+                      placeholder="e.g., October 2026"
+                    />
+                  </>
+                )}
+
+                <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+                <QuickDateRow
+                  currentDate={feeForm.date}
+                  onSelectDate={(d) => setFeeForm({ ...feeForm, date: d })}
+                />
+                <TextInput
+                  style={styles.input}
+                  value={feeForm.date}
+                  onChangeText={(t) => setFeeForm({ ...feeForm, date: t })}
+                />
+
+                <Text style={styles.inputLabel}>Payment Mode</Text>
+                <View style={styles.chipRow}>
+                  {PAYMENT_MODES.map((m) => (
+                    <TouchableOpacity
+                      key={m}
+                      style={[
+                        styles.choiceChip,
+                        feeForm.mode === m && styles.choiceChipSelected,
+                      ]}
+                      onPress={() => setFeeForm({ ...feeForm, mode: m })}
+                    >
+                      <Text
+                        style={[
+                          styles.choiceChipText,
+                          feeForm.mode === m && styles.choiceChipTextSelected,
+                        ]}
+                      >
+                        {m}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <Text style={styles.inputLabel}>Fee Status</Text>
+                <View style={styles.chipRow}>
+                  {FEE_STATUSES.map((st) => (
+                    <TouchableOpacity
+                      key={st}
+                      style={[
+                        styles.choiceChip,
+                        feeForm.status === st && styles.choiceChipSelected,
+                      ]}
+                      onPress={() => {
+                        if (st === 'Unpaid') {
+                          setFeeForm({ ...feeForm, status: st, amountPaid: '0' });
+                        } else if (st === 'Paid') {
+                          setFeeForm({ ...feeForm, status: st, balanceDue: '0' });
+                        } else {
+                          setFeeForm({ ...feeForm, status: st });
+                        }
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.choiceChipText,
+                          feeForm.status === st && styles.choiceChipTextSelected,
+                        ]}
+                      >
+                        {st}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <Text style={styles.inputLabel}>
+                  Amount Paid (₹) {feeForm.status === 'Unpaid' ? '(Auto-locked to 0)' : '*'}
+                </Text>
+                <TextInput
+                  style={[
+                    styles.input,
+                    feeForm.status === 'Unpaid' && {
+                      backgroundColor: '#E5E5E5',
+                      color: COLORS.silver,
+                    },
+                  ]}
+                  editable={feeForm.status !== 'Unpaid'}
+                  keyboardType="numeric"
+                  value={feeForm.status === 'Unpaid' ? '0' : feeForm.amountPaid}
+                  onChangeText={(t) => setFeeForm({ ...feeForm, amountPaid: sanitizeCurrency(t) })}
+                  placeholder="0"
+                />
+
+                <Text style={styles.inputLabel}>
+                  Balance Due (₹) {feeForm.status === 'Paid' ? '(Auto-locked to 0)' : '*'}
+                </Text>
+                <TextInput
+                  style={[
+                    styles.input,
+                    feeForm.status === 'Paid' && {
+                      backgroundColor: '#E5E5E5',
+                      color: COLORS.silver,
+                    },
+                  ]}
+                  editable={feeForm.status !== 'Paid'}
+                  keyboardType="numeric"
+                  value={feeForm.status === 'Paid' ? '0' : feeForm.balanceDue}
+                  onChangeText={(t) => setFeeForm({ ...feeForm, balanceDue: sanitizeCurrency(t) })}
+                  placeholder="0"
+                />
+
+                <Text style={styles.inputLabel}>Remarks</Text>
+                <TextInput
+                  style={styles.input}
+                  value={feeForm.remarks}
+                  onChangeText={(t) => setFeeForm({ ...feeForm, remarks: t })}
+                  placeholder="Optional receipt notes"
+                />
+              </ScrollView>
+
+              <View style={[styles.modalBtnRow, { flexWrap: 'wrap', gap: 8 }]}>
+                <TouchableOpacity
+                  style={styles.secondaryButton}
+                  onPress={() => setFeeModal(false)}
+                >
+                  <Text style={styles.secondaryButtonText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.primaryNavyButton}
+                  onPress={() => handleSaveFee(false)}
+                >
+                  <Text style={styles.primaryNavyButtonText}>Save</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.goldAccentButton}
+                  onPress={() => handleSaveFee(true)}
+                >
+                  <Text style={styles.goldAccentButtonText}>Save & Share Receipt</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
