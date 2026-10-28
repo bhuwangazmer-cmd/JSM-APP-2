@@ -10,6 +10,7 @@ import {
   Modal,
   Alert,
   Animated,
+  Easing,
   LayoutAnimation,
   Platform,
   UIManager,
@@ -17,6 +18,8 @@ import {
   SafeAreaView,
   Switch,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Linking,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Updates from 'expo-updates';
@@ -63,14 +66,21 @@ const db = getFirestore(app);
 // ==========================================
 const COLORS = {
   navy: '#0C2D57',
+  navyLight: '#163E73',
   gold: '#D4B978',
+  goldLight: 'rgba(212, 185, 120, 0.18)',
   cream: '#EFE7D3',
   silver: '#8E9399',
   ivory: '#FAF8F5',
   white: '#FFFFFF',
   danger: '#9E2A2B',
+  dangerBg: '#FDE8E8',
   success: '#2D6A4F',
+  successBg: '#E6F4EA',
+  warning: '#B45309',
+  warningBg: '#FEF3C7',
   charcoal: '#1D242B',
+  border: '#E6E1D6',
 };
 
 const MONTHS_SHORT = [
@@ -88,14 +98,30 @@ const PAYMENT_MODES = ['UPI', 'Cash', 'Bank Transfer', 'Card'];
 const FEE_STATUSES = ['Paid', 'Partial', 'Unpaid'];
 
 // ==========================================
-// 3. LOCAL TIMEZONE DATE UTILITIES (NO UTC)
+// 3. LOCAL TIMEZONE DATE & STRING UTILITIES
 // ==========================================
-const getTodayISO = () => {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
+const getOffsetDateISO = (daysOffset = 0) => {
+  const d = new Date();
+  d.setDate(d.getDate() + daysOffset);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+};
+
+const getTodayISO = () => getOffsetDateISO(0);
+const getYesterdayISO = () => getOffsetDateISO(-1);
+
+const normalizeISODate = (rawStr) => {
+  if (!rawStr || typeof rawStr !== 'string') return null;
+  const trimmed = rawStr.trim();
+  const match = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (!match) return null;
+  const year = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10);
+  const day = parseInt(match[3], 10);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 };
 
 const getLocalCurrentMonthLabel = () => {
@@ -112,7 +138,8 @@ const getGreetingByLocalTime = () => {
 
 const formatReadableLocalDate = (isoDateStr) => {
   if (!isoDateStr || typeof isoDateStr !== 'string') return '';
-  const parts = isoDateStr.split('-');
+  const normalized = normalizeISODate(isoDateStr) || isoDateStr;
+  const parts = normalized.split('-');
   if (parts.length !== 3) return isoDateStr;
   const year = parseInt(parts[0], 10);
   const monthIndex = parseInt(parts[1], 10) - 1;
@@ -122,8 +149,9 @@ const formatReadableLocalDate = (isoDateStr) => {
 };
 
 const getMonthYearFromISO = (isoDateStr) => {
-  if (!isoDateStr || typeof isoDateStr !== 'string') return 'Unknown Month';
-  const parts = isoDateStr.split('-');
+  const normalized = normalizeISODate(isoDateStr) || isoDateStr;
+  if (!normalized || typeof normalized !== 'string') return 'Unknown Month';
+  const parts = normalized.split('-');
   if (parts.length < 2) return 'Unknown Month';
   const year = parseInt(parts[0], 10);
   const monthIdx = parseInt(parts[1], 10) - 1;
@@ -132,16 +160,18 @@ const getMonthYearFromISO = (isoDateStr) => {
 };
 
 const isWithinLastTwoLocalMonths = (isoDateStr) => {
-  if (!isoDateStr) return false;
-  const parts = isoDateStr.split('-');
+  const normalized = normalizeISODate(isoDateStr) || isoDateStr;
+  if (!normalized) return false;
+  const parts = normalized.split('-');
   if (parts.length < 2) return false;
   const recordYear = parseInt(parts[0], 10);
   const recordMonth = parseInt(parts[1], 10) - 1;
+  if (isNaN(recordYear) || isNaN(recordMonth)) return false;
   const now = new Date();
   const currentTotalMonths = now.getFullYear() * 12 + now.getMonth();
   const recordTotalMonths = recordYear * 12 + recordMonth;
   const diff = currentTotalMonths - recordTotalMonths;
-  return diff >= 0 && diff <= 1;
+  return diff >= -1 && diff <= 1;
 };
 
 const getDaysRemainingInTrash = (deletedAtMs) => {
@@ -151,25 +181,40 @@ const getDaysRemainingInTrash = (deletedAtMs) => {
   return Math.max(0, 30 - elapsedDays);
 };
 
+const escapeHtml = (unsafe) => {
+  return String(unsafe ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+};
+
+const sanitizeCurrency = (val) => {
+  return String(val ?? '').replace(/[^0-9.]/g, '');
+};
+
 // ==========================================
 // 4. ANIMATED ENTRANCE SCREEN WRAPPER
 // ==========================================
 const AnimatedScreen = ({ children, triggerKey }) => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(18)).current;
+  const slideAnim = useRef(new Animated.Value(14)).current;
 
   useEffect(() => {
     fadeAnim.setValue(0);
-    slideAnim.setValue(18);
+    slideAnim.setValue(14);
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
-        duration: 280,
+        duration: 240,
+        easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
       Animated.timing(slideAnim, {
         toValue: 0,
-        duration: 280,
+        duration: 240,
+        easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
     ]).start();
@@ -188,6 +233,31 @@ const AnimatedScreen = ({ children, triggerKey }) => {
   );
 };
 
+const QuickDateRow = ({ currentDate, onSelectDate }) => {
+  const today = getTodayISO();
+  const yesterday = getYesterdayISO();
+  return (
+    <View style={styles.quickDateRow}>
+      <TouchableOpacity
+        style={[styles.quickDateChip, currentDate === today && styles.quickDateChipActive]}
+        onPress={() => onSelectDate(today)}
+      >
+        <Text style={[styles.quickDateChipText, currentDate === today && styles.quickDateChipTextActive]}>
+          Today ({today})
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.quickDateChip, currentDate === yesterday && styles.quickDateChipActive]}
+        onPress={() => onSelectDate(yesterday)}
+      >
+        <Text style={[styles.quickDateChipText, currentDate === yesterday && styles.quickDateChipTextActive]}>
+          Yesterday
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+};
+
 // ==========================================
 // 5. MAIN APPLICATION COMPONENT
 // ==========================================
@@ -195,8 +265,35 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('Home');
   const [selectedStudentId, setSelectedStudentId] = useState(null);
   const [profileTab, setProfileTab] = useState('Classes');
-  const [drawerOpen, setDrawerOpen] = useState(false);
 
+  // Animated Drawer State
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerSlideAnim = useRef(new Animated.Value(-290)).current;
+
+  const openDrawer = () => {
+    setDrawerOpen(true);
+    drawerSlideAnim.setValue(-290);
+    Animated.timing(drawerSlideAnim, {
+      toValue: 0,
+      duration: 250,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const closeDrawer = (callback) => {
+    Animated.timing(drawerSlideAnim, {
+      toValue: -290,
+      duration: 200,
+      easing: Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    }).start(() => {
+      setDrawerOpen(false);
+      if (typeof callback === 'function') callback();
+    });
+  };
+
+  // Firestore Collections
   const [subjects, setSubjects] = useState([]);
   const [students, setStudents] = useState([]);
   const [lessons, setLessons] = useState([]);
@@ -206,6 +303,11 @@ export default function App() {
   const [noticeText, setNoticeText] = useState('');
   const [noticeUpdatedAt, setNoticeUpdatedAt] = useState('');
 
+  // Search & Directory Filters
+  const [studentSearch, setStudentSearch] = useState('');
+  const [studentFilter, setStudentFilter] = useState('All'); // 'All' | 'Due' | 'Priority'
+
+  // Long-Press Context Menu
   const [contextMenu, setContextMenu] = useState({
     visible: false,
     entityType: null,
@@ -213,6 +315,7 @@ export default function App() {
     title: '',
   });
 
+  // Modals & Forms
   const [noticeReadModal, setNoticeReadModal] = useState(false);
   const [noticeEditModal, setNoticeEditModal] = useState(false);
   const [noticeInput, setNoticeInput] = useState('');
@@ -231,8 +334,16 @@ export default function App() {
     joinedDate: getTodayISO(),
   });
 
+  // Separate Inline Profile Forms vs Modal Edit Forms to prevent ID contamination
+  const [inlineLessonForm, setInlineLessonForm] = useState({
+    date: getTodayISO(),
+    technique: '',
+    repertoire: '',
+    assignment: '',
+  });
+
   const [lessonEditModal, setLessonEditModal] = useState(false);
-  const [lessonForm, setLessonForm] = useState({
+  const [lessonEditForm, setLessonEditForm] = useState({
     id: null,
     studentId: '',
     date: getTodayISO(),
@@ -241,9 +352,15 @@ export default function App() {
     assignment: '',
   });
 
+  const [inlineAttendanceForm, setInlineAttendanceForm] = useState({
+    date: getTodayISO(),
+    status: 'Present',
+    remarks: '',
+  });
+
   const [attendanceModal, setAttendanceModal] = useState(false);
   const [attendanceFilterAllMonths, setAttendanceFilterAllMonths] = useState(false);
-  const [attendanceForm, setAttendanceForm] = useState({
+  const [attendanceModalForm, setAttendanceModalForm] = useState({
     id: null,
     studentId: '',
     date: getTodayISO(),
@@ -267,58 +384,88 @@ export default function App() {
 
   const [noteDraft, setNoteDraft] = useState('');
   const [priorityDraft, setPriorityDraft] = useState(false);
-  const [CheckingOTA, setCheckingOTA] = useState(false);
+  const [checkingOTA, setCheckingOTA] = useState(false);
 
   // ==========================================
   // 6. FIRESTORE LISTENERS & 30-DAY AUTO-PURGE
   // ==========================================
+  const initialLoadDone = useRef(false);
+
   useEffect(() => {
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const timer = setTimeout(() => {
+      initialLoadDone.current = true;
+    }, 1200);
 
     const handleSnapshotWithAutoPurge = (colName, snapshot, setter) => {
       const records = [];
       snapshot.forEach((docSnap) => {
         const data = docSnap.data();
-        if (data.isDeleted && data.deletedAt && Date.now() - Number(data.deletedAt) > THIRTY_DAYS_MS) {
+        if (
+          data.isDeleted &&
+          data.deletedAt &&
+          Date.now() - Number(data.deletedAt) > THIRTY_DAYS_MS
+        ) {
           deleteDoc(doc(db, colName, docSnap.id)).catch(() => {});
         } else {
           records.push({ id: docSnap.id, ...data });
         }
       });
-      triggerLayoutAnimation();
+      if (initialLoadDone.current) {
+        triggerLayoutAnimation();
+      }
       setter(records);
     };
 
-    const unsubSubjects = onSnapshot(collection(db, 'subjects'), (snap) =>
-      handleSnapshotWithAutoPurge('subjects', snap, setSubjects)
+    const unsubSubjects = onSnapshot(
+      collection(db, 'subjects'),
+      (snap) => handleSnapshotWithAutoPurge('subjects', snap, setSubjects),
+      () => {}
     );
-    const unsubStudents = onSnapshot(collection(db, 'students'), (snap) =>
-      handleSnapshotWithAutoPurge('students', snap, setStudents)
+    const unsubStudents = onSnapshot(
+      collection(db, 'students'),
+      (snap) => handleSnapshotWithAutoPurge('students', snap, setStudents),
+      () => {}
     );
-    const unsubLessons = onSnapshot(collection(db, 'lessons'), (snap) =>
-      handleSnapshotWithAutoPurge('lessons', snap, setLessons)
+    const unsubLessons = onSnapshot(
+      collection(db, 'lessons'),
+      (snap) => handleSnapshotWithAutoPurge('lessons', snap, setLessons),
+      () => {}
     );
-    const unsubAttendance = onSnapshot(collection(db, 'attendance'), (snap) =>
-      handleSnapshotWithAutoPurge('attendance', snap, setAttendance)
+    const unsubAttendance = onSnapshot(
+      collection(db, 'attendance'),
+      (snap) => handleSnapshotWithAutoPurge('attendance', snap, setAttendance),
+      () => {}
     );
-    const unsubFees = onSnapshot(collection(db, 'fees'), (snap) =>
-      handleSnapshotWithAutoPurge('fees', snap, setFees)
+    const unsubFees = onSnapshot(
+      collection(db, 'fees'),
+      (snap) => handleSnapshotWithAutoPurge('fees', snap, setFees),
+      () => {}
     );
-    const unsubActivities = onSnapshot(collection(db, 'activities'), (snap) => {
-      const list = [];
-      snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
-      list.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-      setActivities(list);
-    });
-    const unsubNotice = onSnapshot(doc(db, 'settings', 'noticeBoard'), (docSnap) => {
-      if (docSnap.exists()) {
-        const d = docSnap.data();
-        setNoticeText(d.text || '');
-        setNoticeUpdatedAt(d.updatedDate || '');
-      }
-    });
+    const unsubActivities = onSnapshot(
+      collection(db, 'activities'),
+      (snap) => {
+        const list = [];
+        snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
+        list.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        setActivities(list);
+      },
+      () => {}
+    );
+    const unsubNotice = onSnapshot(
+      doc(db, 'settings', 'noticeBoard'),
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const d = docSnap.data();
+          setNoticeText(d.text || '');
+          setNoticeUpdatedAt(d.updatedDate || '');
+        }
+      },
+      () => {}
+    );
 
     return () => {
+      clearTimeout(timer);
       unsubSubjects();
       unsubStudents();
       unsubLessons();
@@ -372,44 +519,67 @@ export default function App() {
   }, [students]);
 
   const activeLessons = useMemo(
-    () => lessons.filter((l) => !l.isDeleted).sort((a, b) => (b.date || '').localeCompare(a.date || '')),
+    () =>
+      lessons
+        .filter((l) => !l.isDeleted)
+        .sort((a, b) => (b.date || '').localeCompare(a.date || '')),
     [lessons]
   );
 
   const activeAttendance = useMemo(
-    () => attendance.filter((a) => !a.isDeleted).sort((a, b) => (b.date || '').localeCompare(a.date || '')),
+    () =>
+      attendance
+        .filter((a) => !a.isDeleted)
+        .sort((a, b) => (b.date || '').localeCompare(a.date || '')),
     [attendance]
   );
 
   const activeFees = useMemo(
-    () => fees.filter((f) => !f.isDeleted).sort((a, b) => (b.date || '').localeCompare(a.date || '')),
+    () =>
+      fees
+        .filter((f) => !f.isDeleted)
+        .sort((a, b) => (b.date || '').localeCompare(a.date || '')),
     [fees]
   );
 
+  const globalFeeTotals = useMemo(() => {
+    let collected = 0;
+    let pending = 0;
+    activeFees.forEach((f) => {
+      collected += Number(f.amountPaid || 0);
+      pending += Number(f.balanceDue || 0);
+    });
+    return { collected, pending };
+  }, [activeFees]);
+
   const trashItems = useMemo(() => {
     const allDeleted = [
-      ...subjects.filter((x) => x.isDeleted).map((x) => ({ ...x, _col: 'subjects', _label: `Subject: ${x.name}` })),
-      ...students.filter((x) => x.isDeleted).map((x) => ({ ...x, _col: 'students', _label: `Student: ${x.name}` })),
+      ...subjects
+        .filter((x) => x.isDeleted)
+        .map((x) => ({ ...x, _col: 'subjects', _label: `Subject: ${x.name}` })),
+      ...students
+        .filter((x) => x.isDeleted)
+        .map((x) => ({ ...x, _col: 'students', _label: `Student: ${x.name}` })),
       ...lessons
         .filter((x) => x.isDeleted)
         .map((x) => ({
           ...x,
           _col: 'lessons',
-          _label: `Lesson: ${studentMap[x.studentId]?.name || 'Student'} (${x.date})`,
+          _label: `Lesson: ${studentMap[x.studentId]?.name || 'Student'} (${formatReadableLocalDate(x.date)})`,
         })),
       ...attendance
         .filter((x) => x.isDeleted)
         .map((x) => ({
           ...x,
           _col: 'attendance',
-          _label: `Attendance: ${studentMap[x.studentId]?.name || 'Student'} - ${x.status} (${x.date})`,
+          _label: `Attendance: ${studentMap[x.studentId]?.name || 'Student'} - ${x.status} (${formatReadableLocalDate(x.date)})`,
         })),
       ...fees
         .filter((x) => x.isDeleted)
         .map((x) => ({
           ...x,
           _col: 'fees',
-          _label: `Fee: ${studentMap[x.studentId]?.name || 'Student'} - ₹${x.amountPaid} (${x.date})`,
+          _label: `Fee: ${studentMap[x.studentId]?.name || 'Student'} - ₹${x.amountPaid} (${formatReadableLocalDate(x.date)})`,
         })),
     ];
     return allDeleted.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
@@ -445,9 +615,16 @@ export default function App() {
       }
 
       let feeStatus = 'No Records';
+      let totalDue = 0;
       if (stFees.length > 0) {
+        stFees.forEach((f) => {
+          totalDue += Number(f.balanceDue || 0);
+        });
         const hasUnpaidOrBalance = stFees.some(
-          (f) => f.status === 'Unpaid' || Number(f.balanceDue || 0) > 0
+          (f) =>
+            f.status === 'Unpaid' ||
+            f.status === 'Partial' ||
+            Number(f.balanceDue || 0) > 0
         );
         feeStatus = hasUnpaidOrBalance ? 'Due / Unpaid' : 'Paid';
       }
@@ -456,6 +633,7 @@ export default function App() {
         classesTaken: stLessons.length,
         attendancePct,
         feeStatus,
+        totalDue,
         stLessons,
         stAttendance,
         stFees,
@@ -465,7 +643,7 @@ export default function App() {
   );
 
   // ==========================================
-  // 9. OTA UPDATES & PDF RECEIPT GENERATOR
+  // 9. OTA UPDATES, CALL/WHATSAPP & PDF RECEIPT
   // ==========================================
   const handleCheckOTA = async () => {
     try {
@@ -486,10 +664,33 @@ export default function App() {
     }
   };
 
+  const handlePhoneCall = (phoneStr) => {
+    const cleaned = String(phoneStr || '').replace(/[^\d+]/g, '');
+    if (!cleaned) return;
+    Linking.openURL(`tel:${cleaned}`).catch(() =>
+      Alert.alert('Action Unavailable', 'Could not open phone dialer.')
+    );
+  };
+
+  const handleOpenWhatsApp = (phoneStr, studentName) => {
+    const digits = String(phoneStr || '').replace(/[^\d]/g, '');
+    if (!digits) return;
+    const formatted = digits.length === 10 ? `91${digits}` : digits;
+    const text = encodeURIComponent(`Hello from JSM APP regarding ${studentName || 'your music classes'}.`);
+    Linking.openURL(`https://wa.me/${formatted}?text=${text}`).catch(() =>
+      Alert.alert('WhatsApp Unavailable', 'Could not open WhatsApp.')
+    );
+  };
+
   const generateAndShareReceiptPDF = async (feeRecord) => {
     const st = studentMap[feeRecord.studentId];
-    const studentName = st?.name || 'JSM Student';
-    const subjectName = subjectMap[st?.subjectId]?.name || 'Music Studies';
+    const studentName = escapeHtml(st?.name || 'JSM Student');
+    const subjectName = escapeHtml(subjectMap[st?.subjectId]?.name || 'Music Studies');
+    const feeType = escapeHtml(feeRecord.feeType || 'Tuition Fee');
+    const monthPaidFor = escapeHtml(feeRecord.monthPaidFor || '-');
+    const paymentMode = escapeHtml(feeRecord.mode || 'UPI');
+    const status = escapeHtml(feeRecord.status || 'Paid');
+    const remarks = escapeHtml(feeRecord.remarks || '');
 
     const html = `
       <!DOCTYPE html>
@@ -500,7 +701,7 @@ export default function App() {
             body { font-family: 'Georgia', serif; background: #FAF8F5; padding: 32px; color: #0C2D57; }
             .card { background: #0C2D57; color: #FAF8F5; border: 3px solid #D4B978; border-radius: 14px; padding: 32px; }
             .crest { color: #D4B978; text-align: center; letter-spacing: 3px; font-size: 12px; font-weight: bold; }
-            .title { text-align: center; font-size: 26px; margin: 8px 0 4px; color: #FFFFFF; }
+            .title { text-align: center; font-size: 26px; margin: 8px 0 4px; color: #FFFFFF; letter-spacing: 1px; }
             .subtitle { text-align: center; color: #EFE7D3; font-size: 13px; margin-bottom: 24px; }
             .divider { height: 1px; background: #D4B978; margin: 20px 0; opacity: 0.5; }
             .row { display: flex; justify-content: space-between; margin: 12px 0; font-size: 15px; }
@@ -514,26 +715,26 @@ export default function App() {
           <div class="card">
             <div class="crest">★ EST. 2022 ★</div>
             <div class="title">JSM APP</div>
-            <div class="subtitle">OFFICIAL TUITION & FEE RECEIPT</div>
+            <div class="subtitle">OFFICIAL TUITION &amp; FEE RECEIPT</div>
             <div class="divider"></div>
             <div class="row"><span class="label">Student Name:</span><span class="val">${studentName}</span></div>
             <div class="row"><span class="label">Instrument / Subject:</span><span class="val">${subjectName}</span></div>
             <div class="row"><span class="label">Date of Transaction:</span><span class="val">${formatReadableLocalDate(feeRecord.date)}</span></div>
-            <div class="row"><span class="label">Fee Category:</span><span class="val">${feeRecord.feeType}</span></div>
+            <div class="row"><span class="label">Fee Category:</span><span class="val">${feeType}</span></div>
             ${
               feeRecord.feeType === 'Monthly Fee'
-                ? `<div class="row"><span class="label">Month Paid For:</span><span class="val">${feeRecord.monthPaidFor || '-'}</span></div>`
+                ? `<div class="row"><span class="label">Month Paid For:</span><span class="val">${monthPaidFor}</span></div>`
                 : ''
             }
-            <div class="row"><span class="label">Payment Mode:</span><span class="val">${feeRecord.mode}</span></div>
-            <div class="row"><span class="label">Payment Status:</span><span class="val">${feeRecord.status}</span></div>
+            <div class="row"><span class="label">Payment Mode:</span><span class="val">${paymentMode}</span></div>
+            <div class="row"><span class="label">Payment Status:</span><span class="val">${status}</span></div>
             <div class="total-box">
               <div class="row"><span class="label">Amount Paid:</span><span class="val">₹${Number(feeRecord.amountPaid || 0).toFixed(2)}</span></div>
               <div class="row"><span class="label">Balance Due:</span><span class="val">₹${Number(feeRecord.balanceDue || 0).toFixed(2)}</span></div>
             </div>
             ${
-              feeRecord.remarks
-                ? `<div class="row" style="margin-top:16px;"><span class="label">Remarks:</span><span class="val">${feeRecord.remarks}</span></div>`
+              remarks
+                ? `<div class="row" style="margin-top:16px;"><span class="label">Remarks:</span><span class="val">${remarks}</span></div>`
                 : ''
             }
             <div class="footer">Generated by JSM Administration • Est. 2022</div>
@@ -548,7 +749,7 @@ export default function App() {
       if (canShare) {
         await Sharing.shareAsync(uri, {
           mimeType: 'application/pdf',
-          dialogTitle: `Share Receipt via WhatsApp - ${studentName}`,
+          dialogTitle: `Share Receipt - ${st?.name || 'Student'}`,
           UTI: 'com.adobe.pdf',
         });
       } else {
@@ -582,12 +783,37 @@ export default function App() {
         isDeleted: true,
         deletedAt: Date.now(),
       });
-      await logActivity(`Moved to Trash`, label);
+      await logActivity('Moved to Trash', label);
       if (collectionName === 'students' && selectedStudentId === item.id) {
         setSelectedStudentId(null);
       }
     } catch (e) {
       Alert.alert('Error', 'Unable to move item to Trash.');
+    }
+  };
+
+  const handleMoveSubjectOrder = async (subjectItem, direction) => {
+    try {
+      const idx = activeSubjects.findIndex((s) => s.id === subjectItem.id);
+      const targetIdx = direction === 'moveUp' ? idx - 1 : idx + 1;
+      if (targetIdx < 0 || targetIdx >= activeSubjects.length) return;
+
+      const reordered = [...activeSubjects];
+      const [moved] = reordered.splice(idx, 1);
+      reordered.splice(targetIdx, 0, moved);
+
+      triggerLayoutAnimation();
+      const batch = writeBatch(db);
+      reordered.forEach((subj, index) => {
+        batch.update(doc(db, 'subjects', subj.id), { order: index });
+      });
+      await batch.commit();
+      await logActivity(
+        'Reordered Subject',
+        `${subjectItem.name} moved ${direction === 'moveUp' ? 'up' : 'down'}`
+      );
+    } catch (e) {
+      Alert.alert('Error', 'Could not reorder subject.');
     }
   };
 
@@ -610,21 +836,7 @@ export default function App() {
 
     if (action === 'moveUp' || action === 'moveDown') {
       if (entityType !== 'subject') return;
-      const idx = activeSubjects.findIndex((s) => s.id === item.id);
-      const targetIdx = action === 'moveUp' ? idx - 1 : idx + 1;
-      if (targetIdx < 0 || targetIdx >= activeSubjects.length) return;
-
-      const reordered = [...activeSubjects];
-      const [moved] = reordered.splice(idx, 1);
-      reordered.splice(targetIdx, 0, moved);
-
-      triggerLayoutAnimation();
-      const batch = writeBatch(db);
-      reordered.forEach((subj, index) => {
-        batch.update(doc(db, 'subjects', subj.id), { order: index });
-      });
-      await batch.commit();
-      await logActivity('Reordered Subject', `${item.name} moved ${action === 'moveUp' ? 'up' : 'down'}`);
+      await handleMoveSubjectOrder(item, action);
       return;
     }
 
@@ -643,7 +855,7 @@ export default function App() {
         });
         setStudentModal(true);
       } else if (entityType === 'lesson') {
-        setLessonForm({
+        setLessonEditForm({
           id: item.id,
           studentId: item.studentId,
           date: item.date || getTodayISO(),
@@ -653,7 +865,7 @@ export default function App() {
         });
         setLessonEditModal(true);
       } else if (entityType === 'attendance') {
-        setAttendanceForm({
+        setAttendanceModalForm({
           id: item.id,
           studentId: item.studentId,
           date: item.date || getTodayISO(),
@@ -685,20 +897,24 @@ export default function App() {
       Alert.alert('Validation', 'Please enter a subject/instrument name.');
       return;
     }
-    triggerLayoutAnimation();
-    if (subjectForm.id) {
-      await updateDoc(doc(db, 'subjects', subjectForm.id), { name: trimmed });
-      await logActivity('Updated Subject', trimmed);
-    } else {
-      await addDoc(collection(db, 'subjects'), {
-        name: trimmed,
-        order: activeSubjects.length,
-        isDeleted: false,
-        deletedAt: null,
-      });
-      await logActivity('Added Subject', trimmed);
+    try {
+      triggerLayoutAnimation();
+      if (subjectForm.id) {
+        await updateDoc(doc(db, 'subjects', subjectForm.id), { name: trimmed });
+        await logActivity('Updated Subject', trimmed);
+      } else {
+        await addDoc(collection(db, 'subjects'), {
+          name: trimmed,
+          order: activeSubjects.length,
+          isDeleted: false,
+          deletedAt: null,
+        });
+        await logActivity('Added Subject', trimmed);
+      }
+      setSubjectForm({ id: null, name: '' });
+    } catch (e) {
+      Alert.alert('Error', 'Could not save subject.');
     }
-    setSubjectForm({ id: null, name: '' });
   };
 
   const handleSaveStudent = async () => {
@@ -706,129 +922,216 @@ export default function App() {
       Alert.alert('Validation', 'Student Name and Subject are required.');
       return;
     }
-    triggerLayoutAnimation();
-    const payload = {
-      name: studentForm.name.trim(),
-      subjectId: studentForm.subjectId,
-      phone: studentForm.phone.trim(),
-      guardian: studentForm.guardian.trim(),
-      joinedDate: studentForm.joinedDate || getTodayISO(),
-    };
+    const validDate = normalizeISODate(studentForm.joinedDate) || getTodayISO();
+    try {
+      triggerLayoutAnimation();
+      const payload = {
+        name: studentForm.name.trim(),
+        subjectId: studentForm.subjectId,
+        phone: studentForm.phone.trim(),
+        guardian: studentForm.guardian.trim(),
+        joinedDate: validDate,
+      };
 
-    if (studentForm.id) {
-      await updateDoc(doc(db, 'students', studentForm.id), payload);
-      await logActivity('Updated Student', payload.name);
-    } else {
-      await addDoc(collection(db, 'students'), {
-        ...payload,
-        notes: '',
-        priorityNote: false,
-        isDeleted: false,
-        deletedAt: null,
+      if (studentForm.id) {
+        await updateDoc(doc(db, 'students', studentForm.id), payload);
+        await logActivity('Updated Student', payload.name);
+      } else {
+        await addDoc(collection(db, 'students'), {
+          ...payload,
+          notes: '',
+          priorityNote: false,
+          isDeleted: false,
+          deletedAt: null,
+        });
+        await logActivity(
+          'Enrolled Student',
+          `${payload.name} (${subjectMap[payload.subjectId]?.name || ''})`
+        );
+      }
+      setStudentModal(false);
+      setStudentForm({
+        id: null,
+        name: '',
+        subjectId: activeSubjects[0]?.id || '',
+        phone: '',
+        guardian: '',
+        joinedDate: getTodayISO(),
       });
-      await logActivity('Enrolled Student', `${payload.name} (${subjectMap[payload.subjectId]?.name || ''})`);
+    } catch (e) {
+      Alert.alert('Error', 'Could not save student record.');
     }
-    setStudentModal(false);
-    setStudentForm({
-      id: null,
-      name: '',
-      subjectId: activeSubjects[0]?.id || '',
-      phone: '',
-      guardian: '',
-      joinedDate: getTodayISO(),
-    });
   };
 
-  const handleSaveLesson = async (isFromProfileInline = false) => {
-    const targetStudentId = isFromProfileInline ? selectedStudentId : lessonForm.studentId;
-    if (!targetStudentId || !lessonForm.date.trim()) {
-      Alert.alert('Validation', 'Date and Student are required.');
+  const handleSaveInlineLesson = async () => {
+    if (!selectedStudentId) return;
+    const validDate = normalizeISODate(inlineLessonForm.date);
+    if (!validDate) {
+      Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
       return;
     }
-    if (!lessonForm.technique.trim() && !lessonForm.repertoire.trim() && !lessonForm.assignment.trim()) {
-      Alert.alert('Validation', 'Enter at least one lesson detail (Technique, Repertoire, or Assignment).');
-      return;
-    }
-    triggerLayoutAnimation();
-    const payload = {
-      studentId: targetStudentId,
-      date: lessonForm.date.trim(),
-      technique: lessonForm.technique.trim(),
-      repertoire: lessonForm.repertoire.trim(),
-      assignment: lessonForm.assignment.trim(),
-    };
-
-    if (lessonForm.id) {
-      await updateDoc(doc(db, 'lessons', lessonForm.id), payload);
-      await logActivity('Updated Lesson', `${studentMap[targetStudentId]?.name || 'Student'} (${payload.date})`);
-      setLessonEditModal(false);
-    } else {
-      await addDoc(collection(db, 'lessons'), {
-        ...payload,
-        isDeleted: false,
-        deletedAt: null,
-      });
-      await logActivity('Logged Lesson', `${studentMap[targetStudentId]?.name || 'Student'} (${payload.date})`);
-    }
-    setLessonForm({
-      id: null,
-      studentId: targetStudentId,
-      date: getTodayISO(),
-      technique: '',
-      repertoire: '',
-      assignment: '',
-    });
-  };
-
-  const handleSaveAttendance = async (isFromProfileInline = false) => {
-    const targetStudentId = isFromProfileInline ? selectedStudentId : attendanceForm.studentId;
-    if (!targetStudentId || !attendanceForm.date.trim()) {
-      Alert.alert('Validation', 'Please select a Student and Date.');
-      return;
-    }
-    triggerLayoutAnimation();
-    const payload = {
-      studentId: targetStudentId,
-      date: attendanceForm.date.trim(),
-      status: attendanceForm.status,
-      remarks: attendanceForm.remarks.trim(),
-    };
-
-    if (attendanceForm.id) {
-      await updateDoc(doc(db, 'attendance', attendanceForm.id), payload);
-      await logActivity(
-        'Updated Attendance',
-        `${studentMap[targetStudentId]?.name || 'Student'} • ${payload.status}`
+    if (
+      !inlineLessonForm.technique.trim() &&
+      !inlineLessonForm.repertoire.trim() &&
+      !inlineLessonForm.assignment.trim()
+    ) {
+      Alert.alert(
+        'Validation',
+        'Enter at least one lesson detail (Technique, Repertoire, or Assignment).'
       );
-    } else {
-      await addDoc(collection(db, 'attendance'), {
-        ...payload,
+      return;
+    }
+    try {
+      triggerLayoutAnimation();
+      const payload = {
+        studentId: selectedStudentId,
+        date: validDate,
+        technique: inlineLessonForm.technique.trim(),
+        repertoire: inlineLessonForm.repertoire.trim(),
+        assignment: inlineLessonForm.assignment.trim(),
         isDeleted: false,
         deletedAt: null,
+      };
+      await addDoc(collection(db, 'lessons'), payload);
+      await logActivity(
+        'Logged Lesson',
+        `${studentMap[selectedStudentId]?.name || 'Student'} (${formatReadableLocalDate(validDate)})`
+      );
+      setInlineLessonForm({
+        date: getTodayISO(),
+        technique: '',
+        repertoire: '',
+        assignment: '',
       });
+    } catch (e) {
+      Alert.alert('Error', 'Could not log lesson.');
+    }
+  };
+
+  const handleSaveEditedLesson = async () => {
+    if (!lessonEditForm.id || !lessonEditForm.studentId) return;
+    const validDate = normalizeISODate(lessonEditForm.date);
+    if (!validDate) {
+      Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
+      return;
+    }
+    if (
+      !lessonEditForm.technique.trim() &&
+      !lessonEditForm.repertoire.trim() &&
+      !lessonEditForm.assignment.trim()
+    ) {
+      Alert.alert(
+        'Validation',
+        'Enter at least one lesson detail (Technique, Repertoire, or Assignment).'
+      );
+      return;
+    }
+    try {
+      triggerLayoutAnimation();
+      const payload = {
+        studentId: lessonEditForm.studentId,
+        date: validDate,
+        technique: lessonEditForm.technique.trim(),
+        repertoire: lessonEditForm.repertoire.trim(),
+        assignment: lessonEditForm.assignment.trim(),
+      };
+      await updateDoc(doc(db, 'lessons', lessonEditForm.id), payload);
+      await logActivity(
+        'Updated Lesson',
+        `${studentMap[lessonEditForm.studentId]?.name || 'Student'} (${formatReadableLocalDate(validDate)})`
+      );
+      setLessonEditModal(false);
+    } catch (e) {
+      Alert.alert('Error', 'Could not update lesson.');
+    }
+  };
+
+  const handleSaveInlineAttendance = async () => {
+    if (!selectedStudentId) return;
+    const validDate = normalizeISODate(inlineAttendanceForm.date);
+    if (!validDate) {
+      Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
+      return;
+    }
+    try {
+      triggerLayoutAnimation();
+      const payload = {
+        studentId: selectedStudentId,
+        date: validDate,
+        status: inlineAttendanceForm.status,
+        remarks: inlineAttendanceForm.remarks.trim(),
+        isDeleted: false,
+        deletedAt: null,
+      };
+      await addDoc(collection(db, 'attendance'), payload);
       await logActivity(
         'Marked Attendance',
-        `${studentMap[targetStudentId]?.name || 'Student'} • ${payload.status}`
+        `${studentMap[selectedStudentId]?.name || 'Student'} • ${payload.status}`
       );
+      setInlineAttendanceForm({
+        date: getTodayISO(),
+        status: 'Present',
+        remarks: '',
+      });
+    } catch (e) {
+      Alert.alert('Error', 'Could not save attendance.');
     }
-    setAttendanceModal(false);
-    setAttendanceForm({
-      id: null,
-      studentId: activeStudents[0]?.id || '',
-      date: getTodayISO(),
-      status: 'Present',
-      remarks: '',
-    });
+  };
+
+  const handleSaveModalAttendance = async () => {
+    if (!attendanceModalForm.studentId) {
+      Alert.alert('Validation', 'Please select a Student.');
+      return;
+    }
+    const validDate = normalizeISODate(attendanceModalForm.date);
+    if (!validDate) {
+      Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
+      return;
+    }
+    try {
+      triggerLayoutAnimation();
+      const payload = {
+        studentId: attendanceModalForm.studentId,
+        date: validDate,
+        status: attendanceModalForm.status,
+        remarks: attendanceModalForm.remarks.trim(),
+      };
+
+      if (attendanceModalForm.id) {
+        await updateDoc(doc(db, 'attendance', attendanceModalForm.id), payload);
+        await logActivity(
+          'Updated Attendance',
+          `${studentMap[payload.studentId]?.name || 'Student'} • ${payload.status}`
+        );
+      } else {
+        await addDoc(collection(db, 'attendance'), {
+          ...payload,
+          isDeleted: false,
+          deletedAt: null,
+        });
+        await logActivity(
+          'Marked Attendance',
+          `${studentMap[payload.studentId]?.name || 'Student'} • ${payload.status}`
+        );
+      }
+      setAttendanceModal(false);
+    } catch (e) {
+      Alert.alert('Error', 'Could not save attendance.');
+    }
   };
 
   const handleSaveStudentNotes = async () => {
     if (!selectedStudentId) return;
-    await updateDoc(doc(db, 'students', selectedStudentId), {
-      notes: noteDraft,
-      priorityNote: priorityDraft,
-    });
-    await logActivity('Updated Student Notes', studentMap[selectedStudentId]?.name || '');
-    Alert.alert('Saved', 'Student notes updated.');
+    try {
+      await updateDoc(doc(db, 'students', selectedStudentId), {
+        notes: noteDraft,
+        priorityNote: priorityDraft,
+      });
+      await logActivity('Updated Student Notes', studentMap[selectedStudentId]?.name || '');
+      Alert.alert('Saved', 'Student notes updated.');
+    } catch (e) {
+      Alert.alert('Error', 'Could not update student notes.');
+    }
   };
 
   const handleSaveFee = async (shouldSharePDF = false) => {
@@ -840,80 +1143,109 @@ export default function App() {
       Alert.alert('Validation', '"Month Paid For" is required for Monthly Fees.');
       return;
     }
+    const validDate = normalizeISODate(feeForm.date);
+    if (!validDate) {
+      Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
+      return;
+    }
 
-    const numericPaid = feeForm.status === 'Unpaid' ? 0 : Number(feeForm.amountPaid || 0);
-    const numericBalance = feeForm.status === 'Paid' ? 0 : Number(feeForm.balanceDue || 0);
+    const numericPaid =
+      feeForm.status === 'Unpaid' ? 0 : parseFloat(sanitizeCurrency(feeForm.amountPaid)) || 0;
+    const numericBalance =
+      feeForm.status === 'Paid' ? 0 : parseFloat(sanitizeCurrency(feeForm.balanceDue)) || 0;
 
     if (feeForm.status === 'Unpaid' && numericBalance <= 0) {
-      Alert.alert('Validation', 'Unpaid records require a Balance Due greater than 0.');
+      Alert.alert('Validation', 'Unpaid records require a Balance Due greater than ₹0.');
       return;
     }
     if (feeForm.status === 'Paid' && numericPaid <= 0) {
-      Alert.alert('Validation', 'Paid records require an Amount Paid greater than 0.');
+      Alert.alert('Validation', 'Paid records require an Amount Paid greater than ₹0.');
+      return;
+    }
+    if (feeForm.status === 'Partial' && (numericPaid <= 0 || numericBalance <= 0)) {
+      Alert.alert(
+        'Validation',
+        'Partial payments require both Amount Paid and Balance Due to be greater than ₹0.'
+      );
       return;
     }
 
-    triggerLayoutAnimation();
-    const payload = {
-      studentId: feeForm.studentId,
-      feeType: feeForm.feeType,
-      monthPaidFor: feeForm.feeType === 'Monthly Fee' ? feeForm.monthPaidFor.trim() : '',
-      date: feeForm.date.trim() || getTodayISO(),
-      mode: feeForm.mode,
-      status: feeForm.status,
-      amountPaid: numericPaid,
-      balanceDue: numericBalance,
-      remarks: feeForm.remarks.trim(),
-    };
+    try {
+      triggerLayoutAnimation();
+      const payload = {
+        studentId: feeForm.studentId,
+        feeType: feeForm.feeType,
+        monthPaidFor: feeForm.feeType === 'Monthly Fee' ? feeForm.monthPaidFor.trim() : '',
+        date: validDate,
+        mode: feeForm.mode,
+        status: feeForm.status,
+        amountPaid: numericPaid,
+        balanceDue: numericBalance,
+        remarks: feeForm.remarks.trim(),
+      };
 
-    if (feeForm.id) {
-      await updateDoc(doc(db, 'fees', feeForm.id), payload);
-      await logActivity(
-        'Updated Fee Record',
-        `${studentMap[payload.studentId]?.name || 'Student'} • ₹${numericPaid}`
-      );
-    } else {
-      await addDoc(collection(db, 'fees'), {
-        ...payload,
-        isDeleted: false,
-        deletedAt: null,
-      });
-      await logActivity(
-        'Recorded Fee',
-        `${studentMap[payload.studentId]?.name || 'Student'} • ₹${numericPaid} (${payload.status})`
-      );
-    }
+      if (feeForm.id) {
+        await updateDoc(doc(db, 'fees', feeForm.id), payload);
+        await logActivity(
+          'Updated Fee Record',
+          `${studentMap[payload.studentId]?.name || 'Student'} • ₹${numericPaid}`
+        );
+      } else {
+        await addDoc(collection(db, 'fees'), {
+          ...payload,
+          isDeleted: false,
+          deletedAt: null,
+        });
+        await logActivity(
+          'Recorded Fee',
+          `${studentMap[payload.studentId]?.name || 'Student'} • ₹${numericPaid} (${payload.status})`
+        );
+      }
 
-    setFeeModal(false);
-    if (shouldSharePDF) {
-      await generateAndShareReceiptPDF(payload);
+      setFeeModal(false);
+      if (shouldSharePDF) {
+        await generateAndShareReceiptPDF(payload);
+      }
+    } catch (e) {
+      Alert.alert('Error', 'Could not save fee record.');
     }
   };
 
   const handleUpdateNotice = async () => {
-    const today = getTodayISO();
-    await setDoc(doc(db, 'settings', 'noticeBoard'), {
-      text: noticeInput.trim(),
-      updatedDate: today,
-    });
-    await logActivity('Updated Notice Board', formatReadableLocalDate(today));
-    setNoticeInput('');
-    setNoticeEditModal(false);
+    try {
+      const today = getTodayISO();
+      await setDoc(doc(db, 'settings', 'noticeBoard'), {
+        text: noticeInput.trim(),
+        updatedDate: today,
+      });
+      await logActivity('Updated Notice Board', formatReadableLocalDate(today));
+      setNoticeEditModal(false);
+    } catch (e) {
+      Alert.alert('Error', 'Could not update notice board.');
+    }
   };
 
   const handleRestoreTrashItem = async (item) => {
-    triggerLayoutAnimation();
-    await updateDoc(doc(db, item._col, item.id), {
-      isDeleted: false,
-      deletedAt: null,
-    });
-    await logActivity('Restored from Trash', item._label);
+    try {
+      triggerLayoutAnimation();
+      await updateDoc(doc(db, item._col, item.id), {
+        isDeleted: false,
+        deletedAt: null,
+      });
+      await logActivity('Restored from Trash', item._label);
+    } catch (e) {
+      Alert.alert('Error', 'Could not restore item.');
+    }
   };
 
   const handlePermanentDeleteItem = async (item) => {
-    triggerLayoutAnimation();
-    await deleteDoc(doc(db, item._col, item.id));
-    await logActivity('Permanently Deleted', item._label);
+    try {
+      triggerLayoutAnimation();
+      await deleteDoc(doc(db, item._col, item.id));
+      await logActivity('Permanently Deleted', item._label);
+    } catch (e) {
+      Alert.alert('Error', 'Could not delete item.');
+    }
   };
 
   const handleEmptyTrash = () => {
@@ -927,22 +1259,29 @@ export default function App() {
           text: 'Empty Trash',
           style: 'destructive',
           onPress: async () => {
-            triggerLayoutAnimation();
-            const batch = writeBatch(db);
-            trashItems.forEach((item) => {
-              batch.delete(doc(db, item._col, item.id));
-            });
-            await batch.commit();
-            await logActivity('Emptied Trash Archive', `${trashItems.length} items removed`);
+            try {
+              triggerLayoutAnimation();
+              const batch = writeBatch(db);
+              trashItems.slice(0, 450).forEach((item) => {
+                batch.delete(doc(db, item._col, item.id));
+              });
+              await batch.commit();
+              await logActivity('Emptied Trash Archive', `${trashItems.length} items removed`);
+            } catch (e) {
+              Alert.alert('Error', 'Failed to empty trash.');
+            }
           },
         },
       ]
     );
   };
 
+  // Includes fallback grouping so records with deleted/unassigned subjects never vanish
   const groupRecordsBySubjectAndMonth = useCallback(
     (records) => {
       const grouped = [];
+      const activeSubjectIds = new Set(activeSubjects.map((s) => s.id));
+
       activeSubjects.forEach((subj) => {
         const subjectRecords = records.filter(
           (r) => studentMap[r.studentId]?.subjectId === subj.id
@@ -963,6 +1302,26 @@ export default function App() {
           });
         }
       });
+
+      const unassignedRecords = records.filter(
+        (r) => !activeSubjectIds.has(studentMap[r.studentId]?.subjectId)
+      );
+      if (unassignedRecords.length > 0) {
+        const monthsMap = {};
+        unassignedRecords.forEach((rec) => {
+          const mLabel = getMonthYearFromISO(rec.date);
+          if (!monthsMap[mLabel]) monthsMap[mLabel] = [];
+          monthsMap[mLabel].push(rec);
+        });
+        grouped.push({
+          subject: { id: '_unassigned', name: 'Unassigned / Other' },
+          months: Object.entries(monthsMap).map(([monthName, items]) => ({
+            monthName,
+            items,
+          })),
+        });
+      }
+
       return grouped;
     },
     [activeSubjects, studentMap]
@@ -998,12 +1357,15 @@ export default function App() {
 
         <View style={styles.creamCard}>
           <View style={styles.cardHeaderRow}>
-            <Text style={styles.sectionTitle}>JSM APP NOTICE BOARD</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="megaphone-outline" size={16} color={COLORS.navy} />
+              <Text style={styles.sectionTitle}>JSM APP NOTICE BOARD</Text>
+            </View>
             {noticeUpdatedAt ? (
               <Text style={styles.silverMeta}>{formatReadableLocalDate(noticeUpdatedAt)}</Text>
             ) : null}
           </View>
-          <Text style={styles.noticePreviewText} numberOfLines={2}>
+          <Text style={styles.noticePreviewText} numberOfLines={3}>
             {noticeText ? noticeText : 'No active announcements posted.'}
           </Text>
           <View style={styles.noticeActionRow}>
@@ -1016,7 +1378,7 @@ export default function App() {
             <TouchableOpacity
               style={styles.primaryNavyButton}
               onPress={() => {
-                setNoticeInput('');
+                setNoticeInput(noticeText);
                 setNoticeEditModal(true);
               }}
             >
@@ -1053,7 +1415,10 @@ export default function App() {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.bentoCard, { backgroundColor: COLORS.cream, borderColor: COLORS.gold, borderWidth: 1 }]}
+            style={[
+              styles.bentoCard,
+              { backgroundColor: COLORS.cream, borderColor: COLORS.gold, borderWidth: 1.2 },
+            ]}
             onPress={() => {
               setSubjectForm({ id: null, name: '' });
               setSubjectsModal(true);
@@ -1072,7 +1437,7 @@ export default function App() {
               style={styles.pillGoldBtn}
               onPress={() => setTodayLogModal(true)}
             >
-              <Text style={styles.pillGoldBtnText}>Today</Text>
+              <Text style={styles.pillGoldBtnText}>Today's Log</Text>
             </TouchableOpacity>
           </View>
           {recentFourActivities.length === 0 ? (
@@ -1083,7 +1448,7 @@ export default function App() {
                 <View style={styles.activityDot} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.activityTitle}>{act.title}</Text>
-                  <Text style={styles.activitySub}>{act.subtitle}</Text>
+                  {act.subtitle ? <Text style={styles.activitySub}>{act.subtitle}</Text> : null}
                 </View>
                 <Text style={styles.silverMeta}>{formatReadableLocalDate(act.dateISO)}</Text>
               </View>
@@ -1094,17 +1459,82 @@ export default function App() {
     );
   };
 
+  const renderStudentCard = (st) => {
+    const metrics = getStudentMetrics(st.id);
+    return (
+      <Pressable
+        key={st.id}
+        style={({ pressed }) => [styles.cleanRecordCard, pressed && styles.cardPressed]}
+        onPress={() => {
+          setSelectedStudentId(st.id);
+          setProfileTab('Classes');
+        }}
+        onLongPress={() => openLongPressMenu('student', st, st.name)}
+        delayLongPress={300}
+      >
+        <View style={{ flex: 1 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <Text style={styles.recordPrimaryTitle}>{st.name}</Text>
+            {st.priorityNote ? (
+              <View style={styles.priorityBadge}>
+                <Text style={styles.priorityBadgeText}>★ NOTE</Text>
+              </View>
+            ) : null}
+          </View>
+          <Text style={styles.recordSecondarySub}>
+            Joined {formatReadableLocalDate(st.joinedDate)} • Attendance: {metrics.attendancePct}
+          </Text>
+        </View>
+        <View
+          style={[
+            styles.feeBadge,
+            metrics.feeStatus === 'Paid'
+              ? styles.feeBadgePaid
+              : metrics.feeStatus === 'Due / Unpaid'
+              ? styles.feeBadgeDue
+              : styles.feeBadgeNeutral,
+          ]}
+        >
+          <Text style={styles.feeBadgeText}>{metrics.feeStatus}</Text>
+        </View>
+      </Pressable>
+    );
+  };
+
   const renderStudentsTab = () => {
     if (selectedStudent) {
       return renderStudentProfile(selectedStudent);
     }
 
+    const query = studentSearch.trim().toLowerCase();
+    const filteredStudents = activeStudents.filter((st) => {
+      const subjName = (subjectMap[st.subjectId]?.name || '').toLowerCase();
+      const matchesQuery =
+        !query ||
+        (st.name || '').toLowerCase().includes(query) ||
+        (st.phone || '').toLowerCase().includes(query) ||
+        subjName.includes(query);
+
+      if (!matchesQuery) return false;
+      if (studentFilter === 'Priority') return Boolean(st.priorityNote);
+      if (studentFilter === 'Due') {
+        const m = getStudentMetrics(st.id);
+        return m.feeStatus === 'Due / Unpaid';
+      }
+      return true;
+    });
+
+    const activeSubjectIds = new Set(activeSubjects.map((s) => s.id));
+    const unassignedStudents = filteredStudents.filter(
+      (st) => !activeSubjectIds.has(st.subjectId)
+    );
+
     return (
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.tabTopBar}>
-          <View>
+          <View style={{ flex: 1 }}>
             <Text style={styles.pageHeading}>Student Directory</Text>
-            <Text style={styles.silverMeta}>Long-press any student card to edit or remove</Text>
+            <Text style={styles.silverMeta}>Tap to open profile • Hold card to edit/delete</Text>
           </View>
           <TouchableOpacity
             style={styles.primaryNavyButton}
@@ -1128,72 +1558,81 @@ export default function App() {
           </TouchableOpacity>
         </View>
 
-        {activeSubjects.length === 0 ? (
+        <View style={styles.searchBarContainer}>
+          <Ionicons name="search" size={18} color={COLORS.silver} />
+          <TextInput
+            style={styles.searchInput}
+            value={studentSearch}
+            onChangeText={setStudentSearch}
+            placeholder="Search student, instrument, or phone..."
+            placeholderTextColor={COLORS.silver}
+          />
+          {studentSearch.length > 0 && (
+            <TouchableOpacity onPress={() => setStudentSearch('')}>
+              <Ionicons name="close-circle" size={18} color={COLORS.silver} />
+            </TouchableOpacity>
+          )}
+        </View>
+
+        <View style={[styles.chipRow, { marginBottom: 14 }]}>
+          {[
+            { key: 'All', label: `All (${activeStudents.length})` },
+            { key: 'Due', label: 'Due / Unpaid' },
+            { key: 'Priority', label: '★ Priority Notes' },
+          ].map((f) => (
+            <TouchableOpacity
+              key={f.key}
+              style={[styles.choiceChip, studentFilter === f.key && styles.choiceChipSelected]}
+              onPress={() => setStudentFilter(f.key)}
+            >
+              <Text
+                style={[
+                  styles.choiceChipText,
+                  studentFilter === f.key && styles.choiceChipTextSelected,
+                ]}
+              >
+                {f.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {activeSubjects.length === 0 && unassignedStudents.length === 0 ? (
           <View style={styles.whiteCard}>
             <Text style={styles.emptyText}>
               No subjects configured. Open "Manage Subjects" on the Home Dashboard to add instruments.
             </Text>
           </View>
         ) : (
-          activeSubjects.map((subj) => {
-            const subjStudents = activeStudents.filter((s) => s.subjectId === subj.id);
-            return (
-              <View key={subj.id} style={styles.groupBlock}>
-                <View style={styles.groupHeaderBar}>
-                  <Text style={styles.groupHeaderTitle}>{subj.name.toUpperCase()}</Text>
-                  <Text style={styles.groupHeaderCount}>{subjStudents.length}</Text>
+          <>
+            {activeSubjects.map((subj) => {
+              const subjStudents = filteredStudents.filter((s) => s.subjectId === subj.id);
+              if ((query || studentFilter !== 'All') && subjStudents.length === 0) return null;
+              return (
+                <View key={subj.id} style={styles.groupBlock}>
+                  <View style={styles.groupHeaderBar}>
+                    <Text style={styles.groupHeaderTitle}>{subj.name.toUpperCase()}</Text>
+                    <Text style={styles.groupHeaderCount}>{subjStudents.length}</Text>
+                  </View>
+                  {subjStudents.length === 0 ? (
+                    <Text style={styles.emptyGroupText}>No students enrolled in {subj.name}</Text>
+                  ) : (
+                    subjStudents.map(renderStudentCard)
+                  )}
                 </View>
-                {subjStudents.length === 0 ? (
-                  <Text style={styles.emptyGroupText}>No students enrolled in {subj.name}</Text>
-                ) : (
-                  subjStudents.map((st) => {
-                    const metrics = getStudentMetrics(st.id);
-                    return (
-                      <Pressable
-                        key={st.id}
-                        style={({ pressed }) => [
-                          styles.cleanRecordCard,
-                          pressed && styles.cardPressed,
-                        ]}
-                        onPress={() => {
-                          setSelectedStudentId(st.id);
-                          setProfileTab('Classes');
-                        }}
-                        onLongPress={() => openLongPressMenu('student', st, st.name)}
-                        delayLongPress={320}
-                      >
-                        <View style={{ flex: 1 }}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                            <Text style={styles.recordPrimaryTitle}>{st.name}</Text>
-                            {st.priorityNote ? (
-                              <View style={styles.priorityBadge}>
-                                <Text style={styles.priorityBadgeText}>★ NOTE</Text>
-                              </View>
-                            ) : null}
-                          </View>
-                          <Text style={styles.recordSecondarySub}>
-                            Joined {formatReadableLocalDate(st.joinedDate)} • Attendance: {metrics.attendancePct}
-                          </Text>
-                        </View>
-                        <View
-                          style={[
-                            styles.feeBadge,
-                            metrics.feeStatus === 'Paid'
-                              ? styles.feeBadgePaid
-                              : metrics.feeStatus === 'Due / Unpaid'
-                              ? styles.feeBadgeDue
-                              : styles.feeBadgeNeutral,
-                          ]}
-                        >
-                          <Text style={styles.feeBadgeText}>{metrics.feeStatus}</Text>
-                        </View>
-                      </Pressable>
-                    );
-                  })
-                )}
+              );
+            })}
+
+            {unassignedStudents.length > 0 && (
+              <View style={styles.groupBlock}>
+                <View style={styles.groupHeaderBar}>
+                  <Text style={styles.groupHeaderTitle}>UNASSIGNED / OTHER</Text>
+                  <Text style={styles.groupHeaderCount}>{unassignedStudents.length}</Text>
+                </View>
+                {unassignedStudents.map(renderStudentCard)}
               </View>
-            );
-          })
+            )}
+          </>
         )}
       </ScrollView>
     );
@@ -1205,19 +1644,32 @@ export default function App() {
 
     return (
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        <TouchableOpacity
-          style={styles.backButtonRow}
-          onPress={() => setSelectedStudentId(null)}
-        >
-          <Ionicons name="arrow-back" size={18} color={COLORS.navy} />
-          <Text style={styles.backButtonText}>Back to Directory</Text>
-        </TouchableOpacity>
+        <View style={styles.cardHeaderRow}>
+          <TouchableOpacity
+            style={styles.backButtonRow}
+            onPress={() => setSelectedStudentId(null)}
+          >
+            <Ionicons name="arrow-back" size={18} color={COLORS.navy} />
+            <Text style={styles.backButtonText}>Back to Directory</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.secondaryButtonSmall}
+            onPress={() => openLongPressMenu('student', student, student.name)}
+          >
+            <Ionicons name="create-outline" size={15} color={COLORS.navy} />
+            <Text style={styles.secondaryButtonSmallText}>Edit Student</Text>
+          </TouchableOpacity>
+        </View>
 
         <View style={styles.heroCard}>
           <View style={styles.cardHeaderRow}>
-            <View>
+            <View style={{ flex: 1 }}>
               <Text style={styles.crestBadgeText}>{subjName.toUpperCase()} DEPARTMENT</Text>
               <Text style={styles.heroGreeting}>{student.name}</Text>
+              {student.guardian ? (
+                <Text style={styles.heroDate}>Guardian: {student.guardian}</Text>
+              ) : null}
               {student.phone ? (
                 <Text style={styles.heroDate}>Contact: {student.phone}</Text>
               ) : null}
@@ -1228,6 +1680,25 @@ export default function App() {
               </View>
             ) : null}
           </View>
+
+          {student.phone ? (
+            <View style={styles.contactActionRow}>
+              <TouchableOpacity
+                style={styles.contactActionBtn}
+                onPress={() => handlePhoneCall(student.phone)}
+              >
+                <Ionicons name="call-outline" size={15} color={COLORS.gold} />
+                <Text style={styles.contactActionText}>Call</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.contactActionBtn}
+                onPress={() => handleOpenWhatsApp(student.phone, student.name)}
+              >
+                <Ionicons name="logo-whatsapp" size={15} color={COLORS.gold} />
+                <Text style={styles.contactActionText}>WhatsApp</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
 
           <View style={styles.profileStatsGrid}>
             <View style={styles.profileStatBox}>
@@ -1245,10 +1716,7 @@ export default function App() {
                   styles.profileStatVal,
                   {
                     fontSize: 13,
-                    color:
-                      metrics.feeStatus === 'Due / Unpaid'
-                        ? '#FFB4A2'
-                        : COLORS.gold,
+                    color: metrics.feeStatus === 'Due / Unpaid' ? '#FFB4A2' : COLORS.gold,
                   },
                 ]}
               >
@@ -1265,7 +1733,10 @@ export default function App() {
               <TouchableOpacity
                 key={tab}
                 style={[styles.pillNavItem, active && styles.pillNavItemActive]}
-                onPress={() => setProfileTab(tab)}
+                onPress={() => {
+                  triggerLayoutAnimation();
+                  setProfileTab(tab);
+                }}
               >
                 <Text style={[styles.pillNavText, active && styles.pillNavTextActive]}>
                   {tab}
@@ -1280,43 +1751,47 @@ export default function App() {
             <View style={styles.whiteCard}>
               <Text style={styles.sectionTitle}>LOG NEW LESSON</Text>
               <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+              <QuickDateRow
+                currentDate={inlineLessonForm.date}
+                onSelectDate={(d) => setInlineLessonForm({ ...inlineLessonForm, date: d })}
+              />
               <TextInput
                 style={styles.input}
-                value={lessonForm.date}
-                onChangeText={(t) => setLessonForm({ ...lessonForm, date: t })}
+                value={inlineLessonForm.date}
+                onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, date: t })}
                 placeholder="YYYY-MM-DD"
               />
               <Text style={styles.inputLabel}>Technique</Text>
               <TextInput
                 style={styles.input}
-                value={lessonForm.technique}
-                onChangeText={(t) => setLessonForm({ ...lessonForm, technique: t })}
+                value={inlineLessonForm.technique}
+                onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, technique: t })}
                 placeholder="Scales, arpeggios, posture..."
               />
               <Text style={styles.inputLabel}>Repertoire</Text>
               <TextInput
                 style={styles.input}
-                value={lessonForm.repertoire}
-                onChangeText={(t) => setLessonForm({ ...lessonForm, repertoire: t })}
+                value={inlineLessonForm.repertoire}
+                onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, repertoire: t })}
                 placeholder="Sonatina in C, Etude Op. 10..."
               />
               <Text style={styles.inputLabel}>Assignment</Text>
               <TextInput
                 style={styles.input}
-                value={lessonForm.assignment}
-                onChangeText={(t) => setLessonForm({ ...lessonForm, assignment: t })}
+                value={inlineLessonForm.assignment}
+                onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, assignment: t })}
                 placeholder="Practice measures 16-32 at 80 BPM"
               />
               <TouchableOpacity
                 style={[styles.primaryNavyButton, { marginTop: 10 }]}
-                onPress={() => handleSaveLesson(true)}
+                onPress={handleSaveInlineLesson}
               >
                 <Text style={styles.primaryNavyButtonText}>Save Lesson Entry</Text>
               </TouchableOpacity>
             </View>
 
             <Text style={[styles.sectionTitle, { marginVertical: 10 }]}>
-              LESSON HISTORY (LONG-PRESS TO EDIT/DELETE)
+              LESSON HISTORY (HOLD CARD TO EDIT/DELETE)
             </Text>
             {metrics.stLessons.length === 0 ? (
               <Text style={styles.emptyText}>No lessons logged for this student yet.</Text>
@@ -1324,11 +1799,18 @@ export default function App() {
               metrics.stLessons.map((les) => (
                 <Pressable
                   key={les.id}
-                  style={styles.cleanRecordCard}
+                  style={({ pressed }) => [
+                    styles.cleanRecordCard,
+                    pressed && styles.cardPressed,
+                  ]}
                   onLongPress={() =>
-                    openLongPressMenu('lesson', les, `Lesson on ${formatReadableLocalDate(les.date)}`)
+                    openLongPressMenu(
+                      'lesson',
+                      les,
+                      `Lesson on ${formatReadableLocalDate(les.date)}`
+                    )
                   }
-                  delayLongPress={320}
+                  delayLongPress={300}
                 >
                   <View style={{ flex: 1 }}>
                     <Text style={styles.recordPrimaryTitle}>
@@ -1364,10 +1846,18 @@ export default function App() {
             <View style={styles.whiteCard}>
               <Text style={styles.sectionTitle}>MARK STUDENT ATTENDANCE</Text>
               <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+              <QuickDateRow
+                currentDate={inlineAttendanceForm.date}
+                onSelectDate={(d) =>
+                  setInlineAttendanceForm({ ...inlineAttendanceForm, date: d })
+                }
+              />
               <TextInput
                 style={styles.input}
-                value={attendanceForm.date}
-                onChangeText={(t) => setAttendanceForm({ ...attendanceForm, date: t })}
+                value={inlineAttendanceForm.date}
+                onChangeText={(t) =>
+                  setInlineAttendanceForm({ ...inlineAttendanceForm, date: t })
+                }
               />
               <Text style={styles.inputLabel}>Status</Text>
               <View style={styles.chipRow}>
@@ -1376,14 +1866,16 @@ export default function App() {
                     key={st}
                     style={[
                       styles.choiceChip,
-                      attendanceForm.status === st && styles.choiceChipSelected,
+                      inlineAttendanceForm.status === st && styles.choiceChipSelected,
                     ]}
-                    onPress={() => setAttendanceForm({ ...attendanceForm, status: st })}
+                    onPress={() =>
+                      setInlineAttendanceForm({ ...inlineAttendanceForm, status: st })
+                    }
                   >
                     <Text
                       style={[
                         styles.choiceChipText,
-                        attendanceForm.status === st && styles.choiceChipTextSelected,
+                        inlineAttendanceForm.status === st && styles.choiceChipTextSelected,
                       ]}
                     >
                       {st}
@@ -1394,20 +1886,22 @@ export default function App() {
               <Text style={styles.inputLabel}>Remarks</Text>
               <TextInput
                 style={styles.input}
-                value={attendanceForm.remarks}
-                onChangeText={(t) => setAttendanceForm({ ...attendanceForm, remarks: t })}
+                value={inlineAttendanceForm.remarks}
+                onChangeText={(t) =>
+                  setInlineAttendanceForm({ ...inlineAttendanceForm, remarks: t })
+                }
                 placeholder="Optional attendance notes"
               />
               <TouchableOpacity
                 style={[styles.primaryNavyButton, { marginTop: 10 }]}
-                onPress={() => handleSaveAttendance(true)}
+                onPress={handleSaveInlineAttendance}
               >
                 <Text style={styles.primaryNavyButtonText}>Record Attendance</Text>
               </TouchableOpacity>
             </View>
 
             <Text style={[styles.sectionTitle, { marginVertical: 10 }]}>
-              ATTENDANCE LOG (LONG-PRESS TO EDIT/DELETE)
+              ATTENDANCE LOG (HOLD CARD TO EDIT/DELETE)
             </Text>
             {metrics.stAttendance.length === 0 ? (
               <Text style={styles.emptyText}>No attendance records found.</Text>
@@ -1415,7 +1909,10 @@ export default function App() {
               metrics.stAttendance.map((att) => (
                 <Pressable
                   key={att.id}
-                  style={styles.cleanRecordCard}
+                  style={({ pressed }) => [
+                    styles.cleanRecordCard,
+                    pressed && styles.cardPressed,
+                  ]}
                   onLongPress={() =>
                     openLongPressMenu(
                       'attendance',
@@ -1423,7 +1920,7 @@ export default function App() {
                       `${att.status} (${formatReadableLocalDate(att.date)})`
                     )
                   }
-                  delayLongPress={320}
+                  delayLongPress={300}
                 >
                   <View style={{ flex: 1 }}>
                     <Text style={styles.recordPrimaryTitle}>
@@ -1509,7 +2006,10 @@ export default function App() {
               metrics.stFees.map((fee) => (
                 <Pressable
                   key={fee.id}
-                  style={styles.cleanRecordCard}
+                  style={({ pressed }) => [
+                    styles.cleanRecordCard,
+                    pressed && styles.cardPressed,
+                  ]}
                   onLongPress={() =>
                     openLongPressMenu(
                       'fee',
@@ -1517,7 +2017,7 @@ export default function App() {
                       `${fee.feeType} - ₹${fee.amountPaid} (${formatReadableLocalDate(fee.date)})`
                     )
                   }
-                  delayLongPress={320}
+                  delayLongPress={300}
                 >
                   <View style={{ flex: 1 }}>
                     <Text style={styles.recordPrimaryTitle}>
@@ -1540,7 +2040,8 @@ export default function App() {
                     style={styles.pdfShareBtn}
                     onPress={() => generateAndShareReceiptPDF(fee)}
                   >
-                    <Text style={styles.pdfShareBtnText}>PDF Receipt</Text>
+                    <Ionicons name="share-social-outline" size={13} color={COLORS.gold} />
+                    <Text style={styles.pdfShareBtnText}>Receipt</Text>
                   </TouchableOpacity>
                 </Pressable>
               ))
@@ -1564,7 +2065,7 @@ export default function App() {
           <View style={{ flex: 1 }}>
             <Text style={styles.pageHeading}>Attendance Register</Text>
             <Text style={styles.silverMeta}>
-              {attendanceFilterAllMonths ? 'Showing complete history' : 'Showing last 2 months'} • Long-press to edit/delete
+              {attendanceFilterAllMonths ? 'Showing complete history' : 'Showing last 2 months'} • Hold card to edit/delete
             </Text>
           </View>
           <TouchableOpacity
@@ -1574,7 +2075,7 @@ export default function App() {
                 Alert.alert('No Students', 'Add a student before marking attendance.');
                 return;
               }
-              setAttendanceForm({
+              setAttendanceModalForm({
                 id: null,
                 studentId: activeStudents[0]?.id || '',
                 date: getTodayISO(),
@@ -1591,7 +2092,10 @@ export default function App() {
         <View style={{ marginBottom: 12, flexDirection: 'row', justifyContent: 'flex-end' }}>
           <TouchableOpacity
             style={styles.secondaryButton}
-            onPress={() => setAttendanceFilterAllMonths(!attendanceFilterAllMonths)}
+            onPress={() => {
+              triggerLayoutAnimation();
+              setAttendanceFilterAllMonths(!attendanceFilterAllMonths);
+            }}
           >
             <Text style={styles.secondaryButtonText}>
               {attendanceFilterAllMonths ? 'Show Last 2 Months' : 'View All Months'}
@@ -1617,7 +2121,10 @@ export default function App() {
                     return (
                       <Pressable
                         key={att.id}
-                        style={styles.cleanRecordCard}
+                        style={({ pressed }) => [
+                          styles.cleanRecordCard,
+                          pressed && styles.cardPressed,
+                        ]}
                         onLongPress={() =>
                           openLongPressMenu(
                             'attendance',
@@ -1625,7 +2132,7 @@ export default function App() {
                             `${st?.name || 'Student'} - ${att.status} (${formatReadableLocalDate(att.date)})`
                           )
                         }
-                        delayLongPress={320}
+                        delayLongPress={300}
                       >
                         <View style={{ flex: 1 }}>
                           <Text style={styles.recordPrimaryTitle}>{st?.name || 'Unknown'}</Text>
@@ -1657,7 +2164,7 @@ export default function App() {
         <View style={styles.tabTopBar}>
           <View style={{ flex: 1 }}>
             <Text style={styles.pageHeading}>Global Fee Ledger</Text>
-            <Text style={styles.silverMeta}>Grouped by Subject & Month • Long-press to edit/delete</Text>
+            <Text style={styles.silverMeta}>Grouped by Subject & Month • Hold card to edit/delete</Text>
           </View>
           <TouchableOpacity
             style={styles.primaryNavyButton}
@@ -1685,6 +2192,24 @@ export default function App() {
           </TouchableOpacity>
         </View>
 
+        <View style={styles.ledgerSummaryRow}>
+          <View style={[styles.ledgerSummaryBox, { backgroundColor: COLORS.navy }]}>
+            <Text style={styles.ledgerSummaryLabel}>TOTAL COLLECTED</Text>
+            <Text style={styles.ledgerSummaryValGold}>₹{globalFeeTotals.collected.toFixed(0)}</Text>
+          </View>
+          <View
+            style={[
+              styles.ledgerSummaryBox,
+              { backgroundColor: COLORS.cream, borderColor: COLORS.gold, borderWidth: 1 },
+            ]}
+          >
+            <Text style={[styles.ledgerSummaryLabel, { color: COLORS.navy }]}>PENDING BALANCE</Text>
+            <Text style={[styles.ledgerSummaryValGold, { color: COLORS.danger }]}>
+              ₹{globalFeeTotals.pending.toFixed(0)}
+            </Text>
+          </View>
+        </View>
+
         {groupedFees.length === 0 ? (
           <View style={styles.whiteCard}>
             <Text style={styles.emptyText}>No fee transactions recorded yet.</Text>
@@ -1700,10 +2225,15 @@ export default function App() {
                   <Text style={styles.monthSubHeader}>{mGroup.monthName}</Text>
                   {mGroup.items.map((fee) => {
                     const st = studentMap[fee.studentId];
+                    const isFullyPaid =
+                      fee.status === 'Paid' && Number(fee.balanceDue || 0) === 0;
                     return (
                       <Pressable
                         key={fee.id}
-                        style={styles.cleanRecordCard}
+                        style={({ pressed }) => [
+                          styles.cleanRecordCard,
+                          pressed && styles.cardPressed,
+                        ]}
                         onLongPress={() =>
                           openLongPressMenu(
                             'fee',
@@ -1711,7 +2241,7 @@ export default function App() {
                             `${st?.name || 'Student'} - ₹${fee.amountPaid}`
                           )
                         }
-                        delayLongPress={320}
+                        delayLongPress={300}
                       >
                         <View style={{ flex: 1 }}>
                           <Text style={styles.recordPrimaryTitle}>
@@ -1731,13 +2261,18 @@ export default function App() {
                           <View
                             style={[
                               styles.feeBadge,
-                              fee.status === 'Paid' && Number(fee.balanceDue) === 0
-                                ? styles.feeBadgePaid
-                                : styles.feeBadgeDue,
+                              isFullyPaid ? styles.feeBadgePaid : styles.feeBadgeDue,
                             ]}
                           >
                             <Text style={styles.feeBadgeText}>{fee.status}</Text>
                           </View>
+                          <TouchableOpacity
+                            style={styles.pdfShareBtnSmall}
+                            onPress={() => generateAndShareReceiptPDF(fee)}
+                          >
+                            <Ionicons name="document-text-outline" size={12} color={COLORS.gold} />
+                            <Text style={styles.pdfShareBtnText}>PDF</Text>
+                          </TouchableOpacity>
                         </View>
                       </Pressable>
                     );
@@ -1817,7 +2352,7 @@ export default function App() {
 
       <View style={styles.topHeader}>
         <TouchableOpacity
-          onPress={() => setDrawerOpen(true)}
+          onPress={openDrawer}
           style={styles.hamburgerBtn}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
@@ -1884,9 +2419,15 @@ export default function App() {
         })}
       </View>
 
-      <Modal visible={drawerOpen} transparent animationType="fade">
+      {/* ANIMATED SLIDE DRAWER */}
+      <Modal visible={drawerOpen} transparent animationType="none" onRequestClose={() => closeDrawer()}>
         <View style={styles.drawerOverlay}>
-          <View style={styles.drawerContainer}>
+          <Animated.View
+            style={[
+              styles.drawerContainer,
+              { transform: [{ translateX: drawerSlideAnim }] },
+            ]}
+          >
             <View style={styles.drawerHeader}>
               <Text style={styles.crestBadgeText}>★ JSM APP ★</Text>
               <Text style={styles.drawerTitle}>Music School Portal</Text>
@@ -1895,22 +2436,38 @@ export default function App() {
 
             <View style={{ padding: 16, gap: 10 }}>
               {[
-                { label: 'Home Dashboard', tab: 'Home' },
-                { label: 'Student Directory', tab: 'Students' },
-                { label: 'Global Attendance', tab: 'Attendance' },
-                { label: 'Global Fee Register', tab: 'Fees' },
-                { label: `Trash Archive (${trashItems.length})`, tab: 'Trash' },
+                { label: 'Home Dashboard', tab: 'Home', icon: 'grid-outline' },
+                { label: 'Student Directory', tab: 'Students', icon: 'people-outline' },
+                { label: 'Global Attendance', tab: 'Attendance', icon: 'calendar-outline' },
+                { label: 'Global Fee Register', tab: 'Fees', icon: 'card-outline' },
+                { label: `Trash Archive (${trashItems.length})`, tab: 'Trash', icon: 'trash-outline' },
               ].map((nav) => (
                 <TouchableOpacity
                   key={nav.tab}
-                  style={styles.drawerNavItem}
+                  style={[
+                    styles.drawerNavItem,
+                    activeTab === nav.tab && styles.drawerNavItemActive,
+                  ]}
                   onPress={() => {
-                    setSelectedStudentId(null);
-                    setActiveTab(nav.tab);
-                    setDrawerOpen(false);
+                    closeDrawer(() => {
+                      setSelectedStudentId(null);
+                      setActiveTab(nav.tab);
+                    });
                   }}
                 >
-                  <Text style={styles.drawerNavText}>{nav.label}</Text>
+                  <Ionicons
+                    name={nav.icon}
+                    size={18}
+                    color={activeTab === nav.tab ? COLORS.gold : COLORS.navy}
+                  />
+                  <Text
+                    style={[
+                      styles.drawerNavText,
+                      activeTab === nav.tab && styles.drawerNavTextActive,
+                    ]}
+                  >
+                    {nav.label}
+                  </Text>
                 </TouchableOpacity>
               ))}
 
@@ -1919,33 +2476,40 @@ export default function App() {
               <TouchableOpacity
                 style={styles.drawerNavItem}
                 onPress={() => {
-                  setDrawerOpen(false);
-                  setSubjectsModal(true);
+                  closeDrawer(() => {
+                    setSubjectForm({ id: null, name: '' });
+                    setSubjectsModal(true);
+                  });
                 }}
               >
+                <Ionicons name="musical-notes-outline" size={18} color={COLORS.navy} />
                 <Text style={styles.drawerNavText}>Manage Instruments & Order</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.drawerNavItem}
                 onPress={handleCheckOTA}
-                disabled={CheckingOTA}
+                disabled={checkingOTA}
               >
-                {CheckingOTA ? (
+                {checkingOTA ? (
                   <ActivityIndicator size="small" color={COLORS.navy} />
                 ) : (
-                  <Text style={styles.drawerNavText}>Check for OTA Update</Text>
+                  <>
+                    <Ionicons name="cloud-download-outline" size={18} color={COLORS.navy} />
+                    <Text style={styles.drawerNavText}>Check for OTA Update</Text>
+                  </>
                 )}
               </TouchableOpacity>
             </View>
-          </View>
-          <Pressable style={{ flex: 1 }} onPress={() => setDrawerOpen(false)} />
+          </Animated.View>
+          <Pressable style={{ flex: 1 }} onPress={() => closeDrawer()} />
         </View>
       </Modal>
 
-      <Modal visible={contextMenu.visible} transparent animationType="fade">
+      {/* LONG-PRESS CONTEXT MENU */}
+      <Modal visible={contextMenu.visible} transparent animationType="fade" onRequestClose={closeContextMenu}>
         <Pressable style={styles.modalBackdrop} onPress={closeContextMenu}>
-          <View style={styles.contextSheet}>
+          <Pressable style={styles.contextSheet} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.contextSheetHeader}>{contextMenu.title}</Text>
             <View style={styles.contextDivider} />
 
@@ -1983,21 +2547,27 @@ export default function App() {
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.secondaryButton, { marginTop: 10, alignSelf: 'stretch', alignItems: 'center' }]}
+              style={[
+                styles.secondaryButton,
+                { marginTop: 10, alignSelf: 'stretch', alignItems: 'center' },
+              ]}
               onPress={closeContextMenu}
             >
               <Text style={styles.secondaryButtonText}>Cancel</Text>
             </TouchableOpacity>
-          </View>
+          </Pressable>
         </Pressable>
       </Modal>
 
-      <Modal visible={noticeReadModal} transparent animationType="slide">
+      {/* NOTICE READ MODAL */}
+      <Modal visible={noticeReadModal} transparent animationType="slide" onRequestClose={() => setNoticeReadModal(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.sectionTitle}>JSM APP OFFICIAL NOTICE</Text>
             {noticeUpdatedAt ? (
-              <Text style={styles.silverMeta}>Posted {formatReadableLocalDate(noticeUpdatedAt)}</Text>
+              <Text style={styles.silverMeta}>
+                Posted {formatReadableLocalDate(noticeUpdatedAt)}
+              </Text>
             ) : null}
             <ScrollView style={{ maxHeight: 260, marginVertical: 14 }}>
               <Text style={styles.noticeFullText}>
@@ -2014,8 +2584,12 @@ export default function App() {
         </View>
       </Modal>
 
-      <Modal visible={noticeEditModal} transparent animationType="slide">
-        <View style={styles.modalBackdrop}>
+      {/* NOTICE EDIT MODAL */}
+      <Modal visible={noticeEditModal} transparent animationType="slide" onRequestClose={() => setNoticeEditModal(false)}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalBackdrop}
+        >
           <View style={styles.modalCard}>
             <Text style={styles.sectionTitle}>UPDATE NOTICE BOARD</Text>
             <TextInput
@@ -2037,10 +2611,11 @@ export default function App() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
-      <Modal visible={todayLogModal} transparent animationType="slide">
+      {/* TODAY'S AUDIT LOG MODAL */}
+      <Modal visible={todayLogModal} transparent animationType="slide" onRequestClose={() => setTodayLogModal(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.sectionTitle}>
@@ -2073,12 +2648,16 @@ export default function App() {
         </View>
       </Modal>
 
-      <Modal visible={subjectsModal} transparent animationType="slide">
-        <View style={styles.modalBackdrop}>
+      {/* MANAGE SUBJECTS MODAL */}
+      <Modal visible={subjectsModal} transparent animationType="slide" onRequestClose={() => setSubjectsModal(false)}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalBackdrop}
+        >
           <View style={styles.modalCard}>
             <Text style={styles.sectionTitle}>MANAGE INSTRUMENTS & SUBJECTS</Text>
             <Text style={styles.silverMeta}>
-              Long-press any subject below to Edit, Delete, Move Up, or Move Down.
+              Use the action buttons or long-press any subject to reorder, edit, or delete.
             </Text>
 
             <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
@@ -2086,7 +2665,7 @@ export default function App() {
                 style={[styles.input, { flex: 1, marginBottom: 0 }]}
                 value={subjectForm.name}
                 onChangeText={(t) => setSubjectForm({ ...subjectForm, name: t })}
-                placeholder="e.g., Piano, Violin, Classical Guitar"
+                placeholder="e.g., Piano, Violin, Guitar"
               />
               <TouchableOpacity style={styles.primaryNavyButton} onPress={handleSaveSubject}>
                 <Text style={styles.primaryNavyButtonText}>
@@ -2095,7 +2674,7 @@ export default function App() {
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={{ maxHeight: 260, marginVertical: 14 }}>
+            <ScrollView style={{ maxHeight: 280, marginVertical: 14 }}>
               {activeSubjects.length === 0 ? (
                 <Text style={styles.emptyText}>No subjects added yet.</Text>
               ) : (
@@ -2109,17 +2688,52 @@ export default function App() {
                     }}
                     delayLongPress={300}
                   >
-                    <Text style={styles.recordPrimaryTitle}>
+                    <Text style={[styles.recordPrimaryTitle, { flex: 1 }]}>
                       {idx + 1}. {subj.name}
                     </Text>
-                    <Text style={styles.silverMeta}>Hold for options</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <TouchableOpacity
+                        style={styles.iconActionBtn}
+                        disabled={idx === 0}
+                        onPress={() => handleMoveSubjectOrder(subj, 'moveUp')}
+                      >
+                        <Ionicons
+                          name="arrow-up"
+                          size={15}
+                          color={idx === 0 ? COLORS.silver : COLORS.navy}
+                        />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.iconActionBtn}
+                        disabled={idx === activeSubjects.length - 1}
+                        onPress={() => handleMoveSubjectOrder(subj, 'moveDown')}
+                      >
+                        <Ionicons
+                          name="arrow-down"
+                          size={15}
+                          color={idx === activeSubjects.length - 1 ? COLORS.silver : COLORS.navy}
+                        />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.iconActionBtn}
+                        onPress={() => setSubjectForm({ id: subj.id, name: subj.name })}
+                      >
+                        <Ionicons name="pencil" size={15} color={COLORS.navy} />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.iconActionBtn}
+                        onPress={() => handleSoftDelete('subjects', subj, `Subject: ${subj.name}`)}
+                      >
+                        <Ionicons name="trash-outline" size={15} color={COLORS.danger} />
+                      </TouchableOpacity>
+                    </View>
                   </Pressable>
                 ))
               )}
             </ScrollView>
 
             <TouchableOpacity
-              style={styles.secondaryButton}
+              style={[styles.secondaryButton, { alignSelf: 'flex-end' }]}
               onPress={() => {
                 setSubjectForm({ id: null, name: '' });
                 setSubjectsModal(false);
@@ -2128,11 +2742,15 @@ export default function App() {
               <Text style={styles.secondaryButtonText}>Done</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
-      <Modal visible={studentModal} transparent animationType="slide">
-        <View style={styles.modalBackdrop}>
+      {/* REGISTER / EDIT STUDENT MODAL */}
+      <Modal visible={studentModal} transparent animationType="slide" onRequestClose={() => setStudentModal(false)}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalBackdrop}
+        >
           <View style={styles.modalCard}>
             <Text style={styles.sectionTitle}>
               {studentForm.id ? 'EDIT STUDENT DETAILS' : 'REGISTER NEW STUDENT'}
@@ -2187,6 +2805,10 @@ export default function App() {
               />
 
               <Text style={styles.inputLabel}>Enrollment Date (YYYY-MM-DD)</Text>
+              <QuickDateRow
+                currentDate={studentForm.joinedDate}
+                onSelectDate={(d) => setStudentForm({ ...studentForm, joinedDate: d })}
+              />
               <TextInput
                 style={styles.input}
                 value={studentForm.joinedDate}
@@ -2206,36 +2828,44 @@ export default function App() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
-      <Modal visible={lessonEditModal} transparent animationType="slide">
-        <View style={styles.modalBackdrop}>
+      {/* EDIT LESSON MODAL */}
+      <Modal visible={lessonEditModal} transparent animationType="slide" onRequestClose={() => setLessonEditModal(false)}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalBackdrop}
+        >
           <View style={styles.modalCard}>
             <Text style={styles.sectionTitle}>EDIT LESSON RECORD</Text>
             <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+            <QuickDateRow
+              currentDate={lessonEditForm.date}
+              onSelectDate={(d) => setLessonEditForm({ ...lessonEditForm, date: d })}
+            />
             <TextInput
               style={styles.input}
-              value={lessonForm.date}
-              onChangeText={(t) => setLessonForm({ ...lessonForm, date: t })}
+              value={lessonEditForm.date}
+              onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, date: t })}
             />
             <Text style={styles.inputLabel}>Technique</Text>
             <TextInput
               style={styles.input}
-              value={lessonForm.technique}
-              onChangeText={(t) => setLessonForm({ ...lessonForm, technique: t })}
+              value={lessonEditForm.technique}
+              onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, technique: t })}
             />
             <Text style={styles.inputLabel}>Repertoire</Text>
             <TextInput
               style={styles.input}
-              value={lessonForm.repertoire}
-              onChangeText={(t) => setLessonForm({ ...lessonForm, repertoire: t })}
+              value={lessonEditForm.repertoire}
+              onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, repertoire: t })}
             />
             <Text style={styles.inputLabel}>Assignment</Text>
             <TextInput
               style={styles.input}
-              value={lessonForm.assignment}
-              onChangeText={(t) => setLessonForm({ ...lessonForm, assignment: t })}
+              value={lessonEditForm.assignment}
+              onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, assignment: t })}
             />
             <View style={styles.modalBtnRow}>
               <TouchableOpacity
@@ -2246,38 +2876,49 @@ export default function App() {
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.primaryNavyButton}
-                onPress={() => handleSaveLesson(false)}
+                onPress={handleSaveEditedLesson}
               >
                 <Text style={styles.primaryNavyButtonText}>Update Lesson</Text>
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
-      <Modal visible={attendanceModal} transparent animationType="slide">
-        <View style={styles.modalBackdrop}>
+      {/* MARK / EDIT ATTENDANCE MODAL */}
+      <Modal visible={attendanceModal} transparent animationType="slide" onRequestClose={() => setAttendanceModal(false)}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalBackdrop}
+        >
           <View style={styles.modalCard}>
             <Text style={styles.sectionTitle}>
-              {attendanceForm.id ? 'EDIT ATTENDANCE' : 'MARK GLOBAL ATTENDANCE'}
+              {attendanceModalForm.id ? 'EDIT ATTENDANCE' : 'MARK GLOBAL ATTENDANCE'}
             </Text>
             <ScrollView style={{ maxHeight: 360 }}>
               <Text style={styles.inputLabel}>Select Student *</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={{ marginBottom: 8 }}
+              >
                 <View style={{ flexDirection: 'row', gap: 6 }}>
                   {activeStudents.map((st) => (
                     <TouchableOpacity
                       key={st.id}
                       style={[
                         styles.choiceChip,
-                        attendanceForm.studentId === st.id && styles.choiceChipSelected,
+                        attendanceModalForm.studentId === st.id && styles.choiceChipSelected,
                       ]}
-                      onPress={() => setAttendanceForm({ ...attendanceForm, studentId: st.id })}
+                      onPress={() =>
+                        setAttendanceModalForm({ ...attendanceModalForm, studentId: st.id })
+                      }
                     >
                       <Text
                         style={[
                           styles.choiceChipText,
-                          attendanceForm.studentId === st.id && styles.choiceChipTextSelected,
+                          attendanceModalForm.studentId === st.id &&
+                            styles.choiceChipTextSelected,
                         ]}
                       >
                         {st.name}
@@ -2288,10 +2929,18 @@ export default function App() {
               </ScrollView>
 
               <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+              <QuickDateRow
+                currentDate={attendanceModalForm.date}
+                onSelectDate={(d) =>
+                  setAttendanceModalForm({ ...attendanceModalForm, date: d })
+                }
+              />
               <TextInput
                 style={styles.input}
-                value={attendanceForm.date}
-                onChangeText={(t) => setAttendanceForm({ ...attendanceForm, date: t })}
+                value={attendanceModalForm.date}
+                onChangeText={(t) =>
+                  setAttendanceModalForm({ ...attendanceModalForm, date: t })
+                }
               />
 
               <Text style={styles.inputLabel}>Attendance Status</Text>
@@ -2301,14 +2950,16 @@ export default function App() {
                     key={st}
                     style={[
                       styles.choiceChip,
-                      attendanceForm.status === st && styles.choiceChipSelected,
+                      attendanceModalForm.status === st && styles.choiceChipSelected,
                     ]}
-                    onPress={() => setAttendanceForm({ ...attendanceForm, status: st })}
+                    onPress={() =>
+                      setAttendanceModalForm({ ...attendanceModalForm, status: st })
+                    }
                   >
                     <Text
                       style={[
                         styles.choiceChipText,
-                        attendanceForm.status === st && styles.choiceChipTextSelected,
+                        attendanceModalForm.status === st && styles.choiceChipTextSelected,
                       ]}
                     >
                       {st}
@@ -2320,8 +2971,10 @@ export default function App() {
               <Text style={styles.inputLabel}>Remarks</Text>
               <TextInput
                 style={styles.input}
-                value={attendanceForm.remarks}
-                onChangeText={(t) => setAttendanceForm({ ...attendanceForm, remarks: t })}
+                value={attendanceModalForm.remarks}
+                onChangeText={(t) =>
+                  setAttendanceModalForm({ ...attendanceModalForm, remarks: t })
+                }
                 placeholder="Optional remarks"
               />
             </ScrollView>
@@ -2335,24 +2988,32 @@ export default function App() {
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.primaryNavyButton}
-                onPress={() => handleSaveAttendance(false)}
+                onPress={handleSaveModalAttendance}
               >
                 <Text style={styles.primaryNavyButtonText}>Save</Text>
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
-      <Modal visible={feeModal} transparent animationType="slide">
-        <View style={styles.modalBackdrop}>
+      {/* RECORD / EDIT FEE MODAL */}
+      <Modal visible={feeModal} transparent animationType="slide" onRequestClose={() => setFeeModal(false)}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalBackdrop}
+        >
           <View style={styles.modalCard}>
             <Text style={styles.sectionTitle}>
               {feeForm.id ? 'EDIT FEE TRANSACTION' : 'RECORD FEE'}
             </Text>
             <ScrollView style={{ maxHeight: 420 }}>
               <Text style={styles.inputLabel}>Select Student *</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={{ marginBottom: 8 }}
+              >
                 <View style={{ flexDirection: 'row', gap: 6 }}>
                   {activeStudents.map((st) => (
                     <TouchableOpacity
@@ -2412,6 +3073,10 @@ export default function App() {
               )}
 
               <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+              <QuickDateRow
+                currentDate={feeForm.date}
+                onSelectDate={(d) => setFeeForm({ ...feeForm, date: d })}
+              />
               <TextInput
                 style={styles.input}
                 value={feeForm.date}
@@ -2478,12 +3143,15 @@ export default function App() {
               <TextInput
                 style={[
                   styles.input,
-                  feeForm.status === 'Unpaid' && { backgroundColor: '#E5E5E5', color: COLORS.silver },
+                  feeForm.status === 'Unpaid' && {
+                    backgroundColor: '#E5E5E5',
+                    color: COLORS.silver,
+                  },
                 ]}
                 editable={feeForm.status !== 'Unpaid'}
                 keyboardType="numeric"
                 value={feeForm.status === 'Unpaid' ? '0' : feeForm.amountPaid}
-                onChangeText={(t) => setFeeForm({ ...feeForm, amountPaid: t })}
+                onChangeText={(t) => setFeeForm({ ...feeForm, amountPaid: sanitizeCurrency(t) })}
                 placeholder="0"
               />
 
@@ -2493,12 +3161,15 @@ export default function App() {
               <TextInput
                 style={[
                   styles.input,
-                  feeForm.status === 'Paid' && { backgroundColor: '#E5E5E5', color: COLORS.silver },
+                  feeForm.status === 'Paid' && {
+                    backgroundColor: '#E5E5E5',
+                    color: COLORS.silver,
+                  },
                 ]}
                 editable={feeForm.status !== 'Paid'}
                 keyboardType="numeric"
                 value={feeForm.status === 'Paid' ? '0' : feeForm.balanceDue}
-                onChangeText={(t) => setFeeForm({ ...feeForm, balanceDue: t })}
+                onChangeText={(t) => setFeeForm({ ...feeForm, balanceDue: sanitizeCurrency(t) })}
                 placeholder="0"
               />
 
@@ -2532,14 +3203,17 @@ export default function App() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: COLORS.ivory },
+  safeArea: {
+    flex: 1,
+    backgroundColor: COLORS.ivory,
+  },
   topHeader: {
     backgroundColor: COLORS.navy,
     paddingHorizontal: 18,
@@ -2561,10 +3235,15 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: COLORS.gold,
     marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 4,
   },
   crestBadge: {
     alignSelf: 'flex-start',
-    backgroundColor: 'rgba(212, 185, 120, 0.16)',
+    backgroundColor: COLORS.goldLight,
     borderColor: COLORS.gold,
     borderWidth: 1,
     borderRadius: 6,
@@ -2579,6 +3258,23 @@ const styles = StyleSheet.create({
   heroStatRow: { flexDirection: 'row', justifyContent: 'space-between' },
   heroStatLabel: { color: COLORS.silver, fontSize: 10, fontWeight: '700', letterSpacing: 1 },
   heroStatValue: { color: COLORS.gold, fontSize: 18, fontWeight: '700', marginTop: 2 },
+  contactActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  contactActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(212, 185, 120, 0.16)',
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  contactActionText: { color: COLORS.gold, fontSize: 12, fontWeight: '700' },
   creamCard: {
     backgroundColor: COLORS.cream,
     borderRadius: 14,
@@ -2593,16 +3289,27 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: '#E6E1D6',
+    borderColor: COLORS.border,
   },
-  cardHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  cardHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
   sectionTitle: { color: COLORS.navy, fontSize: 12, fontWeight: '800', letterSpacing: 1.2 },
   silverMeta: { color: COLORS.silver, fontSize: 12 },
   noticePreviewText: { color: COLORS.charcoal, fontSize: 14, lineHeight: 20, marginVertical: 6 },
   noticeFullText: { color: COLORS.charcoal, fontSize: 15, lineHeight: 22 },
   noticeActionRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 10 },
   bentoRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
-  bentoCard: { flex: 1, borderRadius: 14, padding: 18, justifyContent: 'space-between', minHeight: 115 },
+  bentoCard: {
+    flex: 1,
+    borderRadius: 14,
+    padding: 18,
+    justifyContent: 'space-between',
+    minHeight: 115,
+  },
   bentoTitleGold: { color: COLORS.gold, fontSize: 16, fontWeight: '700', marginTop: 10 },
   bentoSubCream: { color: COLORS.cream, fontSize: 12, marginTop: 2 },
   bentoTitleNavy: { color: COLORS.navy, fontSize: 16, fontWeight: '700', marginTop: 10 },
@@ -2627,8 +3334,54 @@ const styles = StyleSheet.create({
     borderRadius: 14,
   },
   pillGoldBtnText: { color: COLORS.gold, fontSize: 11, fontWeight: '700' },
-  tabTopBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 10 },
+  tabTopBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+    gap: 10,
+  },
   pageHeading: { color: COLORS.navy, fontSize: 20, fontWeight: '800' },
+  searchBarContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: '#D8D2C5',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 8,
+    gap: 8,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: COLORS.charcoal,
+    paddingVertical: 2,
+  },
+  ledgerSummaryRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 16,
+  },
+  ledgerSummaryBox: {
+    flex: 1,
+    borderRadius: 12,
+    padding: 14,
+  },
+  ledgerSummaryLabel: {
+    color: COLORS.cream,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  ledgerSummaryValGold: {
+    color: COLORS.gold,
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 4,
+  },
   groupBlock: { marginBottom: 18 },
   groupHeaderBar: {
     backgroundColor: COLORS.navy,
@@ -2643,14 +3396,20 @@ const styles = StyleSheet.create({
   },
   groupHeaderTitle: { color: COLORS.gold, fontSize: 12, fontWeight: '800', letterSpacing: 1.2 },
   groupHeaderCount: { color: COLORS.cream, fontSize: 12, fontWeight: '700' },
-  monthSubHeader: { color: COLORS.navy, fontSize: 13, fontWeight: '700', marginVertical: 6, paddingLeft: 4 },
+  monthSubHeader: {
+    color: COLORS.navy,
+    fontSize: 13,
+    fontWeight: '700',
+    marginVertical: 6,
+    paddingLeft: 4,
+  },
   cleanRecordCard: {
     backgroundColor: COLORS.white,
     borderRadius: 12,
     padding: 14,
     marginTop: 8,
     borderWidth: 1,
-    borderColor: '#E6E1D6',
+    borderColor: COLORS.border,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -2671,8 +3430,8 @@ const styles = StyleSheet.create({
   },
   priorityBadgeText: { color: COLORS.gold, fontSize: 10, fontWeight: '800' },
   feeBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
-  feeBadgePaid: { backgroundColor: '#E6F4EA' },
-  feeBadgeDue: { backgroundColor: '#FDE8E8' },
+  feeBadgePaid: { backgroundColor: COLORS.successBg },
+  feeBadgeDue: { backgroundColor: COLORS.dangerBg },
   feeBadgeNeutral: { backgroundColor: COLORS.cream },
   feeBadgeText: { fontSize: 11, fontWeight: '700', color: COLORS.navy },
   statusPill: {
@@ -2684,8 +3443,20 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   statusPillText: { color: COLORS.navy, fontSize: 11, fontWeight: '700' },
-  backButtonRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 12 },
+  backButtonRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   backButtonText: { color: COLORS.navy, fontSize: 14, fontWeight: '700' },
+  secondaryButtonSmall: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.cream,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+  },
+  secondaryButtonSmallText: { color: COLORS.navy, fontSize: 12, fontWeight: '700' },
   profileStatsGrid: { flexDirection: 'row', gap: 8, marginTop: 16 },
   profileStatBox: {
     flex: 1,
@@ -2698,7 +3469,13 @@ const styles = StyleSheet.create({
   },
   profileStatLabel: { color: COLORS.cream, fontSize: 9, fontWeight: '700', letterSpacing: 0.8 },
   profileStatVal: { color: COLORS.gold, fontSize: 16, fontWeight: '800', marginTop: 4 },
-  pillNavContainer: { flexDirection: 'row', backgroundColor: COLORS.cream, borderRadius: 12, padding: 4, marginBottom: 16 },
+  pillNavContainer: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.cream,
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: 16,
+  },
   pillNavItem: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 9 },
   pillNavItemActive: { backgroundColor: COLORS.navy },
   pillNavText: { color: COLORS.navy, fontSize: 12, fontWeight: '700' },
@@ -2715,6 +3492,31 @@ const styles = StyleSheet.create({
     color: COLORS.charcoal,
     marginBottom: 6,
   },
+  quickDateRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 6,
+  },
+  quickDateChip: {
+    backgroundColor: COLORS.cream,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#D8D2C5',
+  },
+  quickDateChipActive: {
+    backgroundColor: COLORS.navy,
+    borderColor: COLORS.gold,
+  },
+  quickDateChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.navy,
+  },
+  quickDateChipTextActive: {
+    color: COLORS.gold,
+  },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 6 },
   choiceChip: {
     backgroundColor: COLORS.cream,
@@ -2727,8 +3529,16 @@ const styles = StyleSheet.create({
   choiceChipSelected: { backgroundColor: COLORS.navy, borderColor: COLORS.gold },
   choiceChipText: { color: COLORS.navy, fontSize: 12, fontWeight: '600' },
   choiceChipTextSelected: { color: COLORS.gold, fontWeight: '700' },
-  prioritySwitchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
+  prioritySwitchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
   pdfShareBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     backgroundColor: COLORS.navy,
     borderColor: COLORS.gold,
     borderWidth: 1,
@@ -2736,7 +3546,25 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 8,
   },
+  pdfShareBtnSmall: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.navy,
+    borderColor: COLORS.gold,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
   pdfShareBtnText: { color: COLORS.gold, fontSize: 11, fontWeight: '700' },
+  iconActionBtn: {
+    padding: 6,
+    borderRadius: 6,
+    backgroundColor: COLORS.ivory,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
   primaryNavyButton: {
     backgroundColor: COLORS.navy,
     paddingHorizontal: 16,
@@ -2766,7 +3594,12 @@ const styles = StyleSheet.create({
     borderColor: COLORS.silver,
   },
   secondaryButtonText: { color: COLORS.navy, fontSize: 13, fontWeight: '700' },
-  dangerButton: { backgroundColor: COLORS.danger, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 9 },
+  dangerButton: {
+    backgroundColor: COLORS.danger,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 9,
+  },
   dangerButtonText: { color: COLORS.white, fontSize: 12, fontWeight: '700' },
   daysRemainingBadge: {
     backgroundColor: COLORS.cream,
@@ -2778,7 +3611,13 @@ const styles = StyleSheet.create({
   },
   daysRemainingText: { color: COLORS.navy, fontSize: 11, fontWeight: '700' },
   emptyText: { color: COLORS.silver, fontSize: 13, textAlign: 'center', paddingVertical: 16 },
-  emptyGroupText: { color: COLORS.silver, fontSize: 12, fontStyle: 'italic', paddingLeft: 8, paddingTop: 6 },
+  emptyGroupText: {
+    color: COLORS.silver,
+    fontSize: 12,
+    fontStyle: 'italic',
+    paddingLeft: 8,
+    paddingTop: 6,
+  },
   bottomTabBar: {
     flexDirection: 'row',
     backgroundColor: COLORS.navy,
@@ -2818,11 +3657,36 @@ const styles = StyleSheet.create({
   },
   drawerTitle: { color: COLORS.white, fontSize: 18, fontWeight: '800', marginTop: 6 },
   drawerSub: { color: COLORS.cream, fontSize: 12, marginTop: 2 },
-  drawerNavItem: { paddingVertical: 12, paddingHorizontal: 12, borderRadius: 8, backgroundColor: COLORS.cream },
+  drawerNavItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: COLORS.cream,
+  },
+  drawerNavItemActive: {
+    backgroundColor: COLORS.navy,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+  },
   drawerNavText: { color: COLORS.navy, fontSize: 14, fontWeight: '700' },
+  drawerNavTextActive: { color: COLORS.gold },
   drawerDivider: { height: 1, backgroundColor: '#D8D2C5', marginVertical: 8 },
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(12, 45, 87, 0.6)', justifyContent: 'center', padding: 18 },
-  modalCard: { backgroundColor: COLORS.white, borderRadius: 16, padding: 20, borderWidth: 2, borderColor: COLORS.gold },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(12, 45, 87, 0.6)',
+    justifyContent: 'center',
+    padding: 18,
+  },
+  modalCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 2,
+    borderColor: COLORS.gold,
+  },
   modalBtnRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 14 },
   contextSheet: {
     backgroundColor: COLORS.white,
@@ -2831,9 +3695,16 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: COLORS.gold,
     alignItems: 'center',
+    width: '100%',
   },
   contextSheetHeader: { color: COLORS.navy, fontSize: 15, fontWeight: '800', textAlign: 'center' },
   contextDivider: { height: 1, backgroundColor: COLORS.cream, width: '100%', marginVertical: 12 },
-  contextOptionBtn: { width: '100%', paddingVertical: 12, alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#F2EFE9' },
+  contextOptionBtn: {
+    width: '100%',
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: '#F2EFE9',
+  },
   contextOptionText: { color: COLORS.navy, fontSize: 15, fontWeight: '700' },
 });
