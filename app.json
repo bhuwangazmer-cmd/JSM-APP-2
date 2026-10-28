@@ -9,10 +9,12 @@
       "backgroundColor": "#0C2D57"
     },
     "android": {
-      "package": "com.jsmapp.official"
+      "package": "com.jsmapp.official",
+      "versionCode": 1
     },
     "ios": {
-      "bundleIdentifier": "com.jsmapp.official"
+      "bundleIdentifier": "com.jsmapp.official",
+      "buildNumber": "1"
     },
     "runtimeVersion": {
       "policy": "appVersion"
