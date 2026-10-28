@@ -21,14 +21,16 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install dependencies & create lockfile via npm
+      - name: Install dependencies & sync lockfile via npm
         run: |
           npm install --legacy-peer-deps
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add package-lock.json
-          git commit -m "chore: generate package-lock.json [skip ci]" || echo "Lockfile already up to date"
-          git push || true
+          if ! git diff --quiet package-lock.json; then
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            git add package-lock.json
+            git commit -m "chore: update package-lock.json [skip ci]"
+            git push
+          fi
 
       - name: Install EAS CLI via npm
         run: npm install -g eas-cli
