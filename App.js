@@ -14,6 +14,7 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
+// Only used for internal UI expansions (accordions, deleting items), NOT tab navigation
 const triggerLayoutAnimation = () => LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
 // ==========================================
@@ -44,12 +45,11 @@ const FEE_TYPES = ['Monthly Fee', 'Admission Fee', 'Exam Fee', 'Instrument / Boo
 const PAYMENT_MODES = ['UPI', 'Cash', 'Bank Transfer', 'Card'];
 const FEE_STATUSES = ['Paid', 'Partial', 'Unpaid'];
 
-// Navigation Order configuration
 const MAIN_TABS = ['Home', 'Students', 'Attendance', 'Fees', 'Trash'];
 const PROFILE_TABS = ['Classes', 'Attendance', 'Notes', 'Fees'];
 
 // ==========================================
-// 3. LOCAL TIMEZONE DATE & STRING UTILITIES
+// 3. UTILITIES
 // ==========================================
 const getOffsetDateISO = (daysOffset = 0) => {
   const d = new Date();
@@ -117,18 +117,20 @@ const sanitizeCurrency = (val) => {
 // ==========================================
 // 4. ANIMATED ENTRANCE SCREEN WRAPPER
 // ==========================================
-const AnimatedScreen = ({ children, triggerKey }) => {
+const AnimatedScreen = ({ children, triggerKey, direction }) => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(14)).current;
+  const slideAnim = useRef(new Animated.Value(direction * 30)).current;
+
   useEffect(() => {
     fadeAnim.setValue(0);
-    slideAnim.setValue(14);
+    slideAnim.setValue(direction * 30);
     Animated.parallel([
-      Animated.timing(fadeAnim, { toValue: 1, duration: 200, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-      Animated.timing(slideAnim, { toValue: 0, duration: 200, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(fadeAnim, { toValue: 1, duration: 250, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 250, easing: Easing.out(Easing.quad), useNativeDriver: true }),
     ]).start();
-  }, [triggerKey, fadeAnim, slideAnim]);
-  return <Animated.View style={{ flex: 1, opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>{children}</Animated.View>;
+  }, [triggerKey, direction]);
+
+  return <Animated.View style={{ flex: 1, opacity: fadeAnim, transform: [{ translateX: slideAnim }] }}>{children}</Animated.View>;
 };
 
 const QuickDateRow = ({ currentDate, onSelectDate }) => {
@@ -153,6 +155,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('Home');
   const [selectedStudentId, setSelectedStudentId] = useState(null);
   const [profileTab, setProfileTab] = useState('Classes');
+  const [navDirection, setNavDirection] = useState(1); // 1 for sliding left (forward), -1 for sliding right (backward)
+
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerSlideAnim = useRef(new Animated.Value(-290)).current;
 
@@ -593,32 +597,32 @@ export default function App() {
     return grouped;
   }, [activeSubjects, studentMap]);
 
-  // Swipe gesture handler (Corrected for vertical scrolling)
+  // Smoothed swipe handler with fixed offset thresholds so vertical scrolling works flawlessly
   const handleSwipe = (event) => {
     const { translationX } = event.nativeEvent;
     
-    // Safety check to ensure deliberate swiping
-    if (Math.abs(translationX) < 45) return;
+    // Require at least a 35px horizontal drag before triggering a swipe
+    if (Math.abs(translationX) < 35) return;
 
     if (selectedStudentId) {
       const currentIndex = PROFILE_TABS.indexOf(profileTab);
-      if (translationX < -45 && currentIndex < PROFILE_TABS.length - 1) {
-        triggerLayoutAnimation();
+      if (translationX < -35 && currentIndex < PROFILE_TABS.length - 1) {
+        setNavDirection(1);
         setProfileTab(PROFILE_TABS[currentIndex + 1]);
-      } else if (translationX > 45 && currentIndex > 0) {
-        triggerLayoutAnimation();
+      } else if (translationX > 35 && currentIndex > 0) {
+        setNavDirection(-1);
         setProfileTab(PROFILE_TABS[currentIndex - 1]);
-      } else if (translationX > 90 && currentIndex === 0) {
-        triggerLayoutAnimation();
+      } else if (translationX > 80 && currentIndex === 0) {
+        setNavDirection(-1);
         setSelectedStudentId(null);
       }
     } else {
       const currentIndex = MAIN_TABS.indexOf(activeTab);
-      if (translationX < -45 && currentIndex < MAIN_TABS.length - 1) {
-        triggerLayoutAnimation();
+      if (translationX < -35 && currentIndex < MAIN_TABS.length - 1) {
+        setNavDirection(1);
         setActiveTab(MAIN_TABS[currentIndex + 1]);
-      } else if (translationX > 45 && currentIndex > 0) {
-        triggerLayoutAnimation();
+      } else if (translationX > 35 && currentIndex > 0) {
+        setNavDirection(-1);
         setActiveTab(MAIN_TABS[currentIndex - 1]);
       }
     }
@@ -691,7 +695,11 @@ export default function App() {
   const renderStudentCard = (st) => {
     const metrics = getStudentMetrics(st.id);
     return (
-      <Pressable key={st.id} style={({ pressed }) => pressed && styles.cardPressed} onPress={() => { setSelectedStudentId(st.id); setProfileTab('Classes'); }} onLongPress={() => openLongPressMenu('student', st, st.name)} delayLongPress={300}>
+      <Pressable key={st.id} style={({ pressed }) => pressed && styles.cardPressed} onPress={() => { 
+          setNavDirection(1); 
+          setSelectedStudentId(st.id); 
+          setProfileTab('Classes'); 
+        }} onLongPress={() => openLongPressMenu('student', st, st.name)} delayLongPress={300}>
         <Surface style={styles.cleanRecordCard} elevation={2}>
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -772,7 +780,7 @@ export default function App() {
     return (
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.cardHeaderRow}>
-          <TouchableOpacity style={styles.backButtonRow} onPress={() => setSelectedStudentId(null)}>
+          <TouchableOpacity style={styles.backButtonRow} onPress={() => { setNavDirection(-1); setSelectedStudentId(null); }}>
             <Ionicons name="arrow-back" size={18} color={COLORS.navy} /><Text style={styles.backButtonText}>Back to Directory</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.secondaryButtonSmall} onPress={() => openLongPressMenu('student', student, student.name)}>
@@ -809,7 +817,12 @@ export default function App() {
 
         <View style={styles.pillNavContainer}>
           {PROFILE_TABS.map((tab) => (
-            <TouchableOpacity key={tab} style={[styles.pillNavItem, profileTab === tab && styles.pillNavItemActive]} onPress={() => { triggerLayoutAnimation(); setProfileTab(tab); }}>
+            <TouchableOpacity key={tab} style={[styles.pillNavItem, profileTab === tab && styles.pillNavItemActive]} onPress={() => { 
+                const newIdx = PROFILE_TABS.indexOf(tab);
+                const oldIdx = PROFILE_TABS.indexOf(profileTab);
+                setNavDirection(newIdx > oldIdx ? 1 : -1);
+                setProfileTab(tab); 
+              }}>
               <Text style={[styles.pillNavText, profileTab === tab && styles.pillNavTextActive]}>{tab}</Text>
             </TouchableOpacity>
           ))}
@@ -1064,9 +1077,9 @@ export default function App() {
               <View style={{ width: 48 }} />
             </Appbar.Header>
 
-            <PanGestureHandler activeOffsetX={[-40, 40]} failOffsetY={[-20, 20]} onEnded={handleSwipe}>
+            <PanGestureHandler activeOffsetX={[-35, 35]} failOffsetY={[-15, 15]} onEnded={handleSwipe}>
               <Animated.View style={{ flex: 1 }}>
-                <AnimatedScreen triggerKey={`${activeTab}-${selectedStudentId || 'list'}`}>
+                <AnimatedScreen direction={navDirection} triggerKey={`${activeTab}-${selectedStudentId || 'list'}`}>
                   {activeTab === 'Home' && renderHomeTab()}
                   {activeTab === 'Students' && renderStudentsTab()}
                   {activeTab === 'Attendance' && renderAttendanceTab()}
@@ -1080,7 +1093,13 @@ export default function App() {
               {[{ key: 'Home', icon: 'grid-outline', label: 'Home' }, { key: 'Students', icon: 'people-outline', label: 'Students' }, { key: 'Attendance', icon: 'calendar-check-outline', label: 'Attendance', mci: true }, { key: 'Fees', icon: 'card-outline', label: 'Fees' }, { key: 'Trash', icon: 'trash-outline', label: 'Trash' }].map((tab) => {
                 const isFocused = activeTab === tab.key;
                 return (
-                  <TouchableOpacity key={tab.key} style={styles.bottomTabItem} onPress={() => { if (tab.key !== 'Students') setSelectedStudentId(null); setActiveTab(tab.key); }}>
+                  <TouchableOpacity key={tab.key} style={styles.bottomTabItem} onPress={() => { 
+                      const newIdx = MAIN_TABS.indexOf(tab.key);
+                      const oldIdx = MAIN_TABS.indexOf(activeTab);
+                      setNavDirection(newIdx > oldIdx ? 1 : -1);
+                      if (tab.key !== 'Students') setSelectedStudentId(null); 
+                      setActiveTab(tab.key); 
+                    }}>
                     <View>
                       {tab.mci ? <MaterialCommunityIcons name={tab.icon} size={22} color={isFocused ? COLORS.gold : COLORS.silver} /> : <Ionicons name={tab.icon} size={22} color={isFocused ? COLORS.gold : COLORS.silver} />}
                       {tab.key === 'Trash' && trashItems.length > 0 && <View style={styles.trashTabBadge}><Text style={styles.trashTabBadgeText}>{trashItems.length}</Text></View>}
