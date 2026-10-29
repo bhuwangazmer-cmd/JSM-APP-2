@@ -1,4 +1,4 @@
-name: EAS Cloud Build
+name: Free Cloud APK Build
 
 on:
   push:
@@ -6,36 +6,37 @@ on:
       - main
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Install dependencies & sync lockfile via npm
+      - name: Setup Java (Required for Android)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Convert to Native Android Code
+        run: npx expo prebuild --platform android
+
+      - name: Compile the APK 
         run: |
-          npm install --legacy-peer-deps
-          if ! git diff --quiet package-lock.json; then
-            git config --global user.name "github-actions[bot]"
-            git config --global user.email "github-actions[bot]@users.noreply.github.com"
-            git add package-lock.json
-            git commit -m "chore: update package-lock.json [skip ci]"
-            git push
-          fi
+          cd android
+          ./gradlew assembleRelease
 
-      - name: Install EAS CLI via npm
-        run: npm install -g eas-cli
-
-      - name: Trigger Android APK Build on Expo EAS
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: eas build --platform android --profile preview --non-interactive --no-wait
+      - name: Upload APK for Download
+        uses: actions/upload-artifact@v4
+        with:
+          name: my-android-app
+          path: android/app/build/outputs/apk/release/app-release.apk
