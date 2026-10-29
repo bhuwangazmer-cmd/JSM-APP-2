@@ -4,6 +4,7 @@
     "slug": "jsm-app",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./icon.png",
     "userInterfaceStyle": "light",
     "splash": {
       "backgroundColor": "#0C2D57"
