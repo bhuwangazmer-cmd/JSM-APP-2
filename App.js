@@ -8,6 +8,7 @@ import * as Sharing from 'expo-sharing';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, setDoc, onSnapshot, writeBatch } from 'firebase/firestore';
 import { Provider as PaperProvider, Appbar, TextInput as PaperInput, Button as PaperButton, Surface, MD3LightTheme } from 'react-native-paper';
+import { PanGestureHandler, State, GestureHandlerRootView } from 'react-native-gesture-handler';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -42,6 +43,10 @@ const ATTENDANCE_STATUSES = ['Present', 'Absent', 'Tardy', 'Rescheduled'];
 const FEE_TYPES = ['Monthly Fee', 'Admission Fee', 'Exam Fee', 'Instrument / Book'];
 const PAYMENT_MODES = ['UPI', 'Cash', 'Bank Transfer', 'Card'];
 const FEE_STATUSES = ['Paid', 'Partial', 'Unpaid'];
+
+// Navigation Order configuration
+const MAIN_TABS = ['Home', 'Students', 'Attendance', 'Fees', 'Trash'];
+const PROFILE_TABS = ['Classes', 'Attendance', 'Notes', 'Fees'];
 
 // ==========================================
 // 3. LOCAL TIMEZONE DATE & STRING UTILITIES
@@ -284,8 +289,8 @@ export default function App() {
       const update = await Updates.checkForUpdateAsync();
       if (update.isAvailable) {
         await Updates.fetchUpdateAsync();
-        Alert.alert('Update Ready', 'Restarting JSM APP with the latest version.', [{ text: 'Restart Now', onPress: () => Updates.reloadAsync() }]);
-      } else { Alert.alert('Up to Date', 'You are running the latest JSM APP build.'); }
+        Alert.alert('Update Ready', 'Restarting JSM with the latest version.', [{ text: 'Restart Now', onPress: () => Updates.reloadAsync() }]);
+      } else { Alert.alert('Up to Date', 'You are running the latest JSM build.'); }
     } catch (e) { Alert.alert('OTA Notice', 'OTA check requires a production/preview Expo Updates build.'); } finally { setCheckingOTA(false); }
   };
 
@@ -298,7 +303,7 @@ export default function App() {
   const handleOpenWhatsApp = (phoneStr, studentName) => {
     const digits = String(phoneStr || '').replace(/[^\d]/g, '');
     if (!digits) return;
-    Linking.openURL(`https://wa.me/${digits.length === 10 ? `91${digits}` : digits}?text=${encodeURIComponent(`Hello from JSM APP regarding ${studentName || 'your music classes'}.`)}`).catch(() => Alert.alert('WhatsApp Unavailable', 'Could not open WhatsApp.'));
+    Linking.openURL(`https://wa.me/${digits.length === 10 ? `91${digits}` : digits}?text=${encodeURIComponent(`Hello from JSM regarding ${studentName || 'your music classes'}.`)}`).catch(() => Alert.alert('WhatsApp Unavailable', 'Could not open WhatsApp.'));
   };
 
   const generateAndShareReceiptPDF = async (feeRecord) => {
@@ -318,7 +323,7 @@ export default function App() {
         .footer { text-align: center; margin-top: 28px; font-size: 11px; color: #8E9399; }
       </style></head>
       <body><div class="card">
-        <div class="crest">★ EST. 2022 ★</div><div class="title">JSM APP</div><div class="subtitle">OFFICIAL TUITION &amp; FEE RECEIPT</div><div class="divider"></div>
+        <div class="crest">★ EST. 2022 ★</div><div class="title">JSM</div><div class="subtitle">OFFICIAL TUITION &amp; FEE RECEIPT</div><div class="divider"></div>
         <div class="row"><span class="label">Student Name:</span><span class="val">${escapeHtml(st?.name || 'JSM Student')}</span></div>
         <div class="row"><span class="label">Instrument / Subject:</span><span class="val">${escapeHtml(subjectMap[st?.subjectId]?.name || 'Music Studies')}</span></div>
         <div class="row"><span class="label">Date of Transaction:</span><span class="val">${formatReadableLocalDate(feeRecord.date)}</span></div>
@@ -588,13 +593,47 @@ export default function App() {
     return grouped;
   }, [activeSubjects, studentMap]);
 
+  // Swipe gesture handler
+  const handleSwipe = (event) => {
+    const { translationX } = event.nativeEvent;
+    
+    // Only process swipe if movement is significant
+    if (Math.abs(translationX) < 50) return;
+
+    if (selectedStudentId) {
+      // Swiping inside Student Profile
+      const currentIndex = PROFILE_TABS.indexOf(profileTab);
+      if (translationX < -50 && currentIndex < PROFILE_TABS.length - 1) {
+        triggerLayoutAnimation();
+        setProfileTab(PROFILE_TABS[currentIndex + 1]);
+      } else if (translationX > 50 && currentIndex > 0) {
+        triggerLayoutAnimation();
+        setProfileTab(PROFILE_TABS[currentIndex - 1]);
+      } else if (translationX > 100 && currentIndex === 0) {
+        // Swipe back to directory from first profile tab
+        triggerLayoutAnimation();
+        setSelectedStudentId(null);
+      }
+    } else {
+      // Swiping between Main Tabs
+      const currentIndex = MAIN_TABS.indexOf(activeTab);
+      if (translationX < -50 && currentIndex < MAIN_TABS.length - 1) {
+        triggerLayoutAnimation();
+        setActiveTab(MAIN_TABS[currentIndex + 1]);
+      } else if (translationX > 50 && currentIndex > 0) {
+        triggerLayoutAnimation();
+        setActiveTab(MAIN_TABS[currentIndex - 1]);
+      }
+    }
+  };
+
   const renderHomeTab = () => {
     const recentFourActivities = activities.slice(0, 4);
     const todayISO = getTodayISO();
     return (
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <Surface style={styles.heroCard} elevation={4}>
-          <View style={styles.crestBadge}><Text style={styles.crestBadgeText}>★ JSM APP • EST. 2022 ★</Text></View>
+          <View style={styles.crestBadge}><Text style={styles.crestBadgeText}>★ JSM • EST. 2022 ★</Text></View>
           <Text style={styles.heroGreeting}>{getGreetingByLocalTime()}, Maestro</Text>
           <Text style={styles.heroDate}>{formatReadableLocalDate(todayISO)}</Text>
           <View style={styles.heroDivider} />
@@ -608,7 +647,7 @@ export default function App() {
           <View style={styles.cardHeaderRow}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               <Ionicons name="megaphone-outline" size={16} color={COLORS.navy} />
-              <Text style={styles.sectionTitle}>JSM APP NOTICE BOARD</Text>
+              <Text style={styles.sectionTitle}>JSM NOTICE BOARD</Text>
             </View>
             {noticeUpdatedAt ? <Text style={styles.silverMeta}>{formatReadableLocalDate(noticeUpdatedAt)}</Text> : null}
           </View>
@@ -772,7 +811,7 @@ export default function App() {
         </Surface>
 
         <View style={styles.pillNavContainer}>
-          {['Classes', 'Attendance', 'Notes', 'Fees'].map((tab) => (
+          {PROFILE_TABS.map((tab) => (
             <TouchableOpacity key={tab} style={[styles.pillNavItem, profileTab === tab && styles.pillNavItemActive]} onPress={() => { triggerLayoutAnimation(); setProfileTab(tab); }}>
               <Text style={[styles.pillNavText, profileTab === tab && styles.pillNavTextActive]}>{tab}</Text>
             </TouchableOpacity>
@@ -1016,316 +1055,322 @@ export default function App() {
   };
 
   return (
-    <SafeAreaProvider>
-      <PaperProvider theme={jsmTheme}>
-        <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-          <StatusBar barStyle="light-content" backgroundColor={COLORS.navy} />
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <PaperProvider theme={jsmTheme}>
+          <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+            <StatusBar barStyle="light-content" backgroundColor={COLORS.navy} />
 
-          <Appbar.Header style={{ backgroundColor: COLORS.navy, borderBottomWidth: 2, borderBottomColor: COLORS.gold }}>
-            <Appbar.Action icon="menu" color={COLORS.gold} onPress={openDrawer} />
-            <Appbar.Content title="JSM APP" subtitle="EST. 2022" titleStyle={{ color: COLORS.white, fontSize: 18, fontWeight: '700', letterSpacing: 2 }} subtitleStyle={{ color: COLORS.gold, fontSize: 10, letterSpacing: 3, fontWeight: '600' }} style={{ alignItems: 'center' }} />
-            <View style={{ width: 48 }} />
-          </Appbar.Header>
+            <Appbar.Header style={{ backgroundColor: COLORS.navy, borderBottomWidth: 2, borderBottomColor: COLORS.gold }}>
+              <Appbar.Action icon="menu" color={COLORS.gold} onPress={openDrawer} />
+              <Appbar.Content title="JSM" subtitle="EST. 2022" titleStyle={{ color: COLORS.white, fontSize: 18, fontWeight: '700', letterSpacing: 2 }} subtitleStyle={{ color: COLORS.gold, fontSize: 10, letterSpacing: 3, fontWeight: '600' }} style={{ alignItems: 'center' }} />
+              <View style={{ width: 48 }} />
+            </Appbar.Header>
 
-          <AnimatedScreen triggerKey={`${activeTab}-${selectedStudentId || 'list'}`}>
-            {activeTab === 'Home' && renderHomeTab()}
-            {activeTab === 'Students' && renderStudentsTab()}
-            {activeTab === 'Attendance' && renderAttendanceTab()}
-            {activeTab === 'Fees' && renderFeesTab()}
-            {activeTab === 'Trash' && renderTrashTab()}
-          </AnimatedScreen>
-
-          <View style={styles.bottomTabBar}>
-            {[{ key: 'Home', icon: 'grid-outline', label: 'Home' }, { key: 'Students', icon: 'people-outline', label: 'Students' }, { key: 'Attendance', icon: 'calendar-check-outline', label: 'Attendance', mci: true }, { key: 'Fees', icon: 'card-outline', label: 'Fees' }, { key: 'Trash', icon: 'trash-outline', label: 'Trash' }].map((tab) => {
-              const isFocused = activeTab === tab.key;
-              return (
-                <TouchableOpacity key={tab.key} style={styles.bottomTabItem} onPress={() => { if (tab.key !== 'Students') setSelectedStudentId(null); setActiveTab(tab.key); }}>
-                  <View>
-                    {tab.mci ? <MaterialCommunityIcons name={tab.icon} size={22} color={isFocused ? COLORS.gold : COLORS.silver} /> : <Ionicons name={tab.icon} size={22} color={isFocused ? COLORS.gold : COLORS.silver} />}
-                    {tab.key === 'Trash' && trashItems.length > 0 && <View style={styles.trashTabBadge}><Text style={styles.trashTabBadgeText}>{trashItems.length}</Text></View>}
-                  </View>
-                  <Text style={[styles.bottomTabLabel, isFocused && styles.bottomTabLabelActive]}>{tab.label}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          {/* ANIMATED SLIDE DRAWER */}
-          <Modal visible={drawerOpen} transparent animationType="none" onRequestClose={() => closeDrawer()}>
-            <View style={styles.drawerOverlay}>
-              <Animated.View style={[styles.drawerContainer, { transform: [{ translateX: drawerSlideAnim }] }]}>
-                <View style={styles.drawerHeader}><Text style={styles.crestBadgeText}>★ JSM APP ★</Text><Text style={styles.drawerTitle}>Music School Portal</Text><Text style={styles.drawerSub}>Est. 2022 • Official Edition</Text></View>
-                <View style={{ padding: 16, gap: 10 }}>
-                  {[{ label: 'Home Dashboard', tab: 'Home', icon: 'grid-outline' }, { label: 'Student Directory', tab: 'Students', icon: 'people-outline' }, { label: 'Global Attendance', tab: 'Attendance', icon: 'calendar-outline' }, { label: 'Global Fee Register', tab: 'Fees', icon: 'card-outline' }, { label: `Trash Archive (${trashItems.length})`, tab: 'Trash', icon: 'trash-outline' }].map((nav) => (
-                    <TouchableOpacity key={nav.tab} style={[styles.drawerNavItem, activeTab === nav.tab && styles.drawerNavItemActive]} onPress={() => { closeDrawer(() => { setSelectedStudentId(null); setActiveTab(nav.tab); }); }}>
-                      <Ionicons name={nav.icon} size={18} color={activeTab === nav.tab ? COLORS.gold : COLORS.navy} /><Text style={[styles.drawerNavText, activeTab === nav.tab && styles.drawerNavTextActive]}>{nav.label}</Text>
-                    </TouchableOpacity>
-                  ))}
-                  <View style={styles.drawerDivider} />
-                  <TouchableOpacity style={styles.drawerNavItem} onPress={() => { closeDrawer(() => { setSubjectForm({ id: null, name: '' }); setSubjectsModal(true); }); }}>
-                    <Ionicons name="musical-notes-outline" size={18} color={COLORS.navy} /><Text style={styles.drawerNavText}>Manage Instruments & Order</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.drawerNavItem} onPress={handleCheckOTA} disabled={checkingOTA}>
-                    {checkingOTA ? <ActivityIndicator size="small" color={COLORS.navy} /> : <><Ionicons name="cloud-download-outline" size={18} color={COLORS.navy} /><Text style={styles.drawerNavText}>Check for OTA Update</Text></>}
-                  </TouchableOpacity>
-                </View>
+            <PanGestureHandler onEnded={handleSwipe}>
+              <Animated.View style={{ flex: 1 }}>
+                <AnimatedScreen triggerKey={`${activeTab}-${selectedStudentId || 'list'}`}>
+                  {activeTab === 'Home' && renderHomeTab()}
+                  {activeTab === 'Students' && renderStudentsTab()}
+                  {activeTab === 'Attendance' && renderAttendanceTab()}
+                  {activeTab === 'Fees' && renderFeesTab()}
+                  {activeTab === 'Trash' && renderTrashTab()}
+                </AnimatedScreen>
               </Animated.View>
-              <Pressable style={{ flex: 1 }} onPress={() => closeDrawer()} />
-            </View>
-          </Modal>
+            </PanGestureHandler>
 
-          {/* LONG-PRESS CONTEXT MENU */}
-          <Modal visible={contextMenu.visible} transparent animationType="fade" onRequestClose={closeContextMenu}>
-            <Pressable style={styles.modalBackdrop} onPress={closeContextMenu}>
-              <Pressable style={styles.contextSheet} onPress={(e) => e.stopPropagation()}>
-                <Text style={styles.contextSheetHeader}>{contextMenu.title}</Text>
-                <View style={styles.contextDivider} />
-                <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('edit')}><Text style={styles.contextOptionText}>Edit Record</Text></TouchableOpacity>
-                {contextMenu.entityType === 'subject' && (
-                  <><TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('moveUp')}><Text style={styles.contextOptionText}>Reorder: Move Up</Text></TouchableOpacity>
-                  <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('moveDown')}><Text style={styles.contextOptionText}>Reorder: Move Down</Text></TouchableOpacity></>
-                )}
-                <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('delete')}><Text style={[styles.contextOptionText, { color: COLORS.danger }]}>Delete (Move to Trash)</Text></TouchableOpacity>
-                <PaperButton mode="outlined" textColor={COLORS.navy} style={{ marginTop: 10, width: '100%', borderColor: COLORS.silver }} onPress={() => { const shouldReopen = contextMenu.reopenSubjectsModal; closeContextMenu(); if (shouldReopen) setSubjectsModal(true); }}>Cancel</PaperButton>
-              </Pressable>
-            </Pressable>
-          </Modal>
-
-          {/* NOTICE READ MODAL */}
-          <Modal visible={noticeReadModal} transparent animationType="slide" onRequestClose={() => setNoticeReadModal(false)}>
-            <View style={styles.modalBackdrop}>
-              <Surface style={styles.modalCard} elevation={5}>
-                <Text style={styles.sectionTitle}>JSM APP OFFICIAL NOTICE</Text>
-                {noticeUpdatedAt ? <Text style={styles.silverMeta}>Posted {formatReadableLocalDate(noticeUpdatedAt)}</Text> : null}
-                <ScrollView style={{ maxHeight: 260, marginVertical: 14 }}><Text style={styles.noticeFullText}>{noticeText || 'No active notice has been posted.'}</Text></ScrollView>
-                <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => setNoticeReadModal(false)}>Close</PaperButton>
-              </Surface>
-            </View>
-          </Modal>
-
-          {/* NOTICE EDIT MODAL */}
-          <Modal visible={noticeEditModal} transparent animationType="slide" onRequestClose={() => setNoticeEditModal(false)}>
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
-              <Surface style={styles.modalCard} elevation={5}>
-                <Text style={styles.sectionTitle}>UPDATE NOTICE BOARD</Text>
-                <PaperInput mode="outlined" multiline numberOfLines={5} value={noticeInput} onChangeText={setNoticeInput} placeholder="Type new JSM announcement..." outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginTop: 10, marginBottom: 14 }} />
-                <View style={styles.modalBtnRow}>
-                  <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setNoticeEditModal(false)}>Cancel</PaperButton>
-                  <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleUpdateNotice}>Publish</PaperButton>
-                </View>
-              </Surface>
-            </KeyboardAvoidingView>
-          </Modal>
-
-          {/* TODAY'S AUDIT LOG MODAL */}
-          <Modal visible={todayLogModal} transparent animationType="slide" onRequestClose={() => setTodayLogModal(false)}>
-            <View style={styles.modalBackdrop}>
-              <Surface style={styles.modalCard} elevation={5}>
-                <Text style={styles.sectionTitle}>TODAY'S AUDIT LOG ({formatReadableLocalDate(getTodayISO())})</Text>
-                <ScrollView style={{ maxHeight: 320, marginVertical: 12 }}>
-                  {activities.filter((a) => a.dateISO === getTodayISO()).length === 0 ? <Text style={styles.emptyText}>No actions logged today.</Text> : activities.filter((a) => a.dateISO === getTodayISO()).map((act) => (
-                    <View key={act.id} style={styles.activityItem}>
-                      <View style={styles.activityDot} /><View style={{ flex: 1 }}><Text style={styles.activityTitle}>{act.title}</Text><Text style={styles.activitySub}>{act.subtitle}</Text></View>
+            <View style={styles.bottomTabBar}>
+              {[{ key: 'Home', icon: 'grid-outline', label: 'Home' }, { key: 'Students', icon: 'people-outline', label: 'Students' }, { key: 'Attendance', icon: 'calendar-check-outline', label: 'Attendance', mci: true }, { key: 'Fees', icon: 'card-outline', label: 'Fees' }, { key: 'Trash', icon: 'trash-outline', label: 'Trash' }].map((tab) => {
+                const isFocused = activeTab === tab.key;
+                return (
+                  <TouchableOpacity key={tab.key} style={styles.bottomTabItem} onPress={() => { if (tab.key !== 'Students') setSelectedStudentId(null); setActiveTab(tab.key); }}>
+                    <View>
+                      {tab.mci ? <MaterialCommunityIcons name={tab.icon} size={22} color={isFocused ? COLORS.gold : COLORS.silver} /> : <Ionicons name={tab.icon} size={22} color={isFocused ? COLORS.gold : COLORS.silver} />}
+                      {tab.key === 'Trash' && trashItems.length > 0 && <View style={styles.trashTabBadge}><Text style={styles.trashTabBadgeText}>{trashItems.length}</Text></View>}
                     </View>
-                  ))}
-                </ScrollView>
-                <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => setTodayLogModal(false)}>Close</PaperButton>
-              </Surface>
+                    <Text style={[styles.bottomTabLabel, isFocused && styles.bottomTabLabelActive]}>{tab.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
-          </Modal>
 
-          {/* MANAGE SUBJECTS MODAL */}
-          <Modal visible={subjectsModal} transparent animationType="slide" onRequestClose={() => setSubjectsModal(false)}>
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
-              <Surface style={styles.modalCard} elevation={5}>
-                <Text style={styles.sectionTitle}>MANAGE INSTRUMENTS & SUBJECTS</Text>
-                <Text style={styles.silverMeta}>Use the action buttons or long-press any subject to reorder, edit, or delete.</Text>
-                <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, alignItems: 'center' }}>
-                  <PaperInput mode="outlined" value={subjectForm.name} onChangeText={(t) => setSubjectForm({ ...subjectForm, name: t })} placeholder="e.g., Piano, Violin, Guitar" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ flex: 1, backgroundColor: COLORS.white, height: 50 }} />
-                  <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveSubject}>{subjectForm.id ? 'Update' : 'Add'}</PaperButton>
-                </View>
-                <ScrollView style={{ maxHeight: 280, marginVertical: 14 }}>
-                  {activeSubjects.length === 0 ? <Text style={styles.emptyText}>No subjects added yet.</Text> : activeSubjects.map((subj, idx) => (
-                    <Pressable key={subj.id} onLongPress={() => { setSubjectsModal(false); setTimeout(() => openLongPressMenu('subject', subj, subj.name, true), 200); }} delayLongPress={300}>
-                      <Surface style={styles.cleanRecordCard} elevation={2}>
-                        <Text style={[styles.recordPrimaryTitle, { flex: 1 }]}>{idx + 1}. {subj.name}</Text>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                          <TouchableOpacity style={styles.iconActionBtn} disabled={idx === 0} onPress={() => handleMoveSubjectOrder(subj, 'moveUp')}><Ionicons name="arrow-up" size={15} color={idx === 0 ? COLORS.silver : COLORS.navy} /></TouchableOpacity>
-                          <TouchableOpacity style={styles.iconActionBtn} disabled={idx === activeSubjects.length - 1} onPress={() => handleMoveSubjectOrder(subj, 'moveDown')}><Ionicons name="arrow-down" size={15} color={idx === activeSubjects.length - 1 ? COLORS.silver : COLORS.navy} /></TouchableOpacity>
-                          <TouchableOpacity style={styles.iconActionBtn} onPress={() => setSubjectForm({ id: subj.id, name: subj.name })}><Ionicons name="pencil" size={15} color={COLORS.navy} /></TouchableOpacity>
-                          <TouchableOpacity style={styles.iconActionBtn} onPress={() => handleSoftDelete('subjects', subj, `Subject: ${subj.name}`)}><Ionicons name="trash-outline" size={15} color={COLORS.danger} /></TouchableOpacity>
-                        </View>
-                      </Surface>
-                    </Pressable>
-                  ))}
-                </ScrollView>
-                <PaperButton mode="outlined" textColor={COLORS.navy} style={{ alignSelf: 'flex-end', borderColor: COLORS.silver }} onPress={() => { setSubjectForm({ id: null, name: '' }); setSubjectsModal(false); }}>Done</PaperButton>
-              </Surface>
-            </KeyboardAvoidingView>
-          </Modal>
-
-          {/* REGISTER / EDIT STUDENT MODAL */}
-          <Modal visible={studentModal} transparent animationType="slide" onRequestClose={() => setStudentModal(false)}>
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
-              <Surface style={styles.modalCard} elevation={5}>
-                <Text style={styles.sectionTitle}>{studentForm.id ? 'EDIT STUDENT DETAILS' : 'REGISTER NEW STUDENT'}</Text>
-                <ScrollView style={{ maxHeight: 380 }}>
-                  <Text style={styles.inputLabel}>Full Name *</Text>
-                  <PaperInput mode="outlined" value={studentForm.name} onChangeText={(t) => setStudentForm({ ...studentForm, name: t })} placeholder="Student Full Name" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                  <Text style={styles.inputLabel}>Select Subject / Instrument *</Text>
-                  <View style={styles.chipRow}>
-                    {activeSubjects.map((s) => (
-                      <TouchableOpacity key={s.id} style={[styles.choiceChip, studentForm.subjectId === s.id && styles.choiceChipSelected]} onPress={() => setStudentForm({ ...studentForm, subjectId: s.id })}>
-                        <Text style={[styles.choiceChipText, studentForm.subjectId === s.id && styles.choiceChipTextSelected]}>{s.name}</Text>
+            {/* ANIMATED SLIDE DRAWER */}
+            <Modal visible={drawerOpen} transparent animationType="none" onRequestClose={() => closeDrawer()}>
+              <View style={styles.drawerOverlay}>
+                <Animated.View style={[styles.drawerContainer, { transform: [{ translateX: drawerSlideAnim }] }]}>
+                  <View style={styles.drawerHeader}><Text style={styles.crestBadgeText}>★ JSM ★</Text><Text style={styles.drawerTitle}>Music School Portal</Text><Text style={styles.drawerSub}>Est. 2022 • Official Edition</Text></View>
+                  <View style={{ padding: 16, gap: 10 }}>
+                    {[{ label: 'Home Dashboard', tab: 'Home', icon: 'grid-outline' }, { label: 'Student Directory', tab: 'Students', icon: 'people-outline' }, { label: 'Global Attendance', tab: 'Attendance', icon: 'calendar-outline' }, { label: 'Global Fee Register', tab: 'Fees', icon: 'card-outline' }, { label: `Trash Archive (${trashItems.length})`, tab: 'Trash', icon: 'trash-outline' }].map((nav) => (
+                      <TouchableOpacity key={nav.tab} style={[styles.drawerNavItem, activeTab === nav.tab && styles.drawerNavItemActive]} onPress={() => { closeDrawer(() => { setSelectedStudentId(null); setActiveTab(nav.tab); }); }}>
+                        <Ionicons name={nav.icon} size={18} color={activeTab === nav.tab ? COLORS.gold : COLORS.navy} /><Text style={[styles.drawerNavText, activeTab === nav.tab && styles.drawerNavTextActive]}>{nav.label}</Text>
                       </TouchableOpacity>
                     ))}
+                    <View style={styles.drawerDivider} />
+                    <TouchableOpacity style={styles.drawerNavItem} onPress={() => { closeDrawer(() => { setSubjectForm({ id: null, name: '' }); setSubjectsModal(true); }); }}>
+                      <Ionicons name="musical-notes-outline" size={18} color={COLORS.navy} /><Text style={styles.drawerNavText}>Manage Instruments & Order</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.drawerNavItem} onPress={handleCheckOTA} disabled={checkingOTA}>
+                      {checkingOTA ? <ActivityIndicator size="small" color={COLORS.navy} /> : <><Ionicons name="cloud-download-outline" size={18} color={COLORS.navy} /><Text style={styles.drawerNavText}>Check for OTA Update</Text></>}
+                    </TouchableOpacity>
                   </View>
-                  <Text style={styles.inputLabel}>Phone / WhatsApp</Text>
-                  <PaperInput mode="outlined" value={studentForm.phone} onChangeText={(t) => setStudentForm({ ...studentForm, phone: t })} keyboardType="phone-pad" placeholder="+91 98765 43210" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                  <Text style={styles.inputLabel}>Parent / Guardian Name</Text>
-                  <PaperInput mode="outlined" value={studentForm.guardian} onChangeText={(t) => setStudentForm({ ...studentForm, guardian: t })} placeholder="Optional" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                  <Text style={styles.inputLabel}>Enrollment Date (YYYY-MM-DD)</Text>
-                  <QuickDateRow currentDate={studentForm.joinedDate} onSelectDate={(d) => setStudentForm({ ...studentForm, joinedDate: d })} />
-                  <PaperInput mode="outlined" value={studentForm.joinedDate} onChangeText={(t) => setStudentForm({ ...studentForm, joinedDate: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                </ScrollView>
-                <View style={styles.modalBtnRow}>
-                  <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setStudentModal(false)}>Cancel</PaperButton>
-                  <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveStudent}>Save Student</PaperButton>
-                </View>
-              </Surface>
-            </KeyboardAvoidingView>
-          </Modal>
+                </Animated.View>
+                <Pressable style={{ flex: 1 }} onPress={() => closeDrawer()} />
+              </View>
+            </Modal>
 
-          {/* EDIT LESSON MODAL */}
-          <Modal visible={lessonEditModal} transparent animationType="slide" onRequestClose={() => setLessonEditModal(false)}>
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
-              <Surface style={styles.modalCard} elevation={5}>
-                <Text style={styles.sectionTitle}>EDIT LESSON RECORD</Text>
-                <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
-                <QuickDateRow currentDate={lessonEditForm.date} onSelectDate={(d) => setLessonEditForm({ ...lessonEditForm, date: d })} />
-                <PaperInput mode="outlined" value={lessonEditForm.date} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, date: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                <Text style={styles.inputLabel}>Technique</Text>
-                <PaperInput mode="outlined" value={lessonEditForm.technique} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, technique: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                <Text style={styles.inputLabel}>Repertoire</Text>
-                <PaperInput mode="outlined" value={lessonEditForm.repertoire} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, repertoire: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                <Text style={styles.inputLabel}>Assignment</Text>
-                <PaperInput mode="outlined" value={lessonEditForm.assignment} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, assignment: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                <View style={styles.modalBtnRow}>
-                  <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setLessonEditModal(false)}>Cancel</PaperButton>
-                  <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveEditedLesson}>Update</PaperButton>
-                </View>
-              </Surface>
-            </KeyboardAvoidingView>
-          </Modal>
-
-          {/* MARK / EDIT ATTENDANCE MODAL */}
-          <Modal visible={attendanceModal} transparent animationType="slide" onRequestClose={() => setAttendanceModal(false)}>
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
-              <Surface style={styles.modalCard} elevation={5}>
-                <Text style={styles.sectionTitle}>{attendanceModalForm.id ? 'EDIT ATTENDANCE' : 'MARK GLOBAL ATTENDANCE'}</Text>
-                <ScrollView style={{ maxHeight: 360 }}>
-                  <Text style={styles.inputLabel}>Select Student *</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
-                    <View style={{ flexDirection: 'row', gap: 6 }}>
-                      {activeStudents.map((st) => (
-                        <TouchableOpacity key={st.id} style={[styles.choiceChip, attendanceModalForm.studentId === st.id && styles.choiceChipSelected]} onPress={() => setAttendanceModalForm({ ...attendanceModalForm, studentId: st.id })}>
-                          <Text style={[styles.choiceChipText, attendanceModalForm.studentId === st.id && styles.choiceChipTextSelected]}>{st.name}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  </ScrollView>
-                  <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
-                  <QuickDateRow currentDate={attendanceModalForm.date} onSelectDate={(d) => setAttendanceModalForm({ ...attendanceModalForm, date: d })} />
-                  <PaperInput mode="outlined" value={attendanceModalForm.date} onChangeText={(t) => setAttendanceModalForm({ ...attendanceModalForm, date: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                  <Text style={styles.inputLabel}>Attendance Status</Text>
-                  <View style={styles.chipRow}>
-                    {ATTENDANCE_STATUSES.map((st) => (
-                      <TouchableOpacity key={st} style={[styles.choiceChip, attendanceModalForm.status === st && styles.choiceChipSelected]} onPress={() => setAttendanceModalForm({ ...attendanceModalForm, status: st })}>
-                        <Text style={[styles.choiceChipText, attendanceModalForm.status === st && styles.choiceChipTextSelected]}>{st}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                  <Text style={styles.inputLabel}>Remarks</Text>
-                  <PaperInput mode="outlined" value={attendanceModalForm.remarks} onChangeText={(t) => setAttendanceModalForm({ ...attendanceModalForm, remarks: t })} placeholder="Optional remarks" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                </ScrollView>
-                <View style={styles.modalBtnRow}>
-                  <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setAttendanceModal(false)}>Cancel</PaperButton>
-                  <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveModalAttendance}>Save</PaperButton>
-                </View>
-              </Surface>
-            </KeyboardAvoidingView>
-          </Modal>
-
-          {/* RECORD / EDIT FEE MODAL */}
-          <Modal visible={feeModal} transparent animationType="slide" onRequestClose={() => setFeeModal(false)}>
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
-              <Surface style={styles.modalCard} elevation={5}>
-                <Text style={styles.sectionTitle}>{feeForm.id ? 'EDIT FEE TRANSACTION' : 'RECORD FEE'}</Text>
-                <ScrollView style={{ maxHeight: 420 }}>
-                  <Text style={styles.inputLabel}>Select Student *</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
-                    <View style={{ flexDirection: 'row', gap: 6 }}>
-                      {activeStudents.map((st) => (
-                        <TouchableOpacity key={st.id} style={[styles.choiceChip, feeForm.studentId === st.id && styles.choiceChipSelected]} onPress={() => setFeeForm({ ...feeForm, studentId: st.id })}>
-                          <Text style={[styles.choiceChipText, feeForm.studentId === st.id && styles.choiceChipTextSelected]}>{st.name}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  </ScrollView>
-                  <Text style={styles.inputLabel}>Fee Type</Text>
-                  <View style={styles.chipRow}>
-                    {FEE_TYPES.map((ft) => (
-                      <TouchableOpacity key={ft} style={[styles.choiceChip, feeForm.feeType === ft && styles.choiceChipSelected]} onPress={() => setFeeForm({ ...feeForm, feeType: ft })}>
-                        <Text style={[styles.choiceChipText, feeForm.feeType === ft && styles.choiceChipTextSelected]}>{ft}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                  {feeForm.feeType === 'Monthly Fee' && (
-                    <><Text style={styles.inputLabel}>Month Paid For * (Required for Monthly Fee)</Text>
-                    <PaperInput mode="outlined" value={feeForm.monthPaidFor} onChangeText={(t) => setFeeForm({ ...feeForm, monthPaidFor: t })} placeholder="e.g., October 2026" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} /></>
+            {/* LONG-PRESS CONTEXT MENU */}
+            <Modal visible={contextMenu.visible} transparent animationType="fade" onRequestClose={closeContextMenu}>
+              <Pressable style={styles.modalBackdrop} onPress={closeContextMenu}>
+                <Pressable style={styles.contextSheet} onPress={(e) => e.stopPropagation()}>
+                  <Text style={styles.contextSheetHeader}>{contextMenu.title}</Text>
+                  <View style={styles.contextDivider} />
+                  <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('edit')}><Text style={styles.contextOptionText}>Edit Record</Text></TouchableOpacity>
+                  {contextMenu.entityType === 'subject' && (
+                    <><TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('moveUp')}><Text style={styles.contextOptionText}>Reorder: Move Up</Text></TouchableOpacity>
+                    <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('moveDown')}><Text style={styles.contextOptionText}>Reorder: Move Down</Text></TouchableOpacity></>
                   )}
-                  <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
-                  <QuickDateRow currentDate={feeForm.date} onSelectDate={(d) => setFeeForm({ ...feeForm, date: d })} />
-                  <PaperInput mode="outlined" value={feeForm.date} onChangeText={(t) => setFeeForm({ ...feeForm, date: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                  <Text style={styles.inputLabel}>Payment Mode</Text>
-                  <View style={styles.chipRow}>
-                    {PAYMENT_MODES.map((m) => (
-                      <TouchableOpacity key={m} style={[styles.choiceChip, feeForm.mode === m && styles.choiceChipSelected]} onPress={() => setFeeForm({ ...feeForm, mode: m })}>
-                        <Text style={[styles.choiceChipText, feeForm.mode === m && styles.choiceChipTextSelected]}>{m}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                  <Text style={styles.inputLabel}>Fee Status</Text>
-                  <View style={styles.chipRow}>
-                    {FEE_STATUSES.map((st) => (
-                      <TouchableOpacity key={st} style={[styles.choiceChip, feeForm.status === st && styles.choiceChipSelected]} onPress={() => {
-                        if (st === 'Unpaid') setFeeForm({ ...feeForm, status: st, amountPaid: '0' });
-                        else if (st === 'Paid') setFeeForm({ ...feeForm, status: st, balanceDue: '0' });
-                        else setFeeForm({ ...feeForm, status: st });
-                      }}>
-                        <Text style={[styles.choiceChipText, feeForm.status === st && styles.choiceChipTextSelected]}>{st}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                  <Text style={styles.inputLabel}>Amount Paid (₹) {feeForm.status === 'Unpaid' ? '(Auto-locked to 0)' : '*'}</Text>
-                  <PaperInput mode="outlined" editable={feeForm.status !== 'Unpaid'} keyboardType="numeric" value={feeForm.status === 'Unpaid' ? '0' : feeForm.amountPaid} onChangeText={(t) => setFeeForm({ ...feeForm, amountPaid: sanitizeCurrency(t) })} placeholder="0" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: feeForm.status === 'Unpaid' ? '#E5E5E5' : COLORS.white, marginBottom: 8 }} />
-                  <Text style={styles.inputLabel}>Balance Due (₹) {feeForm.status === 'Paid' ? '(Auto-locked to 0)' : '*'}</Text>
-                  <PaperInput mode="outlined" editable={feeForm.status !== 'Paid'} keyboardType="numeric" value={feeForm.status === 'Paid' ? '0' : feeForm.balanceDue} onChangeText={(t) => setFeeForm({ ...feeForm, balanceDue: sanitizeCurrency(t) })} placeholder="0" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: feeForm.status === 'Paid' ? '#E5E5E5' : COLORS.white, marginBottom: 8 }} />
-                  <Text style={styles.inputLabel}>Remarks</Text>
-                  <PaperInput mode="outlined" value={feeForm.remarks} onChangeText={(t) => setFeeForm({ ...feeForm, remarks: t })} placeholder="Optional receipt notes" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                </ScrollView>
-                <View style={[styles.modalBtnRow, { flexWrap: 'wrap', gap: 8 }]}>
-                  <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setFeeModal(false)}>Cancel</PaperButton>
-                  <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => handleSaveFee(false)}>Save</PaperButton>
-                  <PaperButton mode="contained" buttonColor={COLORS.gold} textColor={COLORS.navy} onPress={() => handleSaveFee(true)}>Save & Share</PaperButton>
-                </View>
-              </Surface>
-            </KeyboardAvoidingView>
-          </Modal>
+                  <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('delete')}><Text style={[styles.contextOptionText, { color: COLORS.danger }]}>Delete (Move to Trash)</Text></TouchableOpacity>
+                  <PaperButton mode="outlined" textColor={COLORS.navy} style={{ marginTop: 10, width: '100%', borderColor: COLORS.silver }} onPress={() => { const shouldReopen = contextMenu.reopenSubjectsModal; closeContextMenu(); if (shouldReopen) setSubjectsModal(true); }}>Cancel</PaperButton>
+                </Pressable>
+              </Pressable>
+            </Modal>
 
-        </SafeAreaView>
-      </PaperProvider>
-    </SafeAreaProvider>
+            {/* NOTICE READ MODAL */}
+            <Modal visible={noticeReadModal} transparent animationType="slide" onRequestClose={() => setNoticeReadModal(false)}>
+              <View style={styles.modalBackdrop}>
+                <Surface style={styles.modalCard} elevation={5}>
+                  <Text style={styles.sectionTitle}>JSM OFFICIAL NOTICE</Text>
+                  {noticeUpdatedAt ? <Text style={styles.silverMeta}>Posted {formatReadableLocalDate(noticeUpdatedAt)}</Text> : null}
+                  <ScrollView style={{ maxHeight: 260, marginVertical: 14 }}><Text style={styles.noticeFullText}>{noticeText || 'No active notice has been posted.'}</Text></ScrollView>
+                  <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => setNoticeReadModal(false)}>Close</PaperButton>
+                </Surface>
+              </View>
+            </Modal>
+
+            {/* NOTICE EDIT MODAL */}
+            <Modal visible={noticeEditModal} transparent animationType="slide" onRequestClose={() => setNoticeEditModal(false)}>
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
+                <Surface style={styles.modalCard} elevation={5}>
+                  <Text style={styles.sectionTitle}>UPDATE NOTICE BOARD</Text>
+                  <PaperInput mode="outlined" multiline numberOfLines={5} value={noticeInput} onChangeText={setNoticeInput} placeholder="Type new JSM announcement..." outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginTop: 10, marginBottom: 14 }} />
+                  <View style={styles.modalBtnRow}>
+                    <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setNoticeEditModal(false)}>Cancel</PaperButton>
+                    <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleUpdateNotice}>Publish</PaperButton>
+                  </View>
+                </Surface>
+              </KeyboardAvoidingView>
+            </Modal>
+
+            {/* TODAY'S AUDIT LOG MODAL */}
+            <Modal visible={todayLogModal} transparent animationType="slide" onRequestClose={() => setTodayLogModal(false)}>
+              <View style={styles.modalBackdrop}>
+                <Surface style={styles.modalCard} elevation={5}>
+                  <Text style={styles.sectionTitle}>TODAY'S AUDIT LOG ({formatReadableLocalDate(getTodayISO())})</Text>
+                  <ScrollView style={{ maxHeight: 320, marginVertical: 12 }}>
+                    {activities.filter((a) => a.dateISO === getTodayISO()).length === 0 ? <Text style={styles.emptyText}>No actions logged today.</Text> : activities.filter((a) => a.dateISO === getTodayISO()).map((act) => (
+                      <View key={act.id} style={styles.activityItem}>
+                        <View style={styles.activityDot} /><View style={{ flex: 1 }}><Text style={styles.activityTitle}>{act.title}</Text><Text style={styles.activitySub}>{act.subtitle}</Text></View>
+                      </View>
+                    ))}
+                  </ScrollView>
+                  <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => setTodayLogModal(false)}>Close</PaperButton>
+                </Surface>
+              </View>
+            </Modal>
+
+            {/* MANAGE SUBJECTS MODAL */}
+            <Modal visible={subjectsModal} transparent animationType="slide" onRequestClose={() => setSubjectsModal(false)}>
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
+                <Surface style={styles.modalCard} elevation={5}>
+                  <Text style={styles.sectionTitle}>MANAGE INSTRUMENTS & SUBJECTS</Text>
+                  <Text style={styles.silverMeta}>Use the action buttons or long-press any subject to reorder, edit, or delete.</Text>
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, alignItems: 'center' }}>
+                    <PaperInput mode="outlined" value={subjectForm.name} onChangeText={(t) => setSubjectForm({ ...subjectForm, name: t })} placeholder="e.g., Piano, Violin, Guitar" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ flex: 1, backgroundColor: COLORS.white, height: 50 }} />
+                    <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveSubject}>{subjectForm.id ? 'Update' : 'Add'}</PaperButton>
+                  </View>
+                  <ScrollView style={{ maxHeight: 280, marginVertical: 14 }}>
+                    {activeSubjects.length === 0 ? <Text style={styles.emptyText}>No subjects added yet.</Text> : activeSubjects.map((subj, idx) => (
+                      <Pressable key={subj.id} onLongPress={() => { setSubjectsModal(false); setTimeout(() => openLongPressMenu('subject', subj, subj.name, true), 200); }} delayLongPress={300}>
+                        <Surface style={styles.cleanRecordCard} elevation={2}>
+                          <Text style={[styles.recordPrimaryTitle, { flex: 1 }]}>{idx + 1}. {subj.name}</Text>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <TouchableOpacity style={styles.iconActionBtn} disabled={idx === 0} onPress={() => handleMoveSubjectOrder(subj, 'moveUp')}><Ionicons name="arrow-up" size={15} color={idx === 0 ? COLORS.silver : COLORS.navy} /></TouchableOpacity>
+                            <TouchableOpacity style={styles.iconActionBtn} disabled={idx === activeSubjects.length - 1} onPress={() => handleMoveSubjectOrder(subj, 'moveDown')}><Ionicons name="arrow-down" size={15} color={idx === activeSubjects.length - 1 ? COLORS.silver : COLORS.navy} /></TouchableOpacity>
+                            <TouchableOpacity style={styles.iconActionBtn} onPress={() => setSubjectForm({ id: subj.id, name: subj.name })}><Ionicons name="pencil" size={15} color={COLORS.navy} /></TouchableOpacity>
+                            <TouchableOpacity style={styles.iconActionBtn} onPress={() => handleSoftDelete('subjects', subj, `Subject: ${subj.name}`)}><Ionicons name="trash-outline" size={15} color={COLORS.danger} /></TouchableOpacity>
+                          </View>
+                        </Surface>
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                  <PaperButton mode="outlined" textColor={COLORS.navy} style={{ alignSelf: 'flex-end', borderColor: COLORS.silver }} onPress={() => { setSubjectForm({ id: null, name: '' }); setSubjectsModal(false); }}>Done</PaperButton>
+                </Surface>
+              </KeyboardAvoidingView>
+            </Modal>
+
+            {/* REGISTER / EDIT STUDENT MODAL */}
+            <Modal visible={studentModal} transparent animationType="slide" onRequestClose={() => setStudentModal(false)}>
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
+                <Surface style={styles.modalCard} elevation={5}>
+                  <Text style={styles.sectionTitle}>{studentForm.id ? 'EDIT STUDENT DETAILS' : 'REGISTER NEW STUDENT'}</Text>
+                  <ScrollView style={{ maxHeight: 380 }}>
+                    <Text style={styles.inputLabel}>Full Name *</Text>
+                    <PaperInput mode="outlined" value={studentForm.name} onChangeText={(t) => setStudentForm({ ...studentForm, name: t })} placeholder="Student Full Name" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                    <Text style={styles.inputLabel}>Select Subject / Instrument *</Text>
+                    <View style={styles.chipRow}>
+                      {activeSubjects.map((s) => (
+                        <TouchableOpacity key={s.id} style={[styles.choiceChip, studentForm.subjectId === s.id && styles.choiceChipSelected]} onPress={() => setStudentForm({ ...studentForm, subjectId: s.id })}>
+                          <Text style={[styles.choiceChipText, studentForm.subjectId === s.id && styles.choiceChipTextSelected]}>{s.name}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <Text style={styles.inputLabel}>Phone / WhatsApp</Text>
+                    <PaperInput mode="outlined" value={studentForm.phone} onChangeText={(t) => setStudentForm({ ...studentForm, phone: t })} keyboardType="phone-pad" placeholder="+91 98765 43210" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                    <Text style={styles.inputLabel}>Parent / Guardian Name</Text>
+                    <PaperInput mode="outlined" value={studentForm.guardian} onChangeText={(t) => setStudentForm({ ...studentForm, guardian: t })} placeholder="Optional" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                    <Text style={styles.inputLabel}>Enrollment Date (YYYY-MM-DD)</Text>
+                    <QuickDateRow currentDate={studentForm.joinedDate} onSelectDate={(d) => setStudentForm({ ...studentForm, joinedDate: d })} />
+                    <PaperInput mode="outlined" value={studentForm.joinedDate} onChangeText={(t) => setStudentForm({ ...studentForm, joinedDate: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                  </ScrollView>
+                  <View style={styles.modalBtnRow}>
+                    <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setStudentModal(false)}>Cancel</PaperButton>
+                    <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveStudent}>Save Student</PaperButton>
+                  </View>
+                </Surface>
+              </KeyboardAvoidingView>
+            </Modal>
+
+            {/* EDIT LESSON MODAL */}
+            <Modal visible={lessonEditModal} transparent animationType="slide" onRequestClose={() => setLessonEditModal(false)}>
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
+                <Surface style={styles.modalCard} elevation={5}>
+                  <Text style={styles.sectionTitle}>EDIT LESSON RECORD</Text>
+                  <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+                  <QuickDateRow currentDate={lessonEditForm.date} onSelectDate={(d) => setLessonEditForm({ ...lessonEditForm, date: d })} />
+                  <PaperInput mode="outlined" value={lessonEditForm.date} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, date: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                  <Text style={styles.inputLabel}>Technique</Text>
+                  <PaperInput mode="outlined" value={lessonEditForm.technique} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, technique: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                  <Text style={styles.inputLabel}>Repertoire</Text>
+                  <PaperInput mode="outlined" value={lessonEditForm.repertoire} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, repertoire: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                  <Text style={styles.inputLabel}>Assignment</Text>
+                  <PaperInput mode="outlined" value={lessonEditForm.assignment} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, assignment: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                  <View style={styles.modalBtnRow}>
+                    <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setLessonEditModal(false)}>Cancel</PaperButton>
+                    <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveEditedLesson}>Update</PaperButton>
+                  </View>
+                </Surface>
+              </KeyboardAvoidingView>
+            </Modal>
+
+            {/* MARK / EDIT ATTENDANCE MODAL */}
+            <Modal visible={attendanceModal} transparent animationType="slide" onRequestClose={() => setAttendanceModal(false)}>
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
+                <Surface style={styles.modalCard} elevation={5}>
+                  <Text style={styles.sectionTitle}>{attendanceModalForm.id ? 'EDIT ATTENDANCE' : 'MARK GLOBAL ATTENDANCE'}</Text>
+                  <ScrollView style={{ maxHeight: 360 }}>
+                    <Text style={styles.inputLabel}>Select Student *</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
+                      <View style={{ flexDirection: 'row', gap: 6 }}>
+                        {activeStudents.map((st) => (
+                          <TouchableOpacity key={st.id} style={[styles.choiceChip, attendanceModalForm.studentId === st.id && styles.choiceChipSelected]} onPress={() => setAttendanceModalForm({ ...attendanceModalForm, studentId: st.id })}>
+                            <Text style={[styles.choiceChipText, attendanceModalForm.studentId === st.id && styles.choiceChipTextSelected]}>{st.name}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </ScrollView>
+                    <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+                    <QuickDateRow currentDate={attendanceModalForm.date} onSelectDate={(d) => setAttendanceModalForm({ ...attendanceModalForm, date: d })} />
+                    <PaperInput mode="outlined" value={attendanceModalForm.date} onChangeText={(t) => setAttendanceModalForm({ ...attendanceModalForm, date: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                    <Text style={styles.inputLabel}>Attendance Status</Text>
+                    <View style={styles.chipRow}>
+                      {ATTENDANCE_STATUSES.map((st) => (
+                        <TouchableOpacity key={st} style={[styles.choiceChip, attendanceModalForm.status === st && styles.choiceChipSelected]} onPress={() => setAttendanceModalForm({ ...attendanceModalForm, status: st })}>
+                          <Text style={[styles.choiceChipText, attendanceModalForm.status === st && styles.choiceChipTextSelected]}>{st}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <Text style={styles.inputLabel}>Remarks</Text>
+                    <PaperInput mode="outlined" value={attendanceModalForm.remarks} onChangeText={(t) => setAttendanceModalForm({ ...attendanceModalForm, remarks: t })} placeholder="Optional remarks" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                  </ScrollView>
+                  <View style={styles.modalBtnRow}>
+                    <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setAttendanceModal(false)}>Cancel</PaperButton>
+                    <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveModalAttendance}>Save</PaperButton>
+                  </View>
+                </Surface>
+              </KeyboardAvoidingView>
+            </Modal>
+
+            {/* RECORD / EDIT FEE MODAL */}
+            <Modal visible={feeModal} transparent animationType="slide" onRequestClose={() => setFeeModal(false)}>
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
+                <Surface style={styles.modalCard} elevation={5}>
+                  <Text style={styles.sectionTitle}>{feeForm.id ? 'EDIT FEE TRANSACTION' : 'RECORD FEE'}</Text>
+                  <ScrollView style={{ maxHeight: 420 }}>
+                    <Text style={styles.inputLabel}>Select Student *</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
+                      <View style={{ flexDirection: 'row', gap: 6 }}>
+                        {activeStudents.map((st) => (
+                          <TouchableOpacity key={st.id} style={[styles.choiceChip, feeForm.studentId === st.id && styles.choiceChipSelected]} onPress={() => setFeeForm({ ...feeForm, studentId: st.id })}>
+                            <Text style={[styles.choiceChipText, feeForm.studentId === st.id && styles.choiceChipTextSelected]}>{st.name}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </ScrollView>
+                    <Text style={styles.inputLabel}>Fee Type</Text>
+                    <View style={styles.chipRow}>
+                      {FEE_TYPES.map((ft) => (
+                        <TouchableOpacity key={ft} style={[styles.choiceChip, feeForm.feeType === ft && styles.choiceChipSelected]} onPress={() => setFeeForm({ ...feeForm, feeType: ft })}>
+                          <Text style={[styles.choiceChipText, feeForm.feeType === ft && styles.choiceChipTextSelected]}>{ft}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    {feeForm.feeType === 'Monthly Fee' && (
+                      <><Text style={styles.inputLabel}>Month Paid For * (Required for Monthly Fee)</Text>
+                      <PaperInput mode="outlined" value={feeForm.monthPaidFor} onChangeText={(t) => setFeeForm({ ...feeForm, monthPaidFor: t })} placeholder="e.g., October 2026" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} /></>
+                    )}
+                    <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+                    <QuickDateRow currentDate={feeForm.date} onSelectDate={(d) => setFeeForm({ ...feeForm, date: d })} />
+                    <PaperInput mode="outlined" value={feeForm.date} onChangeText={(t) => setFeeForm({ ...feeForm, date: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                    <Text style={styles.inputLabel}>Payment Mode</Text>
+                    <View style={styles.chipRow}>
+                      {PAYMENT_MODES.map((m) => (
+                        <TouchableOpacity key={m} style={[styles.choiceChip, feeForm.mode === m && styles.choiceChipSelected]} onPress={() => setFeeForm({ ...feeForm, mode: m })}>
+                          <Text style={[styles.choiceChipText, feeForm.mode === m && styles.choiceChipTextSelected]}>{m}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <Text style={styles.inputLabel}>Fee Status</Text>
+                    <View style={styles.chipRow}>
+                      {FEE_STATUSES.map((st) => (
+                        <TouchableOpacity key={st} style={[styles.choiceChip, feeForm.status === st && styles.choiceChipSelected]} onPress={() => {
+                          if (st === 'Unpaid') setFeeForm({ ...feeForm, status: st, amountPaid: '0' });
+                          else if (st === 'Paid') setFeeForm({ ...feeForm, status: st, balanceDue: '0' });
+                          else setFeeForm({ ...feeForm, status: st });
+                        }}>
+                          <Text style={[styles.choiceChipText, feeForm.status === st && styles.choiceChipTextSelected]}>{st}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <Text style={styles.inputLabel}>Amount Paid (₹) {feeForm.status === 'Unpaid' ? '(Auto-locked to 0)' : '*'}</Text>
+                    <PaperInput mode="outlined" editable={feeForm.status !== 'Unpaid'} keyboardType="numeric" value={feeForm.status === 'Unpaid' ? '0' : feeForm.amountPaid} onChangeText={(t) => setFeeForm({ ...feeForm, amountPaid: sanitizeCurrency(t) })} placeholder="0" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: feeForm.status === 'Unpaid' ? '#E5E5E5' : COLORS.white, marginBottom: 8 }} />
+                    <Text style={styles.inputLabel}>Balance Due (₹) {feeForm.status === 'Paid' ? '(Auto-locked to 0)' : '*'}</Text>
+                    <PaperInput mode="outlined" editable={feeForm.status !== 'Paid'} keyboardType="numeric" value={feeForm.status === 'Paid' ? '0' : feeForm.balanceDue} onChangeText={(t) => setFeeForm({ ...feeForm, balanceDue: sanitizeCurrency(t) })} placeholder="0" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: feeForm.status === 'Paid' ? '#E5E5E5' : COLORS.white, marginBottom: 8 }} />
+                    <Text style={styles.inputLabel}>Remarks</Text>
+                    <PaperInput mode="outlined" value={feeForm.remarks} onChangeText={(t) => setFeeForm({ ...feeForm, remarks: t })} placeholder="Optional receipt notes" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                  </ScrollView>
+                  <View style={[styles.modalBtnRow, { flexWrap: 'wrap', gap: 8 }]}>
+                    <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setFeeModal(false)}>Cancel</PaperButton>
+                    <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => handleSaveFee(false)}>Save</PaperButton>
+                    <PaperButton mode="contained" buttonColor={COLORS.gold} textColor={COLORS.navy} onPress={() => handleSaveFee(true)}>Save & Share</PaperButton>
+                  </View>
+                </Surface>
+              </KeyboardAvoidingView>
+            </Modal>
+
+          </SafeAreaView>
+        </PaperProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 
