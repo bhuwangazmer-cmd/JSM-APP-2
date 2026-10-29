@@ -8,7 +8,7 @@ import * as Sharing from 'expo-sharing';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, setDoc, onSnapshot, writeBatch } from 'firebase/firestore';
 import { Provider as PaperProvider, Appbar, TextInput as PaperInput, Button as PaperButton, Surface, MD3LightTheme } from 'react-native-paper';
-import { PanGestureHandler, State, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { PanGestureHandler, GestureHandlerRootView } from 'react-native-gesture-handler';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -124,8 +124,8 @@ const AnimatedScreen = ({ children, triggerKey }) => {
     fadeAnim.setValue(0);
     slideAnim.setValue(14);
     Animated.parallel([
-      Animated.timing(fadeAnim, { toValue: 1, duration: 240, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-      Animated.timing(slideAnim, { toValue: 0, duration: 240, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(fadeAnim, { toValue: 1, duration: 200, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 200, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
     ]).start();
   }, [triggerKey, fadeAnim, slideAnim]);
   return <Animated.View style={{ flex: 1, opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>{children}</Animated.View>;
@@ -593,34 +593,31 @@ export default function App() {
     return grouped;
   }, [activeSubjects, studentMap]);
 
-  // Swipe gesture handler
+  // Swipe gesture handler (Corrected for vertical scrolling)
   const handleSwipe = (event) => {
     const { translationX } = event.nativeEvent;
     
-    // Only process swipe if movement is significant
-    if (Math.abs(translationX) < 50) return;
+    // Safety check to ensure deliberate swiping
+    if (Math.abs(translationX) < 45) return;
 
     if (selectedStudentId) {
-      // Swiping inside Student Profile
       const currentIndex = PROFILE_TABS.indexOf(profileTab);
-      if (translationX < -50 && currentIndex < PROFILE_TABS.length - 1) {
+      if (translationX < -45 && currentIndex < PROFILE_TABS.length - 1) {
         triggerLayoutAnimation();
         setProfileTab(PROFILE_TABS[currentIndex + 1]);
-      } else if (translationX > 50 && currentIndex > 0) {
+      } else if (translationX > 45 && currentIndex > 0) {
         triggerLayoutAnimation();
         setProfileTab(PROFILE_TABS[currentIndex - 1]);
-      } else if (translationX > 100 && currentIndex === 0) {
-        // Swipe back to directory from first profile tab
+      } else if (translationX > 90 && currentIndex === 0) {
         triggerLayoutAnimation();
         setSelectedStudentId(null);
       }
     } else {
-      // Swiping between Main Tabs
       const currentIndex = MAIN_TABS.indexOf(activeTab);
-      if (translationX < -50 && currentIndex < MAIN_TABS.length - 1) {
+      if (translationX < -45 && currentIndex < MAIN_TABS.length - 1) {
         triggerLayoutAnimation();
         setActiveTab(MAIN_TABS[currentIndex + 1]);
-      } else if (translationX > 50 && currentIndex > 0) {
+      } else if (translationX > 45 && currentIndex > 0) {
         triggerLayoutAnimation();
         setActiveTab(MAIN_TABS[currentIndex - 1]);
       }
@@ -1067,7 +1064,7 @@ export default function App() {
               <View style={{ width: 48 }} />
             </Appbar.Header>
 
-            <PanGestureHandler onEnded={handleSwipe}>
+            <PanGestureHandler activeOffsetX={[-40, 40]} failOffsetY={[-20, 20]} onEnded={handleSwipe}>
               <Animated.View style={{ flex: 1 }}>
                 <AnimatedScreen triggerKey={`${activeTab}-${selectedStudentId || 'list'}`}>
                   {activeTab === 'Home' && renderHomeTab()}
