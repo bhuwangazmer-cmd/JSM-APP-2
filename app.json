@@ -11,7 +11,11 @@
     },
     "android": {
       "package": "com.jsmapp.official",
-      "versionCode": 1
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./icon.png",
+        "backgroundColor": "#FFFFFF"
+      }
     },
     "ios": {
       "bundleIdentifier": "com.jsmapp.official",
