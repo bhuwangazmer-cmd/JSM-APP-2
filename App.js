@@ -14,7 +14,6 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-// Only used for internal UI expansions (accordions, deleting items), NOT tab navigation
 const triggerLayoutAnimation = () => LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
 // ==========================================
@@ -77,29 +76,38 @@ const getGreetingByLocalTime = () => {
 };
 
 const formatReadableLocalDate = (isoDateStr) => {
-  const normalized = normalizeISODate(isoDateStr) || isoDateStr;
+  const safeStr = String(isoDateStr ?? '').trim();
+  if (!safeStr) return 'Unknown Date';
+  const normalized = normalizeISODate(safeStr) || safeStr;
   const parts = normalized.split('-');
-  if (parts.length !== 3) return isoDateStr;
+  if (parts.length !== 3) return safeStr;
   const [year, monthIndex, day] = [parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10)];
-  return isNaN(year) || isNaN(monthIndex) || isNaN(day) || !MONTHS_SHORT[monthIndex] ? isoDateStr : `${day} ${MONTHS_SHORT[monthIndex]} ${year}`;
+  return isNaN(year) || isNaN(monthIndex) || isNaN(day) || !MONTHS_SHORT[monthIndex] ? safeStr : `${day} ${MONTHS_SHORT[monthIndex]} ${year}`;
 };
 
 const getMonthYearFromISO = (isoDateStr) => {
-  const normalized = normalizeISODate(isoDateStr) || isoDateStr;
+  const safeStr = String(isoDateStr ?? '').trim();
+  if (!safeStr) return 'Unknown Month';
+  const normalized = normalizeISODate(safeStr) || safeStr;
   const parts = normalized.split('-');
   if (parts.length < 2) return 'Unknown Month';
+  const year = parseInt(parts[0], 10);
   const monthIdx = parseInt(parts[1], 10) - 1;
-  return isNaN(parseInt(parts[0], 10)) || isNaN(monthIdx) || monthIdx < 0 || monthIdx > 11 ? 'Unknown Month' : `${MONTHS_FULL[monthIdx]} ${parts[0]}`;
+  return isNaN(year) || isNaN(monthIdx) || monthIdx < 0 || monthIdx > 11 ? 'Unknown Month' : `${MONTHS_FULL[monthIdx]} ${year}`;
 };
 
 const isWithinLastTwoLocalMonths = (isoDateStr) => {
-  const normalized = normalizeISODate(isoDateStr) || isoDateStr;
+  const safeStr = String(isoDateStr ?? '').trim();
+  const normalized = normalizeISODate(safeStr) || safeStr;
   if (!normalized) return false;
   const parts = normalized.split('-');
   if (parts.length < 2) return false;
+  const year = parseInt(parts[0], 10);
+  const monthIdx = parseInt(parts[1], 10) - 1;
+  if (isNaN(year) || isNaN(monthIdx)) return false;
   const now = new Date();
-  const diff = (now.getFullYear() * 12 + now.getMonth()) - (parseInt(parts[0], 10) * 12 + parseInt(parts[1], 10) - 1);
-  return diff >= 0 && diff <= 1;
+  const diff = (now.getFullYear() * 12 + now.getMonth()) - (year * 12 + monthIdx);
+  return diff <= 1;
 };
 
 const getDaysRemainingInTrash = (deletedAtMs) => {
@@ -112,6 +120,15 @@ const sanitizeCurrency = (val) => {
   const cleaned = String(val ?? '').replace(/[^0-9.]/g, '');
   const parts = cleaned.split('.');
   return parts.length <= 1 ? cleaned : `${parts[0]}.${parts.slice(1).join('').slice(0, 2)}`;
+};
+
+const commitBatchDeletes = async (entries) => {
+  const CHUNK_SIZE = 450;
+  for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
+    const batch = writeBatch(db);
+    entries.slice(i, i + CHUNK_SIZE).forEach((entry) => batch.delete(doc(db, entry.col, entry.id)));
+    await batch.commit();
+  }
 };
 
 // ==========================================
@@ -128,7 +145,7 @@ const AnimatedScreen = ({ children, triggerKey, direction }) => {
       Animated.timing(fadeAnim, { toValue: 1, duration: 250, easing: Easing.out(Easing.quad), useNativeDriver: true }),
       Animated.timing(slideAnim, { toValue: 0, duration: 250, easing: Easing.out(Easing.quad), useNativeDriver: true }),
     ]).start();
-  }, [triggerKey, direction]);
+  }, [triggerKey, direction, fadeAnim, slideAnim]);
 
   return <Animated.View style={{ flex: 1, opacity: fadeAnim, transform: [{ translateX: slideAnim }] }}>{children}</Animated.View>;
 };
@@ -155,7 +172,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('Home');
   const [selectedStudentId, setSelectedStudentId] = useState(null);
   const [profileTab, setProfileTab] = useState('Classes');
-  const [navDirection, setNavDirection] = useState(1); // 1 for sliding left (forward), -1 for sliding right (backward)
+  const [navDirection, setNavDirection] = useState(1);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerSlideAnim = useRef(new Animated.Value(-290)).current;
@@ -247,9 +264,9 @@ export default function App() {
   };
 
   const activeSubjects = useMemo(() => subjects.filter((s) => !s.isDeleted).sort((a, b) => (a.order ?? 999) - (b.order ?? 999)), [subjects]);
-  const subjectMap = useMemo(() => Object.fromEntries(subjects.map(s => [s.id, s])), [subjects]);
+  const subjectMap = useMemo(() => Object.fromEntries(subjects.map((s) => [s.id, s])), [subjects]);
   const activeStudents = useMemo(() => students.filter((st) => !st.isDeleted).sort((a, b) => (a.name || '').localeCompare(b.name || '')), [students]);
-  const studentMap = useMemo(() => Object.fromEntries(students.map(s => [s.id, s])), [students]);
+  const studentMap = useMemo(() => Object.fromEntries(students.map((s) => [s.id, s])), [students]);
   const activeLessons = useMemo(() => lessons.filter((l) => !l.isDeleted && studentMap[l.studentId] && !studentMap[l.studentId].isDeleted).sort((a, b) => (b.date || '').localeCompare(a.date || '')), [lessons, studentMap]);
   const activeAttendance = useMemo(() => attendance.filter((a) => !a.isDeleted && studentMap[a.studentId] && !studentMap[a.studentId].isDeleted).sort((a, b) => (b.date || '').localeCompare(a.date || '')), [attendance, studentMap]);
   const activeFees = useMemo(() => fees.filter((f) => !f.isDeleted && studentMap[f.studentId] && !studentMap[f.studentId].isDeleted).sort((a, b) => (b.date || '').localeCompare(a.date || '')), [fees, studentMap]);
@@ -269,16 +286,28 @@ export default function App() {
   ].sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0)), [subjects, students, lessons, attendance, fees, studentMap]);
 
   const selectedStudent = useMemo(() => activeStudents.find((s) => s.id === selectedStudentId) || null, [activeStudents, selectedStudentId]);
+
   useEffect(() => {
-    if (selectedStudent) { setNoteDraft(selectedStudent.notes || ''); setPriorityDraft(Boolean(selectedStudent.priorityNote)); }
-  }, [selectedStudentId, selectedStudent]);
+    if (selectedStudent) {
+      setNoteDraft(selectedStudent.notes || '');
+      setPriorityDraft(Boolean(selectedStudent.priorityNote));
+    }
+  }, [selectedStudentId, selectedStudent?.notes, selectedStudent?.priorityNote]);
+
+  useEffect(() => {
+    setInlineLessonForm({ date: getTodayISO(), technique: '', repertoire: '', assignment: '' });
+    setInlineAttendanceForm({ date: getTodayISO(), status: 'Present', remarks: '' });
+  }, [selectedStudentId]);
 
   const getStudentMetrics = useCallback((studentId) => {
     const stLessons = activeLessons.filter((l) => l.studentId === studentId);
     const stAttendance = activeAttendance.filter((a) => a.studentId === studentId);
     const stFees = activeFees.filter((f) => f.studentId === studentId);
     let attendancePct = 'N/A';
-    if (stAttendance.length > 0) attendancePct = `${Math.round((stAttendance.filter((a) => a.status === 'Present' || a.status === 'Tardy').length / stAttendance.length) * 100)}%`;
+    const gradedAttendance = stAttendance.filter((a) => a.status !== 'Rescheduled');
+    if (gradedAttendance.length > 0) {
+      attendancePct = `${Math.round((gradedAttendance.filter((a) => a.status === 'Present' || a.status === 'Tardy').length / gradedAttendance.length) * 100)}%`;
+    }
     let feeStatus = 'No Records', totalDue = 0;
     if (stFees.length > 0) {
       stFees.forEach((f) => { totalDue += Number(f.balanceDue || 0); });
@@ -330,7 +359,7 @@ export default function App() {
         <div class="crest">★ EST. 2022 ★</div><div class="title">JSM</div><div class="subtitle">OFFICIAL TUITION &amp; FEE RECEIPT</div><div class="divider"></div>
         <div class="row"><span class="label">Student Name:</span><span class="val">${escapeHtml(st?.name || 'JSM Student')}</span></div>
         <div class="row"><span class="label">Instrument / Subject:</span><span class="val">${escapeHtml(subjectMap[st?.subjectId]?.name || 'Music Studies')}</span></div>
-        <div class="row"><span class="label">Date of Transaction:</span><span class="val">${formatReadableLocalDate(feeRecord.date)}</span></div>
+        <div class="row"><span class="label">Date of Transaction:</span><span class="val">${escapeHtml(formatReadableLocalDate(feeRecord.date))}</span></div>
         <div class="row"><span class="label">Fee Category:</span><span class="val">${escapeHtml(feeRecord.feeType || 'Tuition Fee')}</span></div>
         ${feeRecord.feeType === 'Monthly Fee' ? `<div class="row"><span class="label">Month Paid For:</span><span class="val">${escapeHtml(feeRecord.monthPaidFor || '-')}</span></div>` : ''}
         <div class="row"><span class="label">Payment Mode:</span><span class="val">${escapeHtml(feeRecord.mode || 'UPI')}</span></div>
@@ -360,6 +389,7 @@ export default function App() {
       await updateDoc(doc(db, collectionName, item.id), { isDeleted: true, deletedAt: Date.now() });
       await logActivity('Moved to Trash', label);
       if (collectionName === 'students' && selectedStudentId === item.id) setSelectedStudentId(null);
+      if (collectionName === 'subjects' && subjectForm.id === item.id) setSubjectForm({ id: null, name: '' });
     } catch (e) { Alert.alert('Error', 'Unable to move item to Trash.'); }
   };
 
@@ -385,20 +415,34 @@ export default function App() {
     if (!item) return;
     if (action === 'delete') {
       await handleSoftDelete({ subject: 'subjects', student: 'students', lesson: 'lessons', attendance: 'attendance', fee: 'fees' }[entityType], item, title);
-      if (reopenSubjectsModal) setSubjectsModal(true);
+      if (reopenSubjectsModal) setTimeout(() => setSubjectsModal(true), 250);
       return;
     }
     if ((action === 'moveUp' || action === 'moveDown') && entityType === 'subject') {
       await handleMoveSubjectOrder(item, action);
-      if (reopenSubjectsModal) setSubjectsModal(true);
+      if (reopenSubjectsModal) setTimeout(() => setSubjectsModal(true), 250);
       return;
     }
     if (action === 'edit') {
-      if (entityType === 'subject') { setSubjectForm({ id: item.id, name: item.name }); setSubjectsModal(true); }
-      else if (entityType === 'student') { setStudentForm({ id: item.id, name: item.name || '', subjectId: item.subjectId || activeSubjects[0]?.id || '', phone: item.phone || '', guardian: item.guardian || '', joinedDate: item.joinedDate || getTodayISO() }); setStudentModal(true); }
-      else if (entityType === 'lesson') { setLessonEditForm({ id: item.id, studentId: item.studentId, date: item.date || getTodayISO(), technique: item.technique || '', repertoire: item.repertoire || '', assignment: item.assignment || '' }); setLessonEditModal(true); }
-      else if (entityType === 'attendance') { setAttendanceModalForm({ id: item.id, studentId: item.studentId, date: item.date || getTodayISO(), status: item.status || 'Present', remarks: item.remarks || '' }); setAttendanceModal(true); }
-      else if (entityType === 'fee') { setFeeForm({ id: item.id, studentId: item.studentId, feeType: item.feeType || 'Monthly Fee', monthPaidFor: item.monthPaidFor || getLocalCurrentMonthLabel(), date: item.date || getTodayISO(), mode: item.mode || 'UPI', status: item.status || 'Paid', amountPaid: String(item.amountPaid ?? '0'), balanceDue: String(item.balanceDue ?? '0'), remarks: item.remarks || '' }); setFeeModal(true); }
+      setTimeout(() => {
+        if (entityType === 'subject') {
+          setSubjectForm({ id: item.id, name: item.name });
+          setSubjectsModal(true);
+        } else if (entityType === 'student') {
+          const validSubjectId = activeSubjects.some((s) => s.id === item.subjectId) ? item.subjectId : (activeSubjects[0]?.id || '');
+          setStudentForm({ id: item.id, name: item.name || '', subjectId: validSubjectId, phone: item.phone || '', guardian: item.guardian || '', joinedDate: item.joinedDate || getTodayISO() });
+          setStudentModal(true);
+        } else if (entityType === 'lesson') {
+          setLessonEditForm({ id: item.id, studentId: item.studentId, date: item.date || getTodayISO(), technique: item.technique || '', repertoire: item.repertoire || '', assignment: item.assignment || '' });
+          setLessonEditModal(true);
+        } else if (entityType === 'attendance') {
+          setAttendanceModalForm({ id: item.id, studentId: item.studentId, date: item.date || getTodayISO(), status: item.status || 'Present', remarks: item.remarks || '' });
+          setAttendanceModal(true);
+        } else if (entityType === 'fee') {
+          setFeeForm({ id: item.id, studentId: item.studentId, feeType: item.feeType || 'Monthly Fee', monthPaidFor: item.monthPaidFor || getLocalCurrentMonthLabel(), date: item.date || getTodayISO(), mode: item.mode || 'UPI', status: item.status || 'Paid', amountPaid: String(item.amountPaid ?? '0'), balanceDue: String(item.balanceDue ?? '0'), remarks: item.remarks || '' });
+          setFeeModal(true);
+        }
+      }, 250);
     }
   };
 
@@ -520,7 +564,9 @@ export default function App() {
       if (feeForm.id) { await updateDoc(doc(db, 'fees', feeForm.id), payload); await logActivity('Updated Fee Record', `${studentMap[payload.studentId]?.name || 'Student'} • ₹${numericPaid}`); }
       else { await addDoc(collection(db, 'fees'), { ...payload, isDeleted: false, deletedAt: null }); await logActivity('Recorded Fee', `${studentMap[payload.studentId]?.name || 'Student'} • ₹${numericPaid} (${payload.status})`); }
       setFeeModal(false);
-      if (shouldSharePDF) await generateAndShareReceiptPDF(payload);
+      if (shouldSharePDF) {
+        setTimeout(() => { generateAndShareReceiptPDF(payload); }, 350);
+      }
     } catch (e) { Alert.alert('Error', 'Could not save fee record.'); }
   };
 
@@ -540,14 +586,13 @@ export default function App() {
   const handlePermanentDeleteItem = async (item) => {
     try {
       triggerLayoutAnimation();
-      const batch = writeBatch(db);
-      batch.delete(doc(db, item._col, item.id));
+      const docsToDelete = [{ col: item._col, id: item.id }];
       if (item._col === 'students') {
-        lessons.filter((l) => l.studentId === item.id).forEach((l) => batch.delete(doc(db, 'lessons', l.id)));
-        attendance.filter((a) => a.studentId === item.id).forEach((a) => batch.delete(doc(db, 'attendance', a.id)));
-        fees.filter((f) => f.studentId === item.id).forEach((f) => batch.delete(doc(db, 'fees', f.id)));
+        lessons.filter((l) => l.studentId === item.id).forEach((l) => docsToDelete.push({ col: 'lessons', id: l.id }));
+        attendance.filter((a) => a.studentId === item.id).forEach((a) => docsToDelete.push({ col: 'attendance', id: a.id }));
+        fees.filter((f) => f.studentId === item.id).forEach((f) => docsToDelete.push({ col: 'fees', id: f.id }));
       }
-      await batch.commit();
+      await commitBatchDeletes(docsToDelete);
       await logActivity('Permanently Deleted', item._label);
     } catch (e) { Alert.alert('Error', 'Could not delete item.'); }
   };
@@ -559,7 +604,6 @@ export default function App() {
       { text: 'Empty Trash', style: 'destructive', onPress: async () => {
           try {
             triggerLayoutAnimation();
-            const batch = writeBatch(db);
             const deletedStudentIds = new Set(trashItems.filter((i) => i._col === 'students').map((i) => i.id));
             const docsToDelete = new Map();
             trashItems.forEach((item) => docsToDelete.set(`${item._col}/${item.id}`, { col: item._col, id: item.id }));
@@ -568,8 +612,7 @@ export default function App() {
               attendance.filter((a) => deletedStudentIds.has(a.studentId)).forEach((a) => docsToDelete.set(`attendance/${a.id}`, { col: 'attendance', id: a.id }));
               fees.filter((f) => deletedStudentIds.has(f.studentId)).forEach((f) => docsToDelete.set(`fees/${f.id}`, { col: 'fees', id: f.id }));
             }
-            Array.from(docsToDelete.values()).slice(0, 450).forEach((entry) => batch.delete(doc(db, entry.col, entry.id)));
-            await batch.commit();
+            await commitBatchDeletes(Array.from(docsToDelete.values()));
             await logActivity('Emptied Trash Archive', `${trashItems.length} items removed`);
           } catch (e) { Alert.alert('Error', 'Failed to empty trash.'); }
         },
@@ -597,14 +640,11 @@ export default function App() {
     return grouped;
   }, [activeSubjects, studentMap]);
 
-  // Smoothed swipe handler with fixed offset thresholds so vertical scrolling works flawlessly
   const handleSwipe = (event) => {
     const { translationX } = event.nativeEvent;
-    
-    // Require at least a 35px horizontal drag before triggering a swipe
     if (Math.abs(translationX) < 35) return;
 
-    if (selectedStudentId) {
+    if (activeTab === 'Students' && selectedStudent) {
       const currentIndex = PROFILE_TABS.indexOf(profileTab);
       if (translationX < -35 && currentIndex < PROFILE_TABS.length - 1) {
         setNavDirection(1);
@@ -695,10 +735,10 @@ export default function App() {
   const renderStudentCard = (st) => {
     const metrics = getStudentMetrics(st.id);
     return (
-      <Pressable key={st.id} style={({ pressed }) => pressed && styles.cardPressed} onPress={() => { 
-          setNavDirection(1); 
-          setSelectedStudentId(st.id); 
-          setProfileTab('Classes'); 
+      <Pressable key={st.id} style={({ pressed }) => pressed && styles.cardPressed} onPress={() => {
+          setNavDirection(1);
+          setSelectedStudentId(st.id);
+          setProfileTab('Classes');
         }} onLongPress={() => openLongPressMenu('student', st, st.name)} delayLongPress={300}>
         <Surface style={styles.cleanRecordCard} elevation={2}>
           <View style={{ flex: 1 }}>
@@ -726,7 +766,8 @@ export default function App() {
       if (studentFilter === 'Due') return getStudentMetrics(st.id).feeStatus === 'Due / Unpaid';
       return true;
     });
-    const unassignedStudents = filteredStudents.filter((st) => !new Set(activeSubjects.map((s) => s.id)).has(st.subjectId));
+    const activeSubjectIdSet = new Set(activeSubjects.map((s) => s.id));
+    const unassignedStudents = filteredStudents.filter((st) => !activeSubjectIdSet.has(st.subjectId));
 
     return (
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -739,7 +780,7 @@ export default function App() {
           }}>+ Student</PaperButton>
         </View>
 
-        <PaperInput mode="outlined" placeholder="Search student, instrument, or phone..." value={studentSearch} onChangeText={setStudentSearch} left={<PaperInput.Icon icon="magnify" />} right={studentSearch.length > 0 && <PaperInput.Icon icon="close-circle" onPress={() => setStudentSearch('')} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 14 }} />
+        <PaperInput mode="outlined" placeholder="Search student, instrument, or phone..." value={studentSearch} onChangeText={setStudentSearch} left={<PaperInput.Icon icon="magnify" />} right={studentSearch.length > 0 ? <PaperInput.Icon icon="close-circle" onPress={() => setStudentSearch('')} /> : null} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 14 }} />
 
         <View style={[styles.chipRow, { marginBottom: 14 }]}>
           {[{ key: 'All', label: `All (${activeStudents.length})` }, { key: 'Due', label: 'Due / Unpaid' }, { key: 'Priority', label: '★ Priority Notes' }].map((f) => (
@@ -817,11 +858,12 @@ export default function App() {
 
         <View style={styles.pillNavContainer}>
           {PROFILE_TABS.map((tab) => (
-            <TouchableOpacity key={tab} style={[styles.pillNavItem, profileTab === tab && styles.pillNavItemActive]} onPress={() => { 
+            <TouchableOpacity key={tab} style={[styles.pillNavItem, profileTab === tab && styles.pillNavItemActive]} onPress={() => {
+                if (tab === profileTab) return;
                 const newIdx = PROFILE_TABS.indexOf(tab);
                 const oldIdx = PROFILE_TABS.indexOf(profileTab);
                 setNavDirection(newIdx > oldIdx ? 1 : -1);
-                setProfileTab(tab); 
+                setProfileTab(tab);
               }}>
               <Text style={[styles.pillNavText, profileTab === tab && styles.pillNavTextActive]}>{tab}</Text>
             </TouchableOpacity>
@@ -1079,7 +1121,7 @@ export default function App() {
 
             <PanGestureHandler activeOffsetX={[-35, 35]} failOffsetY={[-15, 15]} onEnded={handleSwipe}>
               <Animated.View style={{ flex: 1 }}>
-                <AnimatedScreen direction={navDirection} triggerKey={`${activeTab}-${selectedStudentId || 'list'}`}>
+                <AnimatedScreen direction={navDirection} triggerKey={`${activeTab}-${selectedStudentId || 'list'}-${selectedStudentId ? profileTab : ''}`}>
                   {activeTab === 'Home' && renderHomeTab()}
                   {activeTab === 'Students' && renderStudentsTab()}
                   {activeTab === 'Attendance' && renderAttendanceTab()}
@@ -1093,12 +1135,18 @@ export default function App() {
               {[{ key: 'Home', icon: 'grid-outline', label: 'Home' }, { key: 'Students', icon: 'people-outline', label: 'Students' }, { key: 'Attendance', icon: 'calendar-check-outline', label: 'Attendance', mci: true }, { key: 'Fees', icon: 'card-outline', label: 'Fees' }, { key: 'Trash', icon: 'trash-outline', label: 'Trash' }].map((tab) => {
                 const isFocused = activeTab === tab.key;
                 return (
-                  <TouchableOpacity key={tab.key} style={styles.bottomTabItem} onPress={() => { 
+                  <TouchableOpacity key={tab.key} style={styles.bottomTabItem} onPress={() => {
+                      if (tab.key === 'Students' && activeTab === 'Students' && selectedStudentId) {
+                        setNavDirection(-1);
+                        setSelectedStudentId(null);
+                        return;
+                      }
+                      if (tab.key === activeTab) return;
                       const newIdx = MAIN_TABS.indexOf(tab.key);
                       const oldIdx = MAIN_TABS.indexOf(activeTab);
                       setNavDirection(newIdx > oldIdx ? 1 : -1);
-                      if (tab.key !== 'Students') setSelectedStudentId(null); 
-                      setActiveTab(tab.key); 
+                      if (tab.key !== 'Students') setSelectedStudentId(null);
+                      setActiveTab(tab.key);
                     }}>
                     <View>
                       {tab.mci ? <MaterialCommunityIcons name={tab.icon} size={22} color={isFocused ? COLORS.gold : COLORS.silver} /> : <Ionicons name={tab.icon} size={22} color={isFocused ? COLORS.gold : COLORS.silver} />}
@@ -1117,7 +1165,15 @@ export default function App() {
                   <View style={styles.drawerHeader}><Text style={styles.crestBadgeText}>★ JSM ★</Text><Text style={styles.drawerTitle}>Music School Portal</Text><Text style={styles.drawerSub}>Est. 2022 • Official Edition</Text></View>
                   <View style={{ padding: 16, gap: 10 }}>
                     {[{ label: 'Home Dashboard', tab: 'Home', icon: 'grid-outline' }, { label: 'Student Directory', tab: 'Students', icon: 'people-outline' }, { label: 'Global Attendance', tab: 'Attendance', icon: 'calendar-outline' }, { label: 'Global Fee Register', tab: 'Fees', icon: 'card-outline' }, { label: `Trash Archive (${trashItems.length})`, tab: 'Trash', icon: 'trash-outline' }].map((nav) => (
-                      <TouchableOpacity key={nav.tab} style={[styles.drawerNavItem, activeTab === nav.tab && styles.drawerNavItemActive]} onPress={() => { closeDrawer(() => { setSelectedStudentId(null); setActiveTab(nav.tab); }); }}>
+                      <TouchableOpacity key={nav.tab} style={[styles.drawerNavItem, activeTab === nav.tab && styles.drawerNavItemActive]} onPress={() => {
+                          closeDrawer(() => {
+                            const newIdx = MAIN_TABS.indexOf(nav.tab);
+                            const oldIdx = MAIN_TABS.indexOf(activeTab);
+                            setNavDirection(newIdx >= oldIdx ? 1 : -1);
+                            setSelectedStudentId(null);
+                            setActiveTab(nav.tab);
+                          });
+                        }}>
                         <Ionicons name={nav.icon} size={18} color={activeTab === nav.tab ? COLORS.gold : COLORS.navy} /><Text style={[styles.drawerNavText, activeTab === nav.tab && styles.drawerNavTextActive]}>{nav.label}</Text>
                       </TouchableOpacity>
                     ))}
@@ -1146,7 +1202,7 @@ export default function App() {
                     <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('moveDown')}><Text style={styles.contextOptionText}>Reorder: Move Down</Text></TouchableOpacity></>
                   )}
                   <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('delete')}><Text style={[styles.contextOptionText, { color: COLORS.danger }]}>Delete (Move to Trash)</Text></TouchableOpacity>
-                  <PaperButton mode="outlined" textColor={COLORS.navy} style={{ marginTop: 10, width: '100%', borderColor: COLORS.silver }} onPress={() => { const shouldReopen = contextMenu.reopenSubjectsModal; closeContextMenu(); if (shouldReopen) setSubjectsModal(true); }}>Cancel</PaperButton>
+                  <PaperButton mode="outlined" textColor={COLORS.navy} style={{ marginTop: 10, width: '100%', borderColor: COLORS.silver }} onPress={() => { const shouldReopen = contextMenu.reopenSubjectsModal; closeContextMenu(); if (shouldReopen) setTimeout(() => setSubjectsModal(true), 250); }}>Cancel</PaperButton>
                 </Pressable>
               </Pressable>
             </Modal>
@@ -1206,7 +1262,7 @@ export default function App() {
                   </View>
                   <ScrollView style={{ maxHeight: 280, marginVertical: 14 }}>
                     {activeSubjects.length === 0 ? <Text style={styles.emptyText}>No subjects added yet.</Text> : activeSubjects.map((subj, idx) => (
-                      <Pressable key={subj.id} onLongPress={() => { setSubjectsModal(false); setTimeout(() => openLongPressMenu('subject', subj, subj.name, true), 200); }} delayLongPress={300}>
+                      <Pressable key={subj.id} onLongPress={() => { setSubjectsModal(false); setTimeout(() => openLongPressMenu('subject', subj, subj.name, true), 250); }} delayLongPress={300}>
                         <Surface style={styles.cleanRecordCard} elevation={2}>
                           <Text style={[styles.recordPrimaryTitle, { flex: 1 }]}>{idx + 1}. {subj.name}</Text>
                           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
