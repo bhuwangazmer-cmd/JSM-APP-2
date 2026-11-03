@@ -8,7 +8,7 @@ import * as Sharing from 'expo-sharing';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, setDoc, onSnapshot, writeBatch } from 'firebase/firestore';
 import { Provider as PaperProvider, Appbar, TextInput as PaperInput, Button as PaperButton, Surface, MD3LightTheme } from 'react-native-paper';
-import { PanGestureHandler, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { PanGestureHandler, GestureHandlerRootView, State } from 'react-native-gesture-handler';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -50,6 +50,7 @@ const FEE_STATUSES = ['Paid', 'Partial', 'Unpaid'];
 
 const MAIN_TABS = ['Home', 'Students', 'Attendance', 'Fees', 'Trash'];
 const PROFILE_TABS = ['Classes', 'Attendance', 'Notes', 'Fees'];
+const SUBJECT_ROW_HEIGHT = 60;
 
 // ==========================================
 // 3. UTILITIES & BATCH HELPERS
@@ -146,9 +147,9 @@ const commitBatchSoftDeletes = async (entries) => {
 };
 
 // ==========================================
-// 4. INTERACTIVE SWIPE & FADE SCREEN WRAPPER
+// 4. CALM & GENTLE SWIPE SCREEN WRAPPER
 // ==========================================
-const AnimatedScreen = ({ children, triggerKey, direction, onSwipe }) => {
+const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled = true }) => {
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const slideAnim = useRef(new Animated.Value(0)).current;
   const dragX = useRef(new Animated.Value(0)).current;
@@ -158,11 +159,12 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe }) => {
     [dragX]
   );
 
+  // Subtle, calm horizontal follow while finger is dragging (no elastic stretch)
   const dragTranslateX = useMemo(
     () =>
       dragX.interpolate({
-        inputRange: [-320, 0, 320],
-        outputRange: [-130, 0, 130],
+        inputRange: [-280, 0, 280],
+        outputRange: [-34, 0, 34],
         extrapolate: 'clamp',
       }),
     [dragX]
@@ -172,7 +174,7 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe }) => {
     () =>
       dragX.interpolate({
         inputRange: [-260, 0, 260],
-        outputRange: [0.65, 1, 0.65],
+        outputRange: [0.86, 1, 0.86],
         extrapolate: 'clamp',
       }),
     [dragX]
@@ -180,45 +182,54 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe }) => {
 
   useEffect(() => {
     dragX.stopAnimation(() => dragX.setValue(0));
-    fadeAnim.setValue(0.15);
-    slideAnim.setValue(direction * 110);
+    fadeAnim.setValue(0);
+    slideAnim.setValue(direction * 24);
 
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
-        duration: 240,
-        easing: Easing.out(Easing.cubic),
+        duration: 260,
+        easing: Easing.out(Easing.quad),
         useNativeDriver: true,
       }),
-      Animated.spring(slideAnim, {
+      Animated.timing(slideAnim, {
         toValue: 0,
-        damping: 22,
-        stiffness: 175,
-        mass: 0.75,
+        duration: 260,
+        easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
     ]).start();
   }, [triggerKey, direction, fadeAnim, slideAnim, dragX]);
 
-  const handleGestureEnd = (e) => {
-    if (typeof onSwipe === 'function') {
-      onSwipe(e);
+  const handleGestureStateChange = (e) => {
+    const { state } = e.nativeEvent;
+    if (state === State.END || state === State.CANCELLED || state === State.FAILED) {
+      if (state === State.END && typeof onSwipe === 'function') {
+        onSwipe(e);
+      }
+      Animated.timing(dragX, {
+        toValue: 0,
+        duration: 190,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
     }
-    Animated.spring(dragX, {
-      toValue: 0,
-      damping: 20,
-      stiffness: 220,
-      mass: 0.7,
-      useNativeDriver: true,
-    }).start();
   };
+
+  if (!swipeEnabled) {
+    return (
+      <Animated.View style={{ flex: 1, opacity: fadeAnim, transform: [{ translateX: slideAnim }] }}>
+        {children}
+      </Animated.View>
+    );
+  }
 
   return (
     <PanGestureHandler
-      activeOffsetX={[-18, 18]}
+      activeOffsetX={[-22, 22]}
       failOffsetY={[-15, 15]}
       onGestureEvent={onGestureEvent}
-      onEnded={handleGestureEnd}
+      onHandlerStateChange={handleGestureStateChange}
     >
       <Animated.View style={{ flex: 1, opacity: dragOpacity, transform: [{ translateX: dragTranslateX }] }}>
         <Animated.View style={{ flex: 1, opacity: fadeAnim, transform: [{ translateX: slideAnim }] }}>
@@ -258,6 +269,7 @@ export default function App() {
   const [selectedStudentId, setSelectedStudentId] = useState(null);
   const [profileTab, setProfileTab] = useState('Classes');
   const [navDirection, setNavDirection] = useState(1);
+  const [subTabDirection, setSubTabDirection] = useState(1);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerSlideAnim = useRef(new Animated.Value(-290)).current;
@@ -318,6 +330,12 @@ export default function App() {
   const [checkingOTA, setCheckingOTA] = useState(false);
   const [calendarPicker, setCalendarPicker] = useState({ visible: false, selectedDate: getTodayISO(), viewYear: new Date().getFullYear(), viewMonth: new Date().getMonth(), onSelect: null });
   const initialLoadDone = useRef(false);
+
+  // Drag-and-drop state for Subject 6-dot handle reordering
+  const [orderedSubjects, setOrderedSubjects] = useState([]);
+  const [draggingSubjectId, setDraggingSubjectId] = useState(null);
+  const dragSubjectY = useRef(new Animated.Value(0)).current;
+  const dragInfoRef = useRef({ active: false, subjectId: null, startIdx: 0, currentIdx: 0, list: [] });
 
   const openCalendarPicker = useCallback((currentDateStr, onSelectCallback) => {
     const norm = normalizeISODate(currentDateStr) || getTodayISO();
@@ -382,6 +400,12 @@ export default function App() {
   const activeAttendance = useMemo(() => attendance.filter((a) => !a.isDeleted && studentMap[a.studentId] && !studentMap[a.studentId].isDeleted).sort((a, b) => (b.date || '').localeCompare(a.date || '')), [attendance, studentMap]);
   const activeFees = useMemo(() => fees.filter((f) => !f.isDeleted && studentMap[f.studentId] && !studentMap[f.studentId].isDeleted).sort((a, b) => (b.date || '').localeCompare(a.date || '')), [fees, studentMap]);
   const activeActivities = useMemo(() => activities.filter((a) => !a.isDeleted), [activities]);
+
+  useEffect(() => {
+    if (!draggingSubjectId) {
+      setOrderedSubjects(activeSubjects);
+    }
+  }, [activeSubjects, draggingSubjectId]);
 
   const globalFeeTotals = useMemo(() => {
     let collected = 0, pending = 0;
@@ -545,21 +569,84 @@ export default function App() {
     );
   };
 
-  const handleMoveSubjectOrder = async (subjectItem, direction) => {
+  const commitSubjectOrderList = async (reorderedList) => {
     try {
-      const idx = activeSubjects.findIndex((s) => s.id === subjectItem.id);
-      const targetIdx = direction === 'moveUp' ? idx - 1 : idx + 1;
-      if (targetIdx < 0 || targetIdx >= activeSubjects.length) return;
-      const reordered = [...activeSubjects];
-      const [moved] = reordered.splice(idx, 1);
-      reordered.splice(targetIdx, 0, moved);
-      triggerLayoutAnimation();
-      triggerHaptic(10);
       const batch = writeBatch(db);
-      reordered.forEach((subj, index) => batch.update(doc(db, 'subjects', subj.id), { order: index }));
+      reorderedList.forEach((subj, index) => batch.update(doc(db, 'subjects', subj.id), { order: index }));
       await batch.commit();
-      await logActivity('Reordered Subject', `${subjectItem.name} moved ${direction === 'moveUp' ? 'up' : 'down'}`);
-    } catch (e) { Alert.alert('Error', 'Could not reorder subject.'); }
+      await logActivity('Reordered Subjects', 'Updated instrument display order');
+    } catch (e) {
+      Alert.alert('Error', 'Could not save new subject order.');
+    }
+  };
+
+  const handleSubjectDragGesture = (subj, event) => {
+    const { translationY } = event.nativeEvent;
+    if (!dragInfoRef.current.active) {
+      const idx = orderedSubjects.findIndex((s) => s.id === subj.id);
+      if (idx === -1) return;
+      dragInfoRef.current = {
+        active: true,
+        subjectId: subj.id,
+        startIdx: idx,
+        currentIdx: idx,
+        list: [...orderedSubjects],
+      };
+      setDraggingSubjectId(subj.id);
+      triggerHaptic(14);
+    }
+
+    const { startIdx, currentIdx, list } = dragInfoRef.current;
+    const targetIdx = Math.max(0, Math.min(list.length - 1, Math.round(startIdx + translationY / SUBJECT_ROW_HEIGHT)));
+    dragSubjectY.setValue(translationY - (currentIdx - startIdx) * SUBJECT_ROW_HEIGHT);
+
+    if (targetIdx !== currentIdx) {
+      const updated = [...list];
+      const [moved] = updated.splice(currentIdx, 1);
+      updated.splice(targetIdx, 0, moved);
+      dragInfoRef.current.currentIdx = targetIdx;
+      dragInfoRef.current.list = updated;
+      dragSubjectY.setValue(translationY - (targetIdx - startIdx) * SUBJECT_ROW_HEIGHT);
+      triggerLayoutAnimation();
+      triggerHaptic(8);
+      setOrderedSubjects(updated);
+    }
+  };
+
+  const handleSubjectDragStateChange = (subj, event) => {
+    const { state } = event.nativeEvent;
+    if (state === State.BEGAN) {
+      const idx = orderedSubjects.findIndex((s) => s.id === subj.id);
+      if (idx !== -1) {
+        dragInfoRef.current = {
+          active: true,
+          subjectId: subj.id,
+          startIdx: idx,
+          currentIdx: idx,
+          list: [...orderedSubjects],
+        };
+        dragSubjectY.setValue(0);
+        setDraggingSubjectId(subj.id);
+        triggerHaptic(14);
+      }
+    } else if (state === State.END || state === State.CANCELLED || state === State.FAILED) {
+      if (dragInfoRef.current.active) {
+        const finalOrder = dragInfoRef.current.list;
+        const didChange = finalOrder.some((s, i) => s.id !== activeSubjects[i]?.id);
+        dragInfoRef.current.active = false;
+        Animated.timing(dragSubjectY, {
+          toValue: 0,
+          duration: 150,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }).start(() => {
+          setDraggingSubjectId(null);
+          if (didChange) {
+            commitSubjectOrderList(finalOrder);
+          }
+        });
+      }
+    }
   };
 
   const handleContextAction = async (action) => {
@@ -571,11 +658,6 @@ export default function App() {
       await handleSoftDelete(colMap[entityType], item, title);
       if (reopenSubjectsModal) setTimeout(() => setSubjectsModal(true), 250);
       if (reopenTodayLogModal) setTimeout(() => setTodayLogModal(true), 250);
-      return;
-    }
-    if ((action === 'moveUp' || action === 'moveDown') && entityType === 'subject') {
-      await handleMoveSubjectOrder(item, action);
-      if (reopenSubjectsModal) setTimeout(() => setSubjectsModal(true), 250);
       return;
     }
     if (action === 'edit') {
@@ -823,44 +905,49 @@ export default function App() {
     return grouped;
   }, [activeSubjects, studentMap]);
 
-  const handleSwipe = (event) => {
+  // Main tab swipe handler (only active when NOT inside a student profile)
+  const handleMainTabSwipe = (event) => {
     const { translationX, x } = event.nativeEvent;
     if (Math.abs(translationX) < 35) return;
 
-    // Left-edge or corner swipe right opens the 3-bar drawer menu from anywhere
     if (translationX > 35 && typeof x === 'number' && x - translationX <= 42) {
       openDrawer();
       return;
     }
 
-    if (activeTab === 'Students' && selectedStudent) {
-      const currentIndex = PROFILE_TABS.indexOf(profileTab);
-      if (translationX < -35 && currentIndex < PROFILE_TABS.length - 1) {
-        Keyboard.dismiss();
-        setNavDirection(1);
-        setProfileTab(PROFILE_TABS[currentIndex + 1]);
-      } else if (translationX > 35 && currentIndex > 0) {
-        Keyboard.dismiss();
-        setNavDirection(-1);
-        setProfileTab(PROFILE_TABS[currentIndex - 1]);
-      } else if (translationX > 75 && currentIndex === 0) {
-        Keyboard.dismiss();
-        setNavDirection(-1);
-        setSelectedStudentId(null);
-      }
-    } else {
-      const currentIndex = MAIN_TABS.indexOf(activeTab);
-      if (translationX < -35 && currentIndex < MAIN_TABS.length - 1) {
-        Keyboard.dismiss();
-        setNavDirection(1);
-        setActiveTab(MAIN_TABS[currentIndex + 1]);
-      } else if (translationX > 35 && currentIndex > 0) {
-        Keyboard.dismiss();
-        setNavDirection(-1);
-        setActiveTab(MAIN_TABS[currentIndex - 1]);
-      } else if (translationX > 45 && currentIndex === 0) {
-        openDrawer();
-      }
+    const currentIndex = MAIN_TABS.indexOf(activeTab);
+    if (translationX < -35 && currentIndex < MAIN_TABS.length - 1) {
+      Keyboard.dismiss();
+      setNavDirection(1);
+      setActiveTab(MAIN_TABS[currentIndex + 1]);
+    } else if (translationX > 35 && currentIndex > 0) {
+      Keyboard.dismiss();
+      setNavDirection(-1);
+      setActiveTab(MAIN_TABS[currentIndex - 1]);
+    } else if (translationX > 45 && currentIndex === 0) {
+      openDrawer();
+    }
+  };
+
+  // Dedicated sub-tab swipe handler (swipes ONLY the sub-tab section inside Student Profile)
+  const handleProfileSubTabSwipe = (event) => {
+    const { translationX, x } = event.nativeEvent;
+    if (Math.abs(translationX) < 35) return;
+
+    if (translationX > 35 && typeof x === 'number' && x - translationX <= 42) {
+      openDrawer();
+      return;
+    }
+
+    const currentIndex = PROFILE_TABS.indexOf(profileTab);
+    if (translationX < -35 && currentIndex < PROFILE_TABS.length - 1) {
+      Keyboard.dismiss();
+      setSubTabDirection(1);
+      setProfileTab(PROFILE_TABS[currentIndex + 1]);
+    } else if (translationX > 35 && currentIndex > 0) {
+      Keyboard.dismiss();
+      setSubTabDirection(-1);
+      setProfileTab(PROFILE_TABS[currentIndex - 1]);
     }
   };
 
@@ -950,6 +1037,7 @@ export default function App() {
       <Pressable key={st.id} style={({ pressed }) => pressed && styles.cardPressed} onPress={() => {
           Keyboard.dismiss();
           setNavDirection(1);
+          setSubTabDirection(1);
           setSelectedStudentId(st.id);
           setProfileTab('Classes');
         }} onLongPress={() => openLongPressMenu('student', st, st.name)} delayLongPress={280}>
@@ -1034,6 +1122,7 @@ export default function App() {
     const metrics = getStudentMetrics(student.id);
     return (
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
+        {/* Stationary Profile Header & Hero Card */}
         <View style={styles.cardHeaderRow}>
           <TouchableOpacity style={styles.backButtonRow} onPress={() => { Keyboard.dismiss(); setNavDirection(-1); setSelectedStudentId(null); }}>
             <Ionicons name="arrow-back" size={18} color={COLORS.navy} /><Text style={styles.backButtonText}>Back to Directory</Text>
@@ -1070,6 +1159,7 @@ export default function App() {
           </View>
         </Surface>
 
+        {/* Stationary Sub-Tab Pill Bar */}
         <View style={styles.pillNavContainer}>
           {PROFILE_TABS.map((tab) => (
             <TouchableOpacity key={tab} style={[styles.pillNavItem, profileTab === tab && styles.pillNavItemActive]} onPress={() => {
@@ -1077,7 +1167,7 @@ export default function App() {
                 Keyboard.dismiss();
                 const newIdx = PROFILE_TABS.indexOf(tab);
                 const oldIdx = PROFILE_TABS.indexOf(profileTab);
-                setNavDirection(newIdx > oldIdx ? 1 : -1);
+                setSubTabDirection(newIdx > oldIdx ? 1 : -1);
                 setProfileTab(tab);
               }}>
               <Text style={[styles.pillNavText, profileTab === tab && styles.pillNavTextActive]}>{tab}</Text>
@@ -1085,110 +1175,118 @@ export default function App() {
           ))}
         </View>
 
-        {profileTab === 'Classes' && (
-          <View>
-            <Surface style={styles.whiteCard} elevation={1}>
-              <Text style={styles.sectionTitle}>LOG NEW LESSON</Text>
-              <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
-              <QuickDateRow currentDate={inlineLessonForm.date} onSelectDate={(d) => setInlineLessonForm({ ...inlineLessonForm, date: d })} onOpenCalendar={openCalendarPicker} />
-              <PaperInput mode="outlined" value={inlineLessonForm.date} onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, date: t })} placeholder="YYYY-MM-DD" right={<PaperInput.Icon icon="calendar" onPress={() => openCalendarPicker(inlineLessonForm.date, (d) => setInlineLessonForm({ ...inlineLessonForm, date: d }))} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-              <Text style={styles.inputLabel}>Technique</Text>
-              <PaperInput mode="outlined" value={inlineLessonForm.technique} onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, technique: t })} placeholder="Scales, arpeggios, posture..." outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-              <Text style={styles.inputLabel}>Repertoire</Text>
-              <PaperInput mode="outlined" value={inlineLessonForm.repertoire} onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, repertoire: t })} placeholder="Sonatina in C, Etude Op. 10..." outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-              <Text style={styles.inputLabel}>Assignment</Text>
-              <PaperInput mode="outlined" value={inlineLessonForm.assignment} onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, assignment: t })} placeholder="Practice measures 16-32 at 80 BPM" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-              <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveInlineLesson} style={{ marginTop: 10, borderRadius: 8 }}>Save Lesson Entry</PaperButton>
-            </Surface>
-            <Text style={[styles.sectionTitle, { marginVertical: 10 }]}>LESSON HISTORY (HOLD CARD TO EDIT/DELETE)</Text>
-            {metrics.stLessons.length === 0 ? <Text style={styles.emptyText}>No lessons logged for this student yet.</Text> : metrics.stLessons.map((les) => (
-              <Pressable key={les.id} style={({ pressed }) => pressed && styles.cardPressed} onLongPress={() => openLongPressMenu('lesson', les, `Lesson on ${formatReadableLocalDate(les.date)}`)} delayLongPress={280}>
-                <Surface style={styles.cleanRecordCard} elevation={2}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(les.date)}</Text>
-                    {les.technique ? <Text style={styles.recordDetailLine}><Text style={styles.boldLabel}>Technique: </Text>{les.technique}</Text> : null}
-                    {les.repertoire ? <Text style={styles.recordDetailLine}><Text style={styles.boldLabel}>Repertoire: </Text>{les.repertoire}</Text> : null}
-                    {les.assignment ? <Text style={styles.recordDetailLine}><Text style={styles.boldLabel}>Assignment: </Text>{les.assignment}</Text> : null}
-                  </View>
-                </Surface>
-              </Pressable>
-            ))}
-          </View>
-        )}
+        {/* Isolated Gentle Swipe Container for Sub-Tab Content Only */}
+        <AnimatedScreen
+          direction={subTabDirection}
+          triggerKey={`${student.id}-${profileTab}`}
+          onSwipe={handleProfileSubTabSwipe}
+          swipeEnabled={true}
+        >
+          {profileTab === 'Classes' && (
+            <View>
+              <Surface style={styles.whiteCard} elevation={1}>
+                <Text style={styles.sectionTitle}>LOG NEW LESSON</Text>
+                <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+                <QuickDateRow currentDate={inlineLessonForm.date} onSelectDate={(d) => setInlineLessonForm({ ...inlineLessonForm, date: d })} onOpenCalendar={openCalendarPicker} />
+                <PaperInput mode="outlined" value={inlineLessonForm.date} onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, date: t })} placeholder="YYYY-MM-DD" right={<PaperInput.Icon icon="calendar" onPress={() => openCalendarPicker(inlineLessonForm.date, (d) => setInlineLessonForm({ ...inlineLessonForm, date: d }))} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                <Text style={styles.inputLabel}>Technique</Text>
+                <PaperInput mode="outlined" value={inlineLessonForm.technique} onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, technique: t })} placeholder="Scales, arpeggios, posture..." outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                <Text style={styles.inputLabel}>Repertoire</Text>
+                <PaperInput mode="outlined" value={inlineLessonForm.repertoire} onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, repertoire: t })} placeholder="Sonatina in C, Etude Op. 10..." outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                <Text style={styles.inputLabel}>Assignment</Text>
+                <PaperInput mode="outlined" value={inlineLessonForm.assignment} onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, assignment: t })} placeholder="Practice measures 16-32 at 80 BPM" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveInlineLesson} style={{ marginTop: 10, borderRadius: 8 }}>Save Lesson Entry</PaperButton>
+              </Surface>
+              <Text style={[styles.sectionTitle, { marginVertical: 10 }]}>LESSON HISTORY (HOLD CARD TO EDIT/DELETE)</Text>
+              {metrics.stLessons.length === 0 ? <Text style={styles.emptyText}>No lessons logged for this student yet.</Text> : metrics.stLessons.map((les) => (
+                <Pressable key={les.id} style={({ pressed }) => pressed && styles.cardPressed} onLongPress={() => openLongPressMenu('lesson', les, `Lesson on ${formatReadableLocalDate(les.date)}`)} delayLongPress={280}>
+                  <Surface style={styles.cleanRecordCard} elevation={2}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(les.date)}</Text>
+                      {les.technique ? <Text style={styles.recordDetailLine}><Text style={styles.boldLabel}>Technique: </Text>{les.technique}</Text> : null}
+                      {les.repertoire ? <Text style={styles.recordDetailLine}><Text style={styles.boldLabel}>Repertoire: </Text>{les.repertoire}</Text> : null}
+                      {les.assignment ? <Text style={styles.recordDetailLine}><Text style={styles.boldLabel}>Assignment: </Text>{les.assignment}</Text> : null}
+                    </View>
+                  </Surface>
+                </Pressable>
+              ))}
+            </View>
+          )}
 
-        {profileTab === 'Attendance' && (
-          <View>
+          {profileTab === 'Attendance' && (
+            <View>
+              <Surface style={styles.whiteCard} elevation={1}>
+                <Text style={styles.sectionTitle}>MARK STUDENT ATTENDANCE</Text>
+                <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+                <QuickDateRow currentDate={inlineAttendanceForm.date} onSelectDate={(d) => setInlineAttendanceForm({ ...inlineAttendanceForm, date: d })} onOpenCalendar={openCalendarPicker} />
+                <PaperInput mode="outlined" value={inlineAttendanceForm.date} onChangeText={(t) => setInlineAttendanceForm({ ...inlineAttendanceForm, date: t })} right={<PaperInput.Icon icon="calendar" onPress={() => openCalendarPicker(inlineAttendanceForm.date, (d) => setInlineAttendanceForm({ ...inlineAttendanceForm, date: d }))} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                <Text style={styles.inputLabel}>Status</Text>
+                <View style={styles.chipRow}>
+                  {ATTENDANCE_STATUSES.map((st) => (
+                    <TouchableOpacity key={st} style={[styles.choiceChip, inlineAttendanceForm.status === st && styles.choiceChipSelected]} onPress={() => { Keyboard.dismiss(); setInlineAttendanceForm({ ...inlineAttendanceForm, status: st }); }}>
+                      <Text style={[styles.choiceChipText, inlineAttendanceForm.status === st && styles.choiceChipTextSelected]}>{st}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text style={styles.inputLabel}>Remarks</Text>
+                <PaperInput mode="outlined" value={inlineAttendanceForm.remarks} onChangeText={(t) => setInlineAttendanceForm({ ...inlineAttendanceForm, remarks: t })} placeholder="Optional attendance notes" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveInlineAttendance} style={{ marginTop: 10, borderRadius: 8 }}>Record Attendance</PaperButton>
+              </Surface>
+              <Text style={[styles.sectionTitle, { marginVertical: 10 }]}>ATTENDANCE LOG (HOLD CARD TO EDIT/DELETE)</Text>
+              {metrics.stAttendance.length === 0 ? <Text style={styles.emptyText}>No attendance records found.</Text> : metrics.stAttendance.map((att) => (
+                <Pressable key={att.id} style={({ pressed }) => pressed && styles.cardPressed} onLongPress={() => openLongPressMenu('attendance', att, `${att.status} (${formatReadableLocalDate(att.date)})`)} delayLongPress={280}>
+                  <Surface style={styles.cleanRecordCard} elevation={2}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(att.date)}</Text>
+                      {att.remarks ? <Text style={styles.recordSecondarySub}>{att.remarks}</Text> : null}
+                    </View>
+                    <View style={styles.statusPill}><Text style={styles.statusPillText}>{att.status}</Text></View>
+                  </Surface>
+                </Pressable>
+              ))}
+            </View>
+          )}
+
+          {profileTab === 'Notes' && (
             <Surface style={styles.whiteCard} elevation={1}>
-              <Text style={styles.sectionTitle}>MARK STUDENT ATTENDANCE</Text>
-              <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
-              <QuickDateRow currentDate={inlineAttendanceForm.date} onSelectDate={(d) => setInlineAttendanceForm({ ...inlineAttendanceForm, date: d })} onOpenCalendar={openCalendarPicker} />
-              <PaperInput mode="outlined" value={inlineAttendanceForm.date} onChangeText={(t) => setInlineAttendanceForm({ ...inlineAttendanceForm, date: t })} right={<PaperInput.Icon icon="calendar" onPress={() => openCalendarPicker(inlineAttendanceForm.date, (d) => setInlineAttendanceForm({ ...inlineAttendanceForm, date: d }))} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-              <Text style={styles.inputLabel}>Status</Text>
-              <View style={styles.chipRow}>
-                {ATTENDANCE_STATUSES.map((st) => (
-                  <TouchableOpacity key={st} style={[styles.choiceChip, inlineAttendanceForm.status === st && styles.choiceChipSelected]} onPress={() => { Keyboard.dismiss(); setInlineAttendanceForm({ ...inlineAttendanceForm, status: st }); }}>
-                    <Text style={[styles.choiceChipText, inlineAttendanceForm.status === st && styles.choiceChipTextSelected]}>{st}</Text>
-                  </TouchableOpacity>
-                ))}
+              <Text style={styles.sectionTitle}>FACULTY STUDENT NOTES</Text>
+              <View style={styles.prioritySwitchRow}>
+                <View style={{ flex: 1 }}><Text style={styles.recordPrimaryTitle}>Priority "★ NOTE" Indicator</Text><Text style={styles.silverMeta}>Highlights student card in the main Student Directory</Text></View>
+                <Switch value={priorityDraft} onValueChange={setPriorityDraft} trackColor={{ false: COLORS.silver, true: COLORS.navy }} thumbColor={priorityDraft ? COLORS.gold : COLORS.white} />
               </View>
-              <Text style={styles.inputLabel}>Remarks</Text>
-              <PaperInput mode="outlined" value={inlineAttendanceForm.remarks} onChangeText={(t) => setInlineAttendanceForm({ ...inlineAttendanceForm, remarks: t })} placeholder="Optional attendance notes" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-              <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveInlineAttendance} style={{ marginTop: 10, borderRadius: 8 }}>Record Attendance</PaperButton>
+              <PaperInput mode="outlined" multiline numberOfLines={5} value={noteDraft} onChangeText={setNoteDraft} placeholder="Enter examination goals, recital readiness, or parent communication notes..." outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginTop: 12 }} />
+              <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveStudentNotes} style={{ marginTop: 12, borderRadius: 8 }}>Save Notes</PaperButton>
             </Surface>
-            <Text style={[styles.sectionTitle, { marginVertical: 10 }]}>ATTENDANCE LOG (HOLD CARD TO EDIT/DELETE)</Text>
-            {metrics.stAttendance.length === 0 ? <Text style={styles.emptyText}>No attendance records found.</Text> : metrics.stAttendance.map((att) => (
-              <Pressable key={att.id} style={({ pressed }) => pressed && styles.cardPressed} onLongPress={() => openLongPressMenu('attendance', att, `${att.status} (${formatReadableLocalDate(att.date)})`)} delayLongPress={280}>
-                <Surface style={styles.cleanRecordCard} elevation={2}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(att.date)}</Text>
-                    {att.remarks ? <Text style={styles.recordSecondarySub}>{att.remarks}</Text> : null}
-                  </View>
-                  <View style={styles.statusPill}><Text style={styles.statusPillText}>{att.status}</Text></View>
-                </Surface>
-              </Pressable>
-            ))}
-          </View>
-        )}
+          )}
 
-        {profileTab === 'Notes' && (
-          <Surface style={styles.whiteCard} elevation={1}>
-            <Text style={styles.sectionTitle}>FACULTY STUDENT NOTES</Text>
-            <View style={styles.prioritySwitchRow}>
-              <View style={{ flex: 1 }}><Text style={styles.recordPrimaryTitle}>Priority "★ NOTE" Indicator</Text><Text style={styles.silverMeta}>Highlights student card in the main Student Directory</Text></View>
-              <Switch value={priorityDraft} onValueChange={setPriorityDraft} trackColor={{ false: COLORS.silver, true: COLORS.navy }} thumbColor={priorityDraft ? COLORS.gold : COLORS.white} />
+          {profileTab === 'Fees' && (
+            <View>
+              <View style={styles.cardHeaderRow}>
+                <Text style={styles.sectionTitle}>LOCALIZED FEE LEDGER</Text>
+                <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => {
+                  Keyboard.dismiss();
+                  setFeeForm({ id: null, studentId: student.id, feeType: 'Monthly Fee', monthPaidFor: getLocalCurrentMonthLabel(), date: getTodayISO(), mode: 'UPI', status: 'Paid', amountPaid: '', balanceDue: '0', remarks: '' });
+                  setFeeModal(true);
+                }}>+ Record Fee</PaperButton>
+              </View>
+              {metrics.stFees.length === 0 ? <Surface style={styles.whiteCard} elevation={1}><Text style={styles.emptyText}>No fee records logged for this student.</Text></Surface> : metrics.stFees.map((fee) => (
+                <Pressable key={fee.id} style={({ pressed }) => pressed && styles.cardPressed} onLongPress={() => openLongPressMenu('fee', fee, `${fee.feeType} - ₹${fee.amountPaid} (${formatReadableLocalDate(fee.date)})`)} delayLongPress={280}>
+                  <Surface style={styles.cleanRecordCard} elevation={2}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.recordPrimaryTitle}>{fee.feeType} {fee.feeType === 'Monthly Fee' && fee.monthPaidFor ? `• ${fee.monthPaidFor}` : ''}</Text>
+                      <Text style={styles.recordSecondarySub}>{formatReadableLocalDate(fee.date)} • {fee.mode} • Status: {fee.status}</Text>
+                      <Text style={styles.recordDetailLine}>Paid: ₹{fee.amountPaid} | Balance Due: ₹{fee.balanceDue}</Text>
+                      {fee.remarks ? <Text style={styles.silverMeta}>Note: {fee.remarks}</Text> : null}
+                    </View>
+                    <TouchableOpacity style={styles.pdfShareBtn} onPress={() => generateAndShareReceiptPDF(fee)}>
+                      <Ionicons name="share-social-outline" size={13} color={COLORS.gold} /><Text style={styles.pdfShareBtnText}>Receipt</Text>
+                    </TouchableOpacity>
+                  </Surface>
+                </Pressable>
+              ))}
             </View>
-            <PaperInput mode="outlined" multiline numberOfLines={5} value={noteDraft} onChangeText={setNoteDraft} placeholder="Enter examination goals, recital readiness, or parent communication notes..." outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginTop: 12 }} />
-            <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveStudentNotes} style={{ marginTop: 12, borderRadius: 8 }}>Save Notes</PaperButton>
-          </Surface>
-        )}
-
-        {profileTab === 'Fees' && (
-          <View>
-            <View style={styles.cardHeaderRow}>
-              <Text style={styles.sectionTitle}>LOCALIZED FEE LEDGER</Text>
-              <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => {
-                Keyboard.dismiss();
-                setFeeForm({ id: null, studentId: student.id, feeType: 'Monthly Fee', monthPaidFor: getLocalCurrentMonthLabel(), date: getTodayISO(), mode: 'UPI', status: 'Paid', amountPaid: '', balanceDue: '0', remarks: '' });
-                setFeeModal(true);
-              }}>+ Record Fee</PaperButton>
-            </View>
-            {metrics.stFees.length === 0 ? <Surface style={styles.whiteCard} elevation={1}><Text style={styles.emptyText}>No fee records logged for this student.</Text></Surface> : metrics.stFees.map((fee) => (
-              <Pressable key={fee.id} style={({ pressed }) => pressed && styles.cardPressed} onLongPress={() => openLongPressMenu('fee', fee, `${fee.feeType} - ₹${fee.amountPaid} (${formatReadableLocalDate(fee.date)})`)} delayLongPress={280}>
-                <Surface style={styles.cleanRecordCard} elevation={2}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.recordPrimaryTitle}>{fee.feeType} {fee.feeType === 'Monthly Fee' && fee.monthPaidFor ? `• ${fee.monthPaidFor}` : ''}</Text>
-                    <Text style={styles.recordSecondarySub}>{formatReadableLocalDate(fee.date)} • {fee.mode} • Status: {fee.status}</Text>
-                    <Text style={styles.recordDetailLine}>Paid: ₹{fee.amountPaid} | Balance Due: ₹{fee.balanceDue}</Text>
-                    {fee.remarks ? <Text style={styles.silverMeta}>Note: {fee.remarks}</Text> : null}
-                  </View>
-                  <TouchableOpacity style={styles.pdfShareBtn} onPress={() => generateAndShareReceiptPDF(fee)}>
-                    <Ionicons name="share-social-outline" size={13} color={COLORS.gold} /><Text style={styles.pdfShareBtnText}>Receipt</Text>
-                  </TouchableOpacity>
-                </Surface>
-              </Pressable>
-            ))}
-          </View>
-        )}
+          )}
+        </AnimatedScreen>
       </ScrollView>
     );
   };
@@ -1359,6 +1457,7 @@ export default function App() {
   };
 
   const todayActivities = activeActivities.filter((a) => a.dateISO === getTodayISO());
+  const isInsideStudentProfile = activeTab === 'Students' && Boolean(selectedStudent);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -1387,8 +1486,9 @@ export default function App() {
 
               <AnimatedScreen
                 direction={navDirection}
-                onSwipe={handleSwipe}
-                triggerKey={`${activeTab}-${selectedStudentId || 'list'}-${selectedStudentId ? profileTab : ''}`}
+                onSwipe={handleMainTabSwipe}
+                swipeEnabled={!isInsideStudentProfile}
+                triggerKey={`${activeTab}-${selectedStudentId || 'list'}`}
               >
                 {activeTab === 'Home' && renderHomeTab()}
                 {activeTab === 'Students' && renderStudentsTab()}
@@ -1517,10 +1617,6 @@ export default function App() {
                   {contextMenu.entityType !== 'activity' && (
                     <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('edit')}><Text style={styles.contextOptionText}>Edit Record</Text></TouchableOpacity>
                   )}
-                  {contextMenu.entityType === 'subject' && (
-                    <><TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('moveUp')}><Text style={styles.contextOptionText}>Reorder: Move Up</Text></TouchableOpacity>
-                    <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('moveDown')}><Text style={styles.contextOptionText}>Reorder: Move Down</Text></TouchableOpacity></>
-                  )}
                   <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('delete')}><Text style={[styles.contextOptionText, { color: COLORS.danger }]}>Delete (Move to Trash)</Text></TouchableOpacity>
                   <PaperButton mode="outlined" textColor={COLORS.navy} style={{ marginTop: 10, width: '100%', borderColor: COLORS.silver }} onPress={() => {
                     const shouldReopenSubj = contextMenu.reopenSubjectsModal;
@@ -1595,30 +1691,87 @@ export default function App() {
               </View>
             </Modal>
 
-            {/* MANAGE SUBJECTS MODAL */}
+            {/* MANAGE SUBJECTS MODAL (WITH 6-DOT DRAG HANDLE REORDERING) */}
             <Modal visible={subjectsModal} transparent animationType="fade" onRequestClose={() => setSubjectsModal(false)}>
               <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
                 <Surface style={styles.modalCard} elevation={5}>
                   <Text style={styles.sectionTitle}>MANAGE INSTRUMENTS & SUBJECTS</Text>
-                  <Text style={styles.silverMeta}>Use the action buttons or long-press any subject to reorder, edit, or delete.</Text>
+                  <Text style={styles.silverMeta}>Touch & drag the 6-dot handle to reorder, or use edit/delete.</Text>
                   <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, alignItems: 'center' }}>
                     <PaperInput mode="outlined" value={subjectForm.name} onChangeText={(t) => setSubjectForm({ ...subjectForm, name: t })} placeholder="e.g., Piano, Violin, Guitar" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ flex: 1, backgroundColor: COLORS.white, height: 50 }} />
                     <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveSubject}>{subjectForm.id ? 'Update' : 'Add'}</PaperButton>
                   </View>
-                  <ScrollView style={{ maxHeight: 280, marginVertical: 14 }} keyboardShouldPersistTaps="handled">
-                    {activeSubjects.length === 0 ? <Text style={styles.emptyText}>No subjects added yet.</Text> : activeSubjects.map((subj, idx) => (
-                      <Pressable key={subj.id} onLongPress={() => { setSubjectsModal(false); setTimeout(() => openLongPressMenu('subject', subj, subj.name, true), 250); }} delayLongPress={280}>
-                        <Surface style={styles.cleanRecordCard} elevation={2}>
-                          <Text style={[styles.recordPrimaryTitle, { flex: 1 }]}>{idx + 1}. {subj.name}</Text>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                            <TouchableOpacity style={styles.iconActionBtn} disabled={idx === 0} onPress={() => handleMoveSubjectOrder(subj, 'moveUp')}><Ionicons name="arrow-up" size={15} color={idx === 0 ? COLORS.silver : COLORS.navy} /></TouchableOpacity>
-                            <TouchableOpacity style={styles.iconActionBtn} disabled={idx === activeSubjects.length - 1} onPress={() => handleMoveSubjectOrder(subj, 'moveDown')}><Ionicons name="arrow-down" size={15} color={idx === activeSubjects.length - 1 ? COLORS.silver : COLORS.navy} /></TouchableOpacity>
-                            <TouchableOpacity style={styles.iconActionBtn} onPress={() => setSubjectForm({ id: subj.id, name: subj.name })}><Ionicons name="pencil" size={15} color={COLORS.navy} /></TouchableOpacity>
-                            <TouchableOpacity style={styles.iconActionBtn} onPress={() => handleSoftDelete('subjects', subj, `Subject: ${subj.name}`)}><Ionicons name="trash-outline" size={15} color={COLORS.danger} /></TouchableOpacity>
-                          </View>
-                        </Surface>
-                      </Pressable>
-                    ))}
+                  <ScrollView
+                    style={{ maxHeight: 290, marginVertical: 14 }}
+                    scrollEnabled={!draggingSubjectId}
+                    keyboardShouldPersistTaps="handled"
+                    showsVerticalScrollIndicator={false}
+                  >
+                    {orderedSubjects.length === 0 ? (
+                      <Text style={styles.emptyText}>No subjects added yet.</Text>
+                    ) : (
+                      orderedSubjects.map((subj, idx) => {
+                        const isDragging = draggingSubjectId === subj.id;
+                        return (
+                          <Animated.View
+                            key={subj.id}
+                            style={[
+                              isDragging && {
+                                zIndex: 50,
+                                elevation: 8,
+                                transform: [{ translateY: dragSubjectY }, { scale: 1.02 }],
+                              },
+                            ]}
+                          >
+                            <Pressable
+                              onLongPress={() => {
+                                if (draggingSubjectId) return;
+                                setSubjectsModal(false);
+                                setTimeout(() => openLongPressMenu('subject', subj, subj.name, true), 250);
+                              }}
+                              delayLongPress={320}
+                            >
+                              <Surface
+                                style={[
+                                  styles.cleanRecordCard,
+                                  { minHeight: 52, paddingVertical: 10, paddingHorizontal: 10 },
+                                  isDragging && styles.draggingSubjectCard,
+                                ]}
+                                elevation={isDragging ? 5 : 2}
+                              >
+                                {/* 6-Dot Drag Handle */}
+                                <PanGestureHandler
+                                  activeOffsetY={[-3, 3]}
+                                  onGestureEvent={(e) => handleSubjectDragGesture(subj, e)}
+                                  onHandlerStateChange={(e) => handleSubjectDragStateChange(subj, e)}
+                                >
+                                  <View style={styles.dragHandleBtn}>
+                                    <MaterialCommunityIcons
+                                      name="drag-vertical"
+                                      size={22}
+                                      color={isDragging ? COLORS.gold : COLORS.silver}
+                                    />
+                                  </View>
+                                </PanGestureHandler>
+
+                                <Text style={[styles.recordPrimaryTitle, { flex: 1 }]}>
+                                  {idx + 1}. {subj.name}
+                                </Text>
+
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                  <TouchableOpacity style={styles.iconActionBtn} onPress={() => setSubjectForm({ id: subj.id, name: subj.name })}>
+                                    <Ionicons name="pencil" size={15} color={COLORS.navy} />
+                                  </TouchableOpacity>
+                                  <TouchableOpacity style={styles.iconActionBtn} onPress={() => handleSoftDelete('subjects', subj, `Subject: ${subj.name}`)}>
+                                    <Ionicons name="trash-outline" size={15} color={COLORS.danger} />
+                                  </TouchableOpacity>
+                                </View>
+                              </Surface>
+                            </Pressable>
+                          </Animated.View>
+                        );
+                      })
+                    )}
                   </ScrollView>
                   <PaperButton mode="outlined" textColor={COLORS.navy} style={{ alignSelf: 'flex-end', borderColor: COLORS.silver }} onPress={() => { Keyboard.dismiss(); setSubjectForm({ id: null, name: '' }); setSubjectsModal(false); }}>Done</PaperButton>
                 </Surface>
@@ -1842,6 +1995,8 @@ const styles = StyleSheet.create({
   groupHeaderCount: { color: COLORS.cream, fontSize: 12, fontWeight: '700' },
   monthSubHeader: { color: COLORS.navy, fontSize: 13, fontWeight: '700', marginVertical: 6, paddingLeft: 4 },
   cleanRecordCard: { backgroundColor: COLORS.white, borderRadius: 12, padding: 14, marginTop: 8, borderWidth: 1, borderColor: COLORS.border, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
+  draggingSubjectCard: { backgroundColor: COLORS.cream, borderColor: COLORS.gold, borderWidth: 1.5 },
+  dragHandleBtn: { paddingVertical: 6, paddingHorizontal: 4, justifyContent: 'center', alignItems: 'center' },
   cardPressed: { opacity: 0.7 },
   recordPrimaryTitle: { color: COLORS.navy, fontSize: 15, fontWeight: '700' },
   recordSecondarySub: { color: COLORS.silver, fontSize: 12, marginTop: 3 },
