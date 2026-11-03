@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Pressable, Modal, Alert, Animated, Easing, LayoutAnimation, Platform, UIManager, StatusBar, Switch, ActivityIndicator, KeyboardAvoidingView, Linking, Keyboard, Vibration } from 'react-native';
+import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Pressable, Modal, Alert, Animated, Easing, LayoutAnimation, Platform, UIManager, StatusBar, Switch, ActivityIndicator, KeyboardAvoidingView, Linking, Keyboard, Vibration, BackHandler } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Updates from 'expo-updates';
@@ -112,7 +112,7 @@ const isWithinLastTwoLocalMonths = (isoDateStr) => {
   if (isNaN(year) || isNaN(monthIdx)) return false;
   const now = new Date();
   const diff = (now.getFullYear() * 12 + now.getMonth()) - (year * 12 + monthIdx);
-  return diff <= 1;
+  return diff >= -1 && diff <= 1;
 };
 
 const getDaysRemainingInTrash = (deletedAtMs) => {
@@ -159,7 +159,6 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
     [dragX]
   );
 
-  // Smooth horizontal slide + fade while finger is dragging
   const dragTranslateX = useMemo(
     () =>
       dragX.interpolate({
@@ -208,7 +207,9 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
       if (state === State.END && typeof onSwipe === 'function') {
         didNavigate = Boolean(onSwipe(e));
       }
-      if (!didNavigate) {
+      if (didNavigate) {
+        dragX.stopAnimation(() => dragX.setValue(0));
+      } else {
         Animated.timing(dragX, {
           toValue: 0,
           duration: 200,
@@ -277,6 +278,7 @@ export default function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerSlideAnim = useRef(new Animated.Value(-290)).current;
   const drawerBackdropAnim = useRef(new Animated.Value(0)).current;
+  const savingLockRef = useRef(false);
 
   const openDrawer = useCallback(() => {
     Keyboard.dismiss();
@@ -337,8 +339,9 @@ export default function App() {
   // Drag-and-drop state for Subject 6-dot handle reordering
   const [orderedSubjects, setOrderedSubjects] = useState([]);
   const [draggingSubjectId, setDraggingSubjectId] = useState(null);
+  const [subjectScrollLocked, setSubjectScrollLocked] = useState(false);
   const dragSubjectY = useRef(new Animated.Value(0)).current;
-  const dragInfoRef = useRef({ active: false, subjectId: null, startIdx: 0, currentIdx: 0, startPageY: 0, list: [] });
+  const dragInfoRef = useRef({ active: false, subjectId: null, startIdx: 0, currentIdx: 0, list: [] });
 
   const openCalendarPicker = useCallback((currentDateStr, onSelectCallback) => {
     const norm = normalizeISODate(currentDateStr) || getTodayISO();
@@ -347,6 +350,28 @@ export default function App() {
     const m = (parseInt(parts[1], 10) || 1) - 1;
     setCalendarPicker({ visible: true, selectedDate: norm, viewYear: y, viewMonth: m, onSelect: onSelectCallback });
   }, []);
+
+  // Android Hardware Back Button Handler
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (calendarPicker.visible) {
+        setCalendarPicker((prev) => ({ ...prev, visible: false }));
+        return true;
+      }
+      if (activeTab === 'Students' && selectedStudentId) {
+        setNavDirection(-1);
+        setSelectedStudentId(null);
+        return true;
+      }
+      if (activeTab !== 'Home') {
+        setNavDirection(-1);
+        setActiveTab('Home');
+        return true;
+      }
+      return false;
+    });
+    return () => sub.remove();
+  }, [activeTab, selectedStudentId, calendarPicker.visible]);
 
   useEffect(() => {
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -404,11 +429,12 @@ export default function App() {
   const activeFees = useMemo(() => fees.filter((f) => !f.isDeleted && studentMap[f.studentId] && !studentMap[f.studentId].isDeleted).sort((a, b) => (b.date || '').localeCompare(a.date || '')), [fees, studentMap]);
   const activeActivities = useMemo(() => activities.filter((a) => !a.isDeleted), [activities]);
 
+  // Only sync orderedSubjects when Firestore activeSubjects updates (prevents snap-back when drag ends)
   useEffect(() => {
-    if (!draggingSubjectId) {
+    if (!dragInfoRef.current.active) {
       setOrderedSubjects(activeSubjects);
     }
-  }, [activeSubjects, draggingSubjectId]);
+  }, [activeSubjects]);
 
   const globalFeeTotals = useMemo(() => {
     let collected = 0, pending = 0;
@@ -583,60 +609,70 @@ export default function App() {
     }
   };
 
-  // Native Screen-Coordinate Touch Drag Handlers for 6-Dot Subject Grip
-  const handleSubjectTouchStart = (subj, pageY) => {
+  // Reliable PanGestureHandler Drag Handlers for 6-Dot Subject Grip
+  const handleSubjectDragStart = (subj) => {
     Keyboard.dismiss();
-    const idx = orderedSubjects.findIndex((s) => s.id === subj.id);
+    const listSnapshot = orderedSubjects.length > 0 ? [...orderedSubjects] : [...activeSubjects];
+    const idx = listSnapshot.findIndex((s) => s.id === subj.id);
     if (idx === -1) return;
     dragInfoRef.current = {
       active: true,
       subjectId: subj.id,
       startIdx: idx,
       currentIdx: idx,
-      startPageY: pageY,
-      list: [...orderedSubjects],
+      list: listSnapshot,
     };
+    setSubjectScrollLocked(true);
     dragSubjectY.setValue(0);
     setDraggingSubjectId(subj.id);
-    triggerHaptic(16);
+    triggerHaptic(14);
   };
 
-  const handleSubjectTouchMove = (pageY) => {
-    if (!dragInfoRef.current.active) return;
-    const { startIdx, currentIdx, startPageY, list } = dragInfoRef.current;
-    const dy = pageY - startPageY;
-    const targetIdx = Math.max(0, Math.min(list.length - 1, Math.round(startIdx + dy / SUBJECT_ROW_HEIGHT)));
+  const handleSubjectDragMove = (subj, event) => {
+    const { translationY } = event.nativeEvent;
+    if (!dragInfoRef.current.active) {
+      handleSubjectDragStart(subj);
+    }
+    const { startIdx, currentIdx, list } = dragInfoRef.current;
+    if (!list || list.length === 0) return;
 
+    const targetIdx = Math.max(0, Math.min(list.length - 1, Math.round(startIdx + translationY / SUBJECT_ROW_HEIGHT)));
     if (targetIdx !== currentIdx) {
       const updated = [...list];
       const [moved] = updated.splice(currentIdx, 1);
       updated.splice(targetIdx, 0, moved);
       dragInfoRef.current.currentIdx = targetIdx;
       dragInfoRef.current.list = updated;
-      triggerLayoutAnimation();
       triggerHaptic(10);
       setOrderedSubjects(updated);
     }
-
-    dragSubjectY.setValue(dy - (dragInfoRef.current.currentIdx - startIdx) * SUBJECT_ROW_HEIGHT);
+    dragSubjectY.setValue(translationY - (dragInfoRef.current.currentIdx - startIdx) * SUBJECT_ROW_HEIGHT);
   };
 
-  const handleSubjectTouchEnd = () => {
-    if (!dragInfoRef.current.active) return;
-    const finalOrder = dragInfoRef.current.list;
-    const didChange = finalOrder.some((s, i) => s.id !== activeSubjects[i]?.id);
-    dragInfoRef.current.active = false;
-    Animated.timing(dragSubjectY, {
-      toValue: 0,
-      duration: 160,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start(() => {
-      setDraggingSubjectId(null);
-      if (didChange) {
-        commitSubjectOrderList(finalOrder);
-      }
-    });
+  const handleSubjectDragStateChange = (subj, event) => {
+    const { state } = event.nativeEvent;
+    if (state === State.BEGAN) {
+      handleSubjectDragStart(subj);
+    } else if (state === State.END || state === State.CANCELLED || state === State.FAILED) {
+      setSubjectScrollLocked(false);
+      if (!dragInfoRef.current.active) return;
+      const finalOrder = [...dragInfoRef.current.list];
+      const didChange = finalOrder.some((s, i) => s.id !== activeSubjects[i]?.id);
+      dragInfoRef.current.active = false;
+
+      Animated.timing(dragSubjectY, {
+        toValue: 0,
+        duration: 150,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start(() => {
+        setDraggingSubjectId(null);
+        setOrderedSubjects(finalOrder);
+        if (didChange) {
+          commitSubjectOrderList(finalOrder);
+        }
+      });
+    }
   };
 
   const handleContextAction = async (action) => {
@@ -677,13 +713,16 @@ export default function App() {
     Keyboard.dismiss();
     const trimmed = subjectForm.name.trim();
     if (!trimmed) return Alert.alert('Validation', 'Please enter a subject/instrument name.');
+    if (savingLockRef.current) return;
+    savingLockRef.current = true;
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
-      if (subjectForm.id) { await updateDoc(doc(db, 'subjects', subjectForm.id), { name: trimmed }); await logActivity('Updated Subject', trimmed); }
-      else { await addDoc(collection(db, 'subjects'), { name: trimmed, order: activeSubjects.length, isDeleted: false, deletedAt: null }); await logActivity('Added Subject', trimmed); }
+      const editingId = subjectForm.id;
       setSubjectForm({ id: null, name: '' });
-    } catch (e) { Alert.alert('Error', 'Could not save subject.'); }
+      if (editingId) { await updateDoc(doc(db, 'subjects', editingId), { name: trimmed }); await logActivity('Updated Subject', trimmed); }
+      else { await addDoc(collection(db, 'subjects'), { name: trimmed, order: activeSubjects.length, isDeleted: false, deletedAt: null }); await logActivity('Added Subject', trimmed); }
+    } catch (e) { Alert.alert('Error', 'Could not save subject.'); } finally { savingLockRef.current = false; }
   };
 
   const handleSaveStudent = async () => {
@@ -691,15 +730,18 @@ export default function App() {
     if (!studentForm.name.trim() || !studentForm.subjectId) return Alert.alert('Validation', 'Student Name and Subject are required.');
     const validDate = normalizeISODate(studentForm.joinedDate);
     if (!validDate) return Alert.alert('Validation', 'Please enter a valid enrollment date in YYYY-MM-DD format.');
+    if (savingLockRef.current) return;
+    savingLockRef.current = true;
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
       const payload = { name: studentForm.name.trim(), subjectId: studentForm.subjectId, phone: studentForm.phone.trim(), guardian: studentForm.guardian.trim(), joinedDate: validDate };
-      if (studentForm.id) { await updateDoc(doc(db, 'students', studentForm.id), payload); await logActivity('Updated Student', payload.name); }
-      else { await addDoc(collection(db, 'students'), { ...payload, notes: '', priorityNote: false, isDeleted: false, deletedAt: null }); await logActivity('Enrolled Student', `${payload.name} (${subjectMap[payload.subjectId]?.name || ''})`); }
+      const editingId = studentForm.id;
       setStudentModal(false);
       setStudentForm({ id: null, name: '', subjectId: activeSubjects[0]?.id || '', phone: '', guardian: '', joinedDate: getTodayISO() });
-    } catch (e) { Alert.alert('Error', 'Could not save student record.'); }
+      if (editingId) { await updateDoc(doc(db, 'students', editingId), payload); await logActivity('Updated Student', payload.name); }
+      else { await addDoc(collection(db, 'students'), { ...payload, notes: '', priorityNote: false, isDeleted: false, deletedAt: null }); await logActivity('Enrolled Student', `${payload.name} (${subjectMap[payload.subjectId]?.name || ''})`); }
+    } catch (e) { Alert.alert('Error', 'Could not save student record.'); } finally { savingLockRef.current = false; }
   };
 
   const handleSaveInlineLesson = async () => {
@@ -708,13 +750,16 @@ export default function App() {
     const validDate = normalizeISODate(inlineLessonForm.date);
     if (!validDate) return Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
     if (!inlineLessonForm.technique.trim() && !inlineLessonForm.repertoire.trim() && !inlineLessonForm.assignment.trim()) return Alert.alert('Validation', 'Enter at least one lesson detail.');
+    if (savingLockRef.current) return;
+    savingLockRef.current = true;
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
-      await addDoc(collection(db, 'lessons'), { studentId: selectedStudentId, date: validDate, technique: inlineLessonForm.technique.trim(), repertoire: inlineLessonForm.repertoire.trim(), assignment: inlineLessonForm.assignment.trim(), isDeleted: false, deletedAt: null });
-      await logActivity('Logged Lesson', `${studentMap[selectedStudentId]?.name || 'Student'} (${formatReadableLocalDate(validDate)})`);
+      const payload = { studentId: selectedStudentId, date: validDate, technique: inlineLessonForm.technique.trim(), repertoire: inlineLessonForm.repertoire.trim(), assignment: inlineLessonForm.assignment.trim(), isDeleted: false, deletedAt: null };
       setInlineLessonForm({ date: getTodayISO(), technique: '', repertoire: '', assignment: '' });
-    } catch (e) { Alert.alert('Error', 'Could not log lesson.'); }
+      await addDoc(collection(db, 'lessons'), payload);
+      await logActivity('Logged Lesson', `${studentMap[selectedStudentId]?.name || 'Student'} (${formatReadableLocalDate(validDate)})`);
+    } catch (e) { Alert.alert('Error', 'Could not log lesson.'); } finally { savingLockRef.current = false; }
   };
 
   const handleSaveEditedLesson = async () => {
@@ -723,13 +768,17 @@ export default function App() {
     const validDate = normalizeISODate(lessonEditForm.date);
     if (!validDate) return Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
     if (!lessonEditForm.technique.trim() && !lessonEditForm.repertoire.trim() && !lessonEditForm.assignment.trim()) return Alert.alert('Validation', 'Enter at least one lesson detail.');
+    if (savingLockRef.current) return;
+    savingLockRef.current = true;
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
-      await updateDoc(doc(db, 'lessons', lessonEditForm.id), { studentId: lessonEditForm.studentId, date: validDate, technique: lessonEditForm.technique.trim(), repertoire: lessonEditForm.repertoire.trim(), assignment: lessonEditForm.assignment.trim() });
-      await logActivity('Updated Lesson', `${studentMap[lessonEditForm.studentId]?.name || 'Student'} (${formatReadableLocalDate(validDate)})`);
+      const editingId = lessonEditForm.id;
+      const payload = { studentId: lessonEditForm.studentId, date: validDate, technique: lessonEditForm.technique.trim(), repertoire: lessonEditForm.repertoire.trim(), assignment: lessonEditForm.assignment.trim() };
       setLessonEditModal(false);
-    } catch (e) { Alert.alert('Error', 'Could not update lesson.'); }
+      await updateDoc(doc(db, 'lessons', editingId), payload);
+      await logActivity('Updated Lesson', `${studentMap[payload.studentId]?.name || 'Student'} (${formatReadableLocalDate(validDate)})`);
+    } catch (e) { Alert.alert('Error', 'Could not update lesson.'); } finally { savingLockRef.current = false; }
   };
 
   const handleSaveInlineAttendance = async () => {
@@ -737,19 +786,23 @@ export default function App() {
     if (!selectedStudentId) return;
     const validDate = normalizeISODate(inlineAttendanceForm.date);
     if (!validDate) return Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
+    if (savingLockRef.current) return;
+    savingLockRef.current = true;
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
+      const statusVal = inlineAttendanceForm.status;
+      const remarksVal = inlineAttendanceForm.remarks.trim();
+      setInlineAttendanceForm({ date: getTodayISO(), status: 'Present', remarks: '' });
       const existingRecord = activeAttendance.find((a) => a.studentId === selectedStudentId && a.date === validDate);
       if (existingRecord) {
-        await updateDoc(doc(db, 'attendance', existingRecord.id), { status: inlineAttendanceForm.status, remarks: inlineAttendanceForm.remarks.trim() });
-        await logActivity('Updated Attendance', `${studentMap[selectedStudentId]?.name || 'Student'} • ${inlineAttendanceForm.status}`);
+        await updateDoc(doc(db, 'attendance', existingRecord.id), { status: statusVal, remarks: remarksVal });
+        await logActivity('Updated Attendance', `${studentMap[selectedStudentId]?.name || 'Student'} • ${statusVal}`);
       } else {
-        await addDoc(collection(db, 'attendance'), { studentId: selectedStudentId, date: validDate, status: inlineAttendanceForm.status, remarks: inlineAttendanceForm.remarks.trim(), isDeleted: false, deletedAt: null });
-        await logActivity('Marked Attendance', `${studentMap[selectedStudentId]?.name || 'Student'} • ${inlineAttendanceForm.status}`);
+        await addDoc(collection(db, 'attendance'), { studentId: selectedStudentId, date: validDate, status: statusVal, remarks: remarksVal, isDeleted: false, deletedAt: null });
+        await logActivity('Marked Attendance', `${studentMap[selectedStudentId]?.name || 'Student'} • ${statusVal}`);
       }
-      setInlineAttendanceForm({ date: getTodayISO(), status: 'Present', remarks: '' });
-    } catch (e) { Alert.alert('Error', 'Could not save attendance.'); }
+    } catch (e) { Alert.alert('Error', 'Could not save attendance.'); } finally { savingLockRef.current = false; }
   };
 
   const handleSaveModalAttendance = async () => {
@@ -757,14 +810,20 @@ export default function App() {
     if (!attendanceModalForm.studentId) return Alert.alert('Validation', 'Please select a Student.');
     const validDate = normalizeISODate(attendanceModalForm.date);
     if (!validDate) return Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
+    const payload = { studentId: attendanceModalForm.studentId, date: validDate, status: attendanceModalForm.status, remarks: attendanceModalForm.remarks.trim() };
+    const duplicateRecord = activeAttendance.find((a) => a.studentId === payload.studentId && a.date === validDate && a.id !== attendanceModalForm.id);
+    if (attendanceModalForm.id && duplicateRecord) {
+      return Alert.alert('Duplicate Date', 'An attendance entry already exists for this student on that date.');
+    }
+    if (savingLockRef.current) return;
+    savingLockRef.current = true;
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
-      const payload = { studentId: attendanceModalForm.studentId, date: validDate, status: attendanceModalForm.status, remarks: attendanceModalForm.remarks.trim() };
-      const duplicateRecord = activeAttendance.find((a) => a.studentId === payload.studentId && a.date === validDate && a.id !== attendanceModalForm.id);
-      if (attendanceModalForm.id) {
-        if (duplicateRecord) return Alert.alert('Duplicate Date', 'An attendance entry already exists for this student on that date.');
-        await updateDoc(doc(db, 'attendance', attendanceModalForm.id), payload);
+      const editingId = attendanceModalForm.id;
+      setAttendanceModal(false);
+      if (editingId) {
+        await updateDoc(doc(db, 'attendance', editingId), payload);
         await logActivity('Updated Attendance', `${studentMap[payload.studentId]?.name || 'Student'} • ${payload.status}`);
       } else if (duplicateRecord) {
         await updateDoc(doc(db, 'attendance', duplicateRecord.id), payload);
@@ -773,19 +832,19 @@ export default function App() {
         await addDoc(collection(db, 'attendance'), { ...payload, isDeleted: false, deletedAt: null });
         await logActivity('Marked Attendance', `${studentMap[payload.studentId]?.name || 'Student'} • ${payload.status}`);
       }
-      setAttendanceModal(false);
-    } catch (e) { Alert.alert('Error', 'Could not save attendance.'); }
+    } catch (e) { Alert.alert('Error', 'Could not save attendance.'); } finally { savingLockRef.current = false; }
   };
 
   const handleSaveStudentNotes = async () => {
     Keyboard.dismiss();
-    if (!selectedStudentId) return;
+    if (!selectedStudentId || savingLockRef.current) return;
+    savingLockRef.current = true;
     try {
       triggerHaptic(12);
       await updateDoc(doc(db, 'students', selectedStudentId), { notes: noteDraft, priorityNote: priorityDraft });
       await logActivity('Updated Student Notes', studentMap[selectedStudentId]?.name || '');
       Alert.alert('Saved', 'Student notes updated.');
-    } catch (e) { Alert.alert('Error', 'Could not update student notes.'); }
+    } catch (e) { Alert.alert('Error', 'Could not update student notes.'); } finally { savingLockRef.current = false; }
   };
 
   const handleSaveFee = async (shouldSharePDF = false) => {
@@ -799,29 +858,35 @@ export default function App() {
     if (feeForm.status === 'Unpaid' && numericBalance <= 0) return Alert.alert('Validation', 'Unpaid records require a Balance Due greater than ₹0.');
     if (feeForm.status === 'Paid' && numericPaid <= 0) return Alert.alert('Validation', 'Paid records require an Amount Paid greater than ₹0.');
     if (feeForm.status === 'Partial' && (numericPaid <= 0 || numericBalance <= 0)) return Alert.alert('Validation', 'Partial payments require both Amount Paid and Balance Due to be greater than ₹0.');
+    if (savingLockRef.current) return;
+    savingLockRef.current = true;
 
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
+      const editingId = feeForm.id;
       const payload = { studentId: feeForm.studentId, feeType: feeForm.feeType, monthPaidFor: feeForm.feeType === 'Monthly Fee' ? feeForm.monthPaidFor.trim() : '', date: validDate, mode: feeForm.mode, status: feeForm.status, amountPaid: numericPaid, balanceDue: numericBalance, remarks: feeForm.remarks.trim() };
-      if (feeForm.id) { await updateDoc(doc(db, 'fees', feeForm.id), payload); await logActivity('Updated Fee Record', `${studentMap[payload.studentId]?.name || 'Student'} • ₹${numericPaid}`); }
-      else { await addDoc(collection(db, 'fees'), { ...payload, isDeleted: false, deletedAt: null }); await logActivity('Recorded Fee', `${studentMap[payload.studentId]?.name || 'Student'} • ₹${numericPaid} (${payload.status})`); }
       setFeeModal(false);
+      if (editingId) { await updateDoc(doc(db, 'fees', editingId), payload); await logActivity('Updated Fee Record', `${studentMap[payload.studentId]?.name || 'Student'} • ₹${numericPaid}`); }
+      else { await addDoc(collection(db, 'fees'), { ...payload, isDeleted: false, deletedAt: null }); await logActivity('Recorded Fee', `${studentMap[payload.studentId]?.name || 'Student'} • ₹${numericPaid} (${payload.status})`); }
       if (shouldSharePDF) {
         setTimeout(() => { generateAndShareReceiptPDF(payload); }, 350);
       }
-    } catch (e) { Alert.alert('Error', 'Could not save fee record.'); }
+    } catch (e) { Alert.alert('Error', 'Could not save fee record.'); } finally { savingLockRef.current = false; }
   };
 
   const handleUpdateNotice = async () => {
     Keyboard.dismiss();
+    if (savingLockRef.current) return;
+    savingLockRef.current = true;
     try {
       triggerHaptic(12);
       const today = getTodayISO();
-      await setDoc(doc(db, 'settings', 'noticeBoard'), { text: noticeInput.trim(), updatedDate: today });
-      await logActivity('Updated Notice Board', formatReadableLocalDate(today));
+      const textVal = noticeInput.trim();
       setNoticeEditModal(false);
-    } catch (e) { Alert.alert('Error', 'Could not update notice board.'); }
+      await setDoc(doc(db, 'settings', 'noticeBoard'), { text: textVal, updatedDate: today });
+      await logActivity('Updated Notice Board', formatReadableLocalDate(today));
+    } catch (e) { Alert.alert('Error', 'Could not update notice board.'); } finally { savingLockRef.current = false; }
   };
 
   const handleRestoreTrashItem = async (item) => {
@@ -895,7 +960,6 @@ export default function App() {
     return grouped;
   }, [activeSubjects, studentMap]);
 
-  // Main tab swipe handler (never opens drawer mid-screen; returns true if tab changed)
   const handleMainTabSwipe = (event) => {
     const { translationX } = event.nativeEvent;
     if (Math.abs(translationX) < 35) return false;
@@ -915,7 +979,6 @@ export default function App() {
     return false;
   };
 
-  // Dedicated sub-tab swipe handler (swipes ONLY the sub-tab section inside Student Profile)
   const handleProfileSubTabSwipe = (event) => {
     const { translationX } = event.nativeEvent;
     if (Math.abs(translationX) < 35) return false;
@@ -933,6 +996,88 @@ export default function App() {
       return true;
     }
     return false;
+  };
+
+  const renderCalendarDays = () => {
+    const { viewYear, viewMonth, selectedDate, onSelect } = calendarPicker;
+    const firstDay = new Date(viewYear, viewMonth, 1).getDay();
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+    const cells = [];
+    for (let i = 0; i < firstDay; i++) cells.push(null);
+    for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+    return (
+      <View style={styles.calendarGrid}>
+        {cells.map((dayNum, index) => {
+          if (!dayNum) return <View key={`empty-${index}`} style={styles.calendarDayCell} />;
+          const isoStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+          const isSelected = isoStr === selectedDate;
+          const isToday = isoStr === getTodayISO();
+          return (
+            <TouchableOpacity
+              key={isoStr}
+              style={[styles.calendarDayCell, isToday && styles.calendarDayToday, isSelected && styles.calendarDaySelected]}
+              onPress={() => {
+                triggerHaptic(10);
+                if (typeof onSelect === 'function') onSelect(isoStr);
+                setCalendarPicker((prev) => ({ ...prev, visible: false }));
+              }}
+            >
+              <Text style={[styles.calendarDayText, isToday && styles.calendarDayTextToday, isSelected && styles.calendarDayTextSelected]}>{dayNum}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    );
+  };
+
+  // Non-Modal Portal Overlay for Calendar Picker (Prevents Dual-Modal Freeze on iOS/Android)
+  const renderCalendarOverlay = () => {
+    if (!calendarPicker.visible) return null;
+    return (
+      <Pressable
+        style={styles.calendarPortalOverlay}
+        onPress={() => setCalendarPicker((prev) => ({ ...prev, visible: false }))}
+      >
+        <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
+          <View style={styles.calendarHeaderRow}>
+            <TouchableOpacity
+              style={styles.iconActionBtn}
+              onPress={() => {
+                const prevM = calendarPicker.viewMonth === 0 ? 11 : calendarPicker.viewMonth - 1;
+                const prevY = calendarPicker.viewMonth === 0 ? calendarPicker.viewYear - 1 : calendarPicker.viewYear;
+                setCalendarPicker({ ...calendarPicker, viewMonth: prevM, viewYear: prevY });
+              }}
+            >
+              <Ionicons name="chevron-back" size={18} color={COLORS.navy} />
+            </TouchableOpacity>
+            <Text style={styles.calendarMonthTitle}>{MONTHS_FULL[calendarPicker.viewMonth]} {calendarPicker.viewYear}</Text>
+            <TouchableOpacity
+              style={styles.iconActionBtn}
+              onPress={() => {
+                const nextM = calendarPicker.viewMonth === 11 ? 0 : calendarPicker.viewMonth + 1;
+                const nextY = calendarPicker.viewMonth === 11 ? calendarPicker.viewYear + 1 : calendarPicker.viewYear;
+                setCalendarPicker({ ...calendarPicker, viewMonth: nextM, viewYear: nextY });
+              }}
+            >
+              <Ionicons name="chevron-forward" size={18} color={COLORS.navy} />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.calendarWeekRow}>
+            {WEEKDAYS_SHORT.map((w) => <Text key={w} style={styles.calendarWeekText}>{w}</Text>)}
+          </View>
+          {renderCalendarDays()}
+          <View style={[styles.modalBtnRow, { justifyContent: 'space-between', marginTop: 14 }]}>
+            <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => {
+              const today = getTodayISO();
+              if (typeof calendarPicker.onSelect === 'function') calendarPicker.onSelect(today);
+              setCalendarPicker((prev) => ({ ...prev, visible: false }));
+            }}>Select Today</PaperButton>
+            <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => setCalendarPicker((prev) => ({ ...prev, visible: false }))}>Close</PaperButton>
+          </View>
+        </Pressable>
+      </Pressable>
+    );
   };
 
   const renderHomeTab = () => {
@@ -1407,41 +1552,9 @@ export default function App() {
     );
   };
 
-  const renderCalendarDays = () => {
-    const { viewYear, viewMonth, selectedDate, onSelect } = calendarPicker;
-    const firstDay = new Date(viewYear, viewMonth, 1).getDay();
-    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
-    const cells = [];
-    for (let i = 0; i < firstDay; i++) cells.push(null);
-    for (let d = 1; d <= daysInMonth; d++) cells.push(d);
-
-    return (
-      <View style={styles.calendarGrid}>
-        {cells.map((dayNum, index) => {
-          if (!dayNum) return <View key={`empty-${index}`} style={styles.calendarDayCell} />;
-          const isoStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
-          const isSelected = isoStr === selectedDate;
-          const isToday = isoStr === getTodayISO();
-          return (
-            <TouchableOpacity
-              key={isoStr}
-              style={[styles.calendarDayCell, isToday && styles.calendarDayToday, isSelected && styles.calendarDaySelected]}
-              onPress={() => {
-                triggerHaptic(10);
-                if (typeof onSelect === 'function') onSelect(isoStr);
-                setCalendarPicker({ ...calendarPicker, visible: false });
-              }}
-            >
-              <Text style={[styles.calendarDayText, isToday && styles.calendarDayTextToday, isSelected && styles.calendarDayTextSelected]}>{dayNum}</Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    );
-  };
-
   const todayActivities = activeActivities.filter((a) => a.dateISO === getTodayISO());
   const isInsideStudentProfile = activeTab === 'Students' && Boolean(selectedStudent);
+  const anyFormModalOpen = studentModal || lessonEditModal || attendanceModal || feeModal;
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -1457,7 +1570,7 @@ export default function App() {
             </Appbar.Header>
 
             <View style={{ flex: 1 }}>
-              {/* Strict Very-Edge Swipe Strip (16px wide at left: 0) — Only place that opens the 3-Bar Menu by swiping */}
+              {/* Strict Very-Edge Swipe Strip (16px wide at left: 0) */}
               <PanGestureHandler
                 activeOffsetX={10}
                 failOffsetY={[-18, 18]}
@@ -1480,6 +1593,9 @@ export default function App() {
                 {activeTab === 'Fees' && renderFeesTab()}
                 {activeTab === 'Trash' && renderTrashTab()}
               </AnimatedScreen>
+
+              {/* Root-level Calendar Overlay when no form modal is open */}
+              {!anyFormModalOpen && renderCalendarOverlay()}
             </View>
 
             <View style={styles.bottomTabBar}>
@@ -1510,7 +1626,7 @@ export default function App() {
               })}
             </View>
 
-            {/* ANIMATED SLIDE DRAWER (SUPPORTS SWIPE-LEFT TO CLOSE) */}
+            {/* ANIMATED SLIDE DRAWER */}
             <Modal visible={drawerOpen} transparent animationType="none" onRequestClose={() => closeDrawer()}>
               <GestureHandlerRootView style={{ flex: 1 }}>
                 <Animated.View style={[styles.drawerOverlay, { opacity: drawerBackdropAnim }]}>
@@ -1551,49 +1667,6 @@ export default function App() {
               </GestureHandlerRootView>
             </Modal>
 
-            {/* INTERACTIVE VISUAL CALENDAR DATE PICKER MODAL */}
-            <Modal visible={calendarPicker.visible} transparent animationType="fade" onRequestClose={() => setCalendarPicker({ ...calendarPicker, visible: false })}>
-              <Pressable style={styles.modalBackdrop} onPress={() => setCalendarPicker({ ...calendarPicker, visible: false })}>
-                <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-                  <View style={styles.calendarHeaderRow}>
-                    <TouchableOpacity
-                      style={styles.iconActionBtn}
-                      onPress={() => {
-                        const prevM = calendarPicker.viewMonth === 0 ? 11 : calendarPicker.viewMonth - 1;
-                        const prevY = calendarPicker.viewMonth === 0 ? calendarPicker.viewYear - 1 : calendarPicker.viewYear;
-                        setCalendarPicker({ ...calendarPicker, viewMonth: prevM, viewYear: prevY });
-                      }}
-                    >
-                      <Ionicons name="chevron-back" size={18} color={COLORS.navy} />
-                    </TouchableOpacity>
-                    <Text style={styles.calendarMonthTitle}>{MONTHS_FULL[calendarPicker.viewMonth]} {calendarPicker.viewYear}</Text>
-                    <TouchableOpacity
-                      style={styles.iconActionBtn}
-                      onPress={() => {
-                        const nextM = calendarPicker.viewMonth === 11 ? 0 : calendarPicker.viewMonth + 1;
-                        const nextY = calendarPicker.viewMonth === 11 ? calendarPicker.viewYear + 1 : calendarPicker.viewYear;
-                        setCalendarPicker({ ...calendarPicker, viewMonth: nextM, viewYear: nextY });
-                      }}
-                    >
-                      <Ionicons name="chevron-forward" size={18} color={COLORS.navy} />
-                    </TouchableOpacity>
-                  </View>
-                  <View style={styles.calendarWeekRow}>
-                    {WEEKDAYS_SHORT.map((w) => <Text key={w} style={styles.calendarWeekText}>{w}</Text>)}
-                  </View>
-                  {renderCalendarDays()}
-                  <View style={[styles.modalBtnRow, { justifyContent: 'space-between', marginTop: 14 }]}>
-                    <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => {
-                      const today = getTodayISO();
-                      if (typeof calendarPicker.onSelect === 'function') calendarPicker.onSelect(today);
-                      setCalendarPicker({ ...calendarPicker, visible: false });
-                    }}>Select Today</PaperButton>
-                    <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => setCalendarPicker({ ...calendarPicker, visible: false })}>Close</PaperButton>
-                  </View>
-                </Pressable>
-              </Pressable>
-            </Modal>
-
             {/* LONG-PRESS CONTEXT MENU */}
             <Modal visible={contextMenu.visible} transparent animationType="fade" onRequestClose={closeContextMenu}>
               <Pressable style={styles.modalBackdrop} onPress={closeContextMenu}>
@@ -1629,7 +1702,7 @@ export default function App() {
 
             {/* NOTICE EDIT MODAL */}
             <Modal visible={noticeEditModal} transparent animationType="fade" onRequestClose={() => setNoticeEditModal(false)}>
-              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
                 <Surface style={styles.modalCard} elevation={5}>
                   <Text style={styles.sectionTitle}>UPDATE NOTICE BOARD</Text>
                   <PaperInput mode="outlined" multiline numberOfLines={5} value={noticeInput} onChangeText={setNoticeInput} placeholder="Type new JSM announcement..." outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginTop: 10, marginBottom: 14 }} />
@@ -1677,10 +1750,10 @@ export default function App() {
               </View>
             </Modal>
 
-            {/* MANAGE SUBJECTS MODAL (WITH WORKING 6-DOT DRAG HANDLE REORDERING) */}
+            {/* MANAGE SUBJECTS MODAL (WITH 6-DOT DRAG HANDLE REORDERING) */}
             <Modal visible={subjectsModal} transparent animationType="fade" onRequestClose={() => setSubjectsModal(false)}>
               <GestureHandlerRootView style={{ flex: 1 }}>
-                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
+                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
                   <Surface style={styles.modalCard} elevation={5}>
                     <Text style={styles.sectionTitle}>MANAGE INSTRUMENTS & SUBJECTS</Text>
                     <Text style={styles.silverMeta}>Touch & slide the 6-dot handle to reorder, or use edit/delete.</Text>
@@ -1690,7 +1763,7 @@ export default function App() {
                     </View>
                     <ScrollView
                       style={{ maxHeight: 290, marginVertical: 14 }}
-                      scrollEnabled={!draggingSubjectId}
+                      scrollEnabled={!subjectScrollLocked && !draggingSubjectId}
                       keyboardShouldPersistTaps="handled"
                       showsVerticalScrollIndicator={false}
                     >
@@ -1718,25 +1791,25 @@ export default function App() {
                                 ]}
                                 elevation={isDragging ? 5 : 2}
                               >
-                                {/* 6-Dot Drag Handle (Direct Native Touch Responder so Modal/ScrollView/Pressable never block it) */}
-                                <View
-                                  style={styles.dragHandleBtn}
-                                  onStartShouldSetResponder={() => true}
-                                  onStartShouldSetResponderCapture={() => true}
-                                  onMoveShouldSetResponder={() => true}
-                                  onMoveShouldSetResponderCapture={() => true}
-                                  onResponderTerminationRequest={() => false}
-                                  onResponderGrant={(e) => handleSubjectTouchStart(subj, e.nativeEvent.pageY)}
-                                  onResponderMove={(e) => handleSubjectTouchMove(e.nativeEvent.pageY)}
-                                  onResponderRelease={handleSubjectTouchEnd}
-                                  onResponderTerminate={handleSubjectTouchEnd}
+                                {/* 6-Dot Drag Handle */}
+                                <PanGestureHandler
+                                  activeOffsetY={[-2, 2]}
+                                  onGestureEvent={(e) => handleSubjectDragMove(subj, e)}
+                                  onHandlerStateChange={(e) => handleSubjectDragStateChange(subj, e)}
                                 >
-                                  <MaterialCommunityIcons
-                                    name="drag-vertical"
-                                    size={24}
-                                    color={isDragging ? COLORS.navy : COLORS.silver}
-                                  />
-                                </View>
+                                  <View
+                                    style={styles.dragHandleBtn}
+                                    onTouchStart={() => setSubjectScrollLocked(true)}
+                                    onTouchEnd={() => { if (!dragInfoRef.current.active) setSubjectScrollLocked(false); }}
+                                    onTouchCancel={() => { if (!dragInfoRef.current.active) setSubjectScrollLocked(false); }}
+                                  >
+                                    <MaterialCommunityIcons
+                                      name="drag-vertical"
+                                      size={24}
+                                      color={isDragging ? COLORS.navy : COLORS.silver}
+                                    />
+                                  </View>
+                                </PanGestureHandler>
 
                                 <Pressable
                                   style={{ flex: 1, paddingVertical: 6 }}
@@ -1774,7 +1847,7 @@ export default function App() {
 
             {/* REGISTER / EDIT STUDENT MODAL */}
             <Modal visible={studentModal} transparent animationType="fade" onRequestClose={() => setStudentModal(false)}>
-              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
                 <Surface style={styles.modalCard} elevation={5}>
                   <Text style={styles.sectionTitle}>{studentForm.id ? 'EDIT STUDENT DETAILS' : 'REGISTER NEW STUDENT'}</Text>
                   <ScrollView style={{ maxHeight: 380 }} keyboardShouldPersistTaps="handled">
@@ -1801,12 +1874,13 @@ export default function App() {
                     <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveStudent}>Save Student</PaperButton>
                   </View>
                 </Surface>
+                {renderCalendarOverlay()}
               </KeyboardAvoidingView>
             </Modal>
 
             {/* EDIT LESSON MODAL */}
             <Modal visible={lessonEditModal} transparent animationType="fade" onRequestClose={() => setLessonEditModal(false)}>
-              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
                 <Surface style={styles.modalCard} elevation={5}>
                   <Text style={styles.sectionTitle}>EDIT LESSON RECORD</Text>
                   <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
@@ -1825,12 +1899,13 @@ export default function App() {
                     <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveEditedLesson}>Update</PaperButton>
                   </View>
                 </Surface>
+                {renderCalendarOverlay()}
               </KeyboardAvoidingView>
             </Modal>
 
             {/* MARK / EDIT ATTENDANCE MODAL */}
             <Modal visible={attendanceModal} transparent animationType="fade" onRequestClose={() => setAttendanceModal(false)}>
-              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
                 <Surface style={styles.modalCard} elevation={5}>
                   <Text style={styles.sectionTitle}>{attendanceModalForm.id ? 'EDIT ATTENDANCE' : 'MARK GLOBAL ATTENDANCE'}</Text>
                   <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
@@ -1863,12 +1938,13 @@ export default function App() {
                     <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveModalAttendance}>Save</PaperButton>
                   </View>
                 </Surface>
+                {renderCalendarOverlay()}
               </KeyboardAvoidingView>
             </Modal>
 
             {/* RECORD / EDIT FEE MODAL */}
             <Modal visible={feeModal} transparent animationType="fade" onRequestClose={() => setFeeModal(false)}>
-              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
                 <Surface style={styles.modalCard} elevation={5}>
                   <Text style={styles.sectionTitle}>{feeForm.id ? 'EDIT FEE TRANSACTION' : 'RECORD FEE'}</Text>
                   <ScrollView style={{ maxHeight: 420 }} keyboardShouldPersistTaps="handled">
@@ -1931,6 +2007,7 @@ export default function App() {
                     <PaperButton mode="contained" buttonColor={COLORS.gold} textColor={COLORS.navy} onPress={() => handleSaveFee(true)}>Save & Share</PaperButton>
                   </View>
                 </Surface>
+                {renderCalendarOverlay()}
               </KeyboardAvoidingView>
             </Modal>
 
@@ -2057,6 +2134,7 @@ const styles = StyleSheet.create({
   drawerNavTextActive: { color: COLORS.gold },
   drawerDivider: { height: 1, backgroundColor: '#D8D2C5', marginVertical: 8 },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(12, 45, 87, 0.6)', justifyContent: 'center', padding: 18 },
+  calendarPortalOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(12, 45, 87, 0.65)', justifyContent: 'center', padding: 18, zIndex: 9999, elevation: 20 },
   modalCard: { backgroundColor: COLORS.white, borderRadius: 16, padding: 20, borderWidth: 2, borderColor: COLORS.gold },
   modalBtnRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 14 },
   contextSheet: { backgroundColor: COLORS.white, borderRadius: 16, padding: 20, borderWidth: 2, borderColor: COLORS.gold, alignItems: 'center', width: '100%' },
