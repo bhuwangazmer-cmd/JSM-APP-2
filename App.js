@@ -524,7 +524,7 @@ function JSMAppContent() {
     const unsubActivities = onSnapshot(collection(db, 'activities'), (snap) => {
       if (!isMountedRef.current) return;
       const list = [];
-      snapshot.forEach ? null : null;
+      
       snap.forEach((d) => {
         const clean = sanitizeDocRecord(d.id, d.data());
         if (clean.isDeleted && clean.deletedAt && Date.now() - clean.deletedAt > THIRTY_DAYS_MS) {
