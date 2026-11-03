@@ -147,7 +147,7 @@ const commitBatchSoftDeletes = async (entries) => {
 };
 
 // ==========================================
-// 4. CALM & GENTLE SWIPE SCREEN WRAPPER
+// 4. SMOOTH SLIDE & FADE SCREEN WRAPPER
 // ==========================================
 const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled = true }) => {
   const fadeAnim = useRef(new Animated.Value(1)).current;
@@ -159,12 +159,12 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
     [dragX]
   );
 
-  // Subtle, calm horizontal follow while finger is dragging (no elastic stretch)
+  // Smooth horizontal slide + fade while finger is dragging
   const dragTranslateX = useMemo(
     () =>
       dragX.interpolate({
-        inputRange: [-280, 0, 280],
-        outputRange: [-34, 0, 34],
+        inputRange: [-260, 0, 260],
+        outputRange: [-42, 0, 42],
         extrapolate: 'clamp',
       }),
     [dragX]
@@ -173,8 +173,8 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
   const dragOpacity = useMemo(
     () =>
       dragX.interpolate({
-        inputRange: [-260, 0, 260],
-        outputRange: [0.86, 1, 0.86],
+        inputRange: [-220, 0, 220],
+        outputRange: [0.68, 1, 0.68],
         extrapolate: 'clamp',
       }),
     [dragX]
@@ -183,18 +183,18 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
   useEffect(() => {
     dragX.stopAnimation(() => dragX.setValue(0));
     fadeAnim.setValue(0);
-    slideAnim.setValue(direction * 24);
+    slideAnim.setValue(direction * 36);
 
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
-        duration: 260,
+        duration: 280,
         easing: Easing.out(Easing.quad),
         useNativeDriver: true,
       }),
       Animated.timing(slideAnim, {
         toValue: 0,
-        duration: 260,
+        duration: 280,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
@@ -204,15 +204,18 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
   const handleGestureStateChange = (e) => {
     const { state } = e.nativeEvent;
     if (state === State.END || state === State.CANCELLED || state === State.FAILED) {
+      let didNavigate = false;
       if (state === State.END && typeof onSwipe === 'function') {
-        onSwipe(e);
+        didNavigate = Boolean(onSwipe(e));
       }
-      Animated.timing(dragX, {
-        toValue: 0,
-        duration: 190,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }).start();
+      if (!didNavigate) {
+        Animated.timing(dragX, {
+          toValue: 0,
+          duration: 200,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }).start();
+      }
     }
   };
 
@@ -226,7 +229,7 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
 
   return (
     <PanGestureHandler
-      activeOffsetX={[-22, 22]}
+      activeOffsetX={[-20, 20]}
       failOffsetY={[-15, 15]}
       onGestureEvent={onGestureEvent}
       onHandlerStateChange={handleGestureStateChange}
@@ -335,7 +338,7 @@ export default function App() {
   const [orderedSubjects, setOrderedSubjects] = useState([]);
   const [draggingSubjectId, setDraggingSubjectId] = useState(null);
   const dragSubjectY = useRef(new Animated.Value(0)).current;
-  const dragInfoRef = useRef({ active: false, subjectId: null, startIdx: 0, currentIdx: 0, list: [] });
+  const dragInfoRef = useRef({ active: false, subjectId: null, startIdx: 0, currentIdx: 0, startPageY: 0, list: [] });
 
   const openCalendarPicker = useCallback((currentDateStr, onSelectCallback) => {
     const norm = normalizeISODate(currentDateStr) || getTodayISO();
@@ -580,25 +583,29 @@ export default function App() {
     }
   };
 
-  const handleSubjectDragGesture = (subj, event) => {
-    const { translationY } = event.nativeEvent;
-    if (!dragInfoRef.current.active) {
-      const idx = orderedSubjects.findIndex((s) => s.id === subj.id);
-      if (idx === -1) return;
-      dragInfoRef.current = {
-        active: true,
-        subjectId: subj.id,
-        startIdx: idx,
-        currentIdx: idx,
-        list: [...orderedSubjects],
-      };
-      setDraggingSubjectId(subj.id);
-      triggerHaptic(14);
-    }
+  // Native Screen-Coordinate Touch Drag Handlers for 6-Dot Subject Grip
+  const handleSubjectTouchStart = (subj, pageY) => {
+    Keyboard.dismiss();
+    const idx = orderedSubjects.findIndex((s) => s.id === subj.id);
+    if (idx === -1) return;
+    dragInfoRef.current = {
+      active: true,
+      subjectId: subj.id,
+      startIdx: idx,
+      currentIdx: idx,
+      startPageY: pageY,
+      list: [...orderedSubjects],
+    };
+    dragSubjectY.setValue(0);
+    setDraggingSubjectId(subj.id);
+    triggerHaptic(16);
+  };
 
-    const { startIdx, currentIdx, list } = dragInfoRef.current;
-    const targetIdx = Math.max(0, Math.min(list.length - 1, Math.round(startIdx + translationY / SUBJECT_ROW_HEIGHT)));
-    dragSubjectY.setValue(translationY - (currentIdx - startIdx) * SUBJECT_ROW_HEIGHT);
+  const handleSubjectTouchMove = (pageY) => {
+    if (!dragInfoRef.current.active) return;
+    const { startIdx, currentIdx, startPageY, list } = dragInfoRef.current;
+    const dy = pageY - startPageY;
+    const targetIdx = Math.max(0, Math.min(list.length - 1, Math.round(startIdx + dy / SUBJECT_ROW_HEIGHT)));
 
     if (targetIdx !== currentIdx) {
       const updated = [...list];
@@ -606,47 +613,30 @@ export default function App() {
       updated.splice(targetIdx, 0, moved);
       dragInfoRef.current.currentIdx = targetIdx;
       dragInfoRef.current.list = updated;
-      dragSubjectY.setValue(translationY - (targetIdx - startIdx) * SUBJECT_ROW_HEIGHT);
       triggerLayoutAnimation();
-      triggerHaptic(8);
+      triggerHaptic(10);
       setOrderedSubjects(updated);
     }
+
+    dragSubjectY.setValue(dy - (dragInfoRef.current.currentIdx - startIdx) * SUBJECT_ROW_HEIGHT);
   };
 
-  const handleSubjectDragStateChange = (subj, event) => {
-    const { state } = event.nativeEvent;
-    if (state === State.BEGAN) {
-      const idx = orderedSubjects.findIndex((s) => s.id === subj.id);
-      if (idx !== -1) {
-        dragInfoRef.current = {
-          active: true,
-          subjectId: subj.id,
-          startIdx: idx,
-          currentIdx: idx,
-          list: [...orderedSubjects],
-        };
-        dragSubjectY.setValue(0);
-        setDraggingSubjectId(subj.id);
-        triggerHaptic(14);
+  const handleSubjectTouchEnd = () => {
+    if (!dragInfoRef.current.active) return;
+    const finalOrder = dragInfoRef.current.list;
+    const didChange = finalOrder.some((s, i) => s.id !== activeSubjects[i]?.id);
+    dragInfoRef.current.active = false;
+    Animated.timing(dragSubjectY, {
+      toValue: 0,
+      duration: 160,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start(() => {
+      setDraggingSubjectId(null);
+      if (didChange) {
+        commitSubjectOrderList(finalOrder);
       }
-    } else if (state === State.END || state === State.CANCELLED || state === State.FAILED) {
-      if (dragInfoRef.current.active) {
-        const finalOrder = dragInfoRef.current.list;
-        const didChange = finalOrder.some((s, i) => s.id !== activeSubjects[i]?.id);
-        dragInfoRef.current.active = false;
-        Animated.timing(dragSubjectY, {
-          toValue: 0,
-          duration: 150,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }).start(() => {
-          setDraggingSubjectId(null);
-          if (didChange) {
-            commitSubjectOrderList(finalOrder);
-          }
-        });
-      }
-    }
+    });
   };
 
   const handleContextAction = async (action) => {
@@ -905,50 +895,44 @@ export default function App() {
     return grouped;
   }, [activeSubjects, studentMap]);
 
-  // Main tab swipe handler (only active when NOT inside a student profile)
+  // Main tab swipe handler (never opens drawer mid-screen; returns true if tab changed)
   const handleMainTabSwipe = (event) => {
-    const { translationX, x } = event.nativeEvent;
-    if (Math.abs(translationX) < 35) return;
-
-    if (translationX > 35 && typeof x === 'number' && x - translationX <= 42) {
-      openDrawer();
-      return;
-    }
+    const { translationX } = event.nativeEvent;
+    if (Math.abs(translationX) < 35) return false;
 
     const currentIndex = MAIN_TABS.indexOf(activeTab);
     if (translationX < -35 && currentIndex < MAIN_TABS.length - 1) {
       Keyboard.dismiss();
       setNavDirection(1);
       setActiveTab(MAIN_TABS[currentIndex + 1]);
+      return true;
     } else if (translationX > 35 && currentIndex > 0) {
       Keyboard.dismiss();
       setNavDirection(-1);
       setActiveTab(MAIN_TABS[currentIndex - 1]);
-    } else if (translationX > 45 && currentIndex === 0) {
-      openDrawer();
+      return true;
     }
+    return false;
   };
 
   // Dedicated sub-tab swipe handler (swipes ONLY the sub-tab section inside Student Profile)
   const handleProfileSubTabSwipe = (event) => {
-    const { translationX, x } = event.nativeEvent;
-    if (Math.abs(translationX) < 35) return;
-
-    if (translationX > 35 && typeof x === 'number' && x - translationX <= 42) {
-      openDrawer();
-      return;
-    }
+    const { translationX } = event.nativeEvent;
+    if (Math.abs(translationX) < 35) return false;
 
     const currentIndex = PROFILE_TABS.indexOf(profileTab);
     if (translationX < -35 && currentIndex < PROFILE_TABS.length - 1) {
       Keyboard.dismiss();
       setSubTabDirection(1);
       setProfileTab(PROFILE_TABS[currentIndex + 1]);
+      return true;
     } else if (translationX > 35 && currentIndex > 0) {
       Keyboard.dismiss();
       setSubTabDirection(-1);
       setProfileTab(PROFILE_TABS[currentIndex - 1]);
+      return true;
     }
+    return false;
   };
 
   const renderHomeTab = () => {
@@ -1175,7 +1159,7 @@ export default function App() {
           ))}
         </View>
 
-        {/* Isolated Gentle Swipe Container for Sub-Tab Content Only */}
+        {/* Isolated Slide & Fade Container for Sub-Tab Content Only */}
         <AnimatedScreen
           direction={subTabDirection}
           triggerKey={`${student.id}-${profileTab}`}
@@ -1473,12 +1457,12 @@ export default function App() {
             </Appbar.Header>
 
             <View style={{ flex: 1 }}>
-              {/* Dedicated Left-Edge / Corner Swipe Strip to Open 3-Bar Menu from Any Screen */}
+              {/* Strict Very-Edge Swipe Strip (16px wide at left: 0) — Only place that opens the 3-Bar Menu by swiping */}
               <PanGestureHandler
-                activeOffsetX={12}
-                failOffsetY={[-20, 20]}
+                activeOffsetX={10}
+                failOffsetY={[-18, 18]}
                 onEnded={(e) => {
-                  if (e.nativeEvent.translationX > 22) openDrawer();
+                  if (e.nativeEvent.translationX > 24) openDrawer();
                 }}
               >
                 <View style={styles.leftEdgeSwipeZone} />
@@ -1528,41 +1512,43 @@ export default function App() {
 
             {/* ANIMATED SLIDE DRAWER (SUPPORTS SWIPE-LEFT TO CLOSE) */}
             <Modal visible={drawerOpen} transparent animationType="none" onRequestClose={() => closeDrawer()}>
-              <Animated.View style={[styles.drawerOverlay, { opacity: drawerBackdropAnim }]}>
-                <PanGestureHandler
-                  activeOffsetX={[-15, 15]}
-                  onEnded={(e) => {
-                    if (e.nativeEvent.translationX < -30) closeDrawer();
-                  }}
-                >
-                  <Animated.View style={[styles.drawerContainer, { transform: [{ translateX: drawerSlideAnim }] }]}>
-                    <View style={styles.drawerHeader}><Text style={styles.crestBadgeText}>★ JSM ★</Text><Text style={styles.drawerTitle}>Music School Portal</Text><Text style={styles.drawerSub}>Est. 2022 • Official Edition</Text></View>
-                    <ScrollView contentContainerStyle={{ padding: 16, gap: 10 }} keyboardShouldPersistTaps="handled">
-                      {[{ label: 'Home Dashboard', tab: 'Home', icon: 'grid-outline' }, { label: 'Student Directory', tab: 'Students', icon: 'people-outline' }, { label: 'Global Attendance', tab: 'Attendance', icon: 'calendar-outline' }, { label: 'Global Fee Register', tab: 'Fees', icon: 'card-outline' }, { label: `Trash Archive (${trashItems.length})`, tab: 'Trash', icon: 'trash-outline' }].map((nav) => (
-                        <TouchableOpacity key={nav.tab} style={[styles.drawerNavItem, activeTab === nav.tab && styles.drawerNavItemActive]} onPress={() => {
-                            closeDrawer(() => {
-                              const newIdx = MAIN_TABS.indexOf(nav.tab);
-                              const oldIdx = MAIN_TABS.indexOf(activeTab);
-                              setNavDirection(newIdx >= oldIdx ? 1 : -1);
-                              setSelectedStudentId(null);
-                              setActiveTab(nav.tab);
-                            });
-                          }}>
-                          <Ionicons name={nav.icon} size={18} color={activeTab === nav.tab ? COLORS.gold : COLORS.navy} /><Text style={[styles.drawerNavText, activeTab === nav.tab && styles.drawerNavTextActive]}>{nav.label}</Text>
+              <GestureHandlerRootView style={{ flex: 1 }}>
+                <Animated.View style={[styles.drawerOverlay, { opacity: drawerBackdropAnim }]}>
+                  <PanGestureHandler
+                    activeOffsetX={[-15, 15]}
+                    onEnded={(e) => {
+                      if (e.nativeEvent.translationX < -30) closeDrawer();
+                    }}
+                  >
+                    <Animated.View style={[styles.drawerContainer, { transform: [{ translateX: drawerSlideAnim }] }]}>
+                      <View style={styles.drawerHeader}><Text style={styles.crestBadgeText}>★ JSM ★</Text><Text style={styles.drawerTitle}>Music School Portal</Text><Text style={styles.drawerSub}>Est. 2022 • Official Edition</Text></View>
+                      <ScrollView contentContainerStyle={{ padding: 16, gap: 10 }} keyboardShouldPersistTaps="handled">
+                        {[{ label: 'Home Dashboard', tab: 'Home', icon: 'grid-outline' }, { label: 'Student Directory', tab: 'Students', icon: 'people-outline' }, { label: 'Global Attendance', tab: 'Attendance', icon: 'calendar-outline' }, { label: 'Global Fee Register', tab: 'Fees', icon: 'card-outline' }, { label: `Trash Archive (${trashItems.length})`, tab: 'Trash', icon: 'trash-outline' }].map((nav) => (
+                          <TouchableOpacity key={nav.tab} style={[styles.drawerNavItem, activeTab === nav.tab && styles.drawerNavItemActive]} onPress={() => {
+                              closeDrawer(() => {
+                                const newIdx = MAIN_TABS.indexOf(nav.tab);
+                                const oldIdx = MAIN_TABS.indexOf(activeTab);
+                                setNavDirection(newIdx >= oldIdx ? 1 : -1);
+                                setSelectedStudentId(null);
+                                setActiveTab(nav.tab);
+                              });
+                            }}>
+                            <Ionicons name={nav.icon} size={18} color={activeTab === nav.tab ? COLORS.gold : COLORS.navy} /><Text style={[styles.drawerNavText, activeTab === nav.tab && styles.drawerNavTextActive]}>{nav.label}</Text>
+                          </TouchableOpacity>
+                        ))}
+                        <View style={styles.drawerDivider} />
+                        <TouchableOpacity style={styles.drawerNavItem} onPress={() => { closeDrawer(() => { setSubjectForm({ id: null, name: '' }); setSubjectsModal(true); }); }}>
+                          <Ionicons name="musical-notes-outline" size={18} color={COLORS.navy} /><Text style={styles.drawerNavText}>Manage Instruments & Order</Text>
                         </TouchableOpacity>
-                      ))}
-                      <View style={styles.drawerDivider} />
-                      <TouchableOpacity style={styles.drawerNavItem} onPress={() => { closeDrawer(() => { setSubjectForm({ id: null, name: '' }); setSubjectsModal(true); }); }}>
-                        <Ionicons name="musical-notes-outline" size={18} color={COLORS.navy} /><Text style={styles.drawerNavText}>Manage Instruments & Order</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity style={styles.drawerNavItem} onPress={handleCheckOTA} disabled={checkingOTA}>
-                        {checkingOTA ? <ActivityIndicator size="small" color={COLORS.navy} /> : <><Ionicons name="cloud-download-outline" size={18} color={COLORS.navy} /><Text style={styles.drawerNavText}>Check for OTA Update</Text></>}
-                      </TouchableOpacity>
-                    </ScrollView>
-                  </Animated.View>
-                </PanGestureHandler>
-                <Pressable style={{ flex: 1 }} onPress={() => closeDrawer()} />
-              </Animated.View>
+                        <TouchableOpacity style={styles.drawerNavItem} onPress={handleCheckOTA} disabled={checkingOTA}>
+                          {checkingOTA ? <ActivityIndicator size="small" color={COLORS.navy} /> : <><Ionicons name="cloud-download-outline" size={18} color={COLORS.navy} /><Text style={styles.drawerNavText}>Check for OTA Update</Text></>}
+                        </TouchableOpacity>
+                      </ScrollView>
+                    </Animated.View>
+                  </PanGestureHandler>
+                  <Pressable style={{ flex: 1 }} onPress={() => closeDrawer()} />
+                </Animated.View>
+              </GestureHandlerRootView>
             </Modal>
 
             {/* INTERACTIVE VISUAL CALENDAR DATE PICKER MODAL */}
@@ -1691,72 +1677,80 @@ export default function App() {
               </View>
             </Modal>
 
-            {/* MANAGE SUBJECTS MODAL (WITH 6-DOT DRAG HANDLE REORDERING) */}
+            {/* MANAGE SUBJECTS MODAL (WITH WORKING 6-DOT DRAG HANDLE REORDERING) */}
             <Modal visible={subjectsModal} transparent animationType="fade" onRequestClose={() => setSubjectsModal(false)}>
-              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
-                <Surface style={styles.modalCard} elevation={5}>
-                  <Text style={styles.sectionTitle}>MANAGE INSTRUMENTS & SUBJECTS</Text>
-                  <Text style={styles.silverMeta}>Touch & drag the 6-dot handle to reorder, or use edit/delete.</Text>
-                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, alignItems: 'center' }}>
-                    <PaperInput mode="outlined" value={subjectForm.name} onChangeText={(t) => setSubjectForm({ ...subjectForm, name: t })} placeholder="e.g., Piano, Violin, Guitar" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ flex: 1, backgroundColor: COLORS.white, height: 50 }} />
-                    <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveSubject}>{subjectForm.id ? 'Update' : 'Add'}</PaperButton>
-                  </View>
-                  <ScrollView
-                    style={{ maxHeight: 290, marginVertical: 14 }}
-                    scrollEnabled={!draggingSubjectId}
-                    keyboardShouldPersistTaps="handled"
-                    showsVerticalScrollIndicator={false}
-                  >
-                    {orderedSubjects.length === 0 ? (
-                      <Text style={styles.emptyText}>No subjects added yet.</Text>
-                    ) : (
-                      orderedSubjects.map((subj, idx) => {
-                        const isDragging = draggingSubjectId === subj.id;
-                        return (
-                          <Animated.View
-                            key={subj.id}
-                            style={[
-                              isDragging && {
-                                zIndex: 50,
-                                elevation: 8,
-                                transform: [{ translateY: dragSubjectY }, { scale: 1.02 }],
-                              },
-                            ]}
-                          >
-                            <Pressable
-                              onLongPress={() => {
-                                if (draggingSubjectId) return;
-                                setSubjectsModal(false);
-                                setTimeout(() => openLongPressMenu('subject', subj, subj.name, true), 250);
-                              }}
-                              delayLongPress={320}
+              <GestureHandlerRootView style={{ flex: 1 }}>
+                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
+                  <Surface style={styles.modalCard} elevation={5}>
+                    <Text style={styles.sectionTitle}>MANAGE INSTRUMENTS & SUBJECTS</Text>
+                    <Text style={styles.silverMeta}>Touch & slide the 6-dot handle to reorder, or use edit/delete.</Text>
+                    <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, alignItems: 'center' }}>
+                      <PaperInput mode="outlined" value={subjectForm.name} onChangeText={(t) => setSubjectForm({ ...subjectForm, name: t })} placeholder="e.g., Piano, Violin, Guitar" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ flex: 1, backgroundColor: COLORS.white, height: 50 }} />
+                      <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveSubject}>{subjectForm.id ? 'Update' : 'Add'}</PaperButton>
+                    </View>
+                    <ScrollView
+                      style={{ maxHeight: 290, marginVertical: 14 }}
+                      scrollEnabled={!draggingSubjectId}
+                      keyboardShouldPersistTaps="handled"
+                      showsVerticalScrollIndicator={false}
+                    >
+                      {orderedSubjects.length === 0 ? (
+                        <Text style={styles.emptyText}>No subjects added yet.</Text>
+                      ) : (
+                        orderedSubjects.map((subj, idx) => {
+                          const isDragging = draggingSubjectId === subj.id;
+                          return (
+                            <Animated.View
+                              key={subj.id}
+                              style={[
+                                isDragging && {
+                                  zIndex: 50,
+                                  elevation: 8,
+                                  transform: [{ translateY: dragSubjectY }, { scale: 1.02 }],
+                                },
+                              ]}
                             >
                               <Surface
                                 style={[
                                   styles.cleanRecordCard,
-                                  { minHeight: 52, paddingVertical: 10, paddingHorizontal: 10 },
+                                  { minHeight: 52, paddingVertical: 8, paddingHorizontal: 10 },
                                   isDragging && styles.draggingSubjectCard,
                                 ]}
                                 elevation={isDragging ? 5 : 2}
                               >
-                                {/* 6-Dot Drag Handle */}
-                                <PanGestureHandler
-                                  activeOffsetY={[-3, 3]}
-                                  onGestureEvent={(e) => handleSubjectDragGesture(subj, e)}
-                                  onHandlerStateChange={(e) => handleSubjectDragStateChange(subj, e)}
+                                {/* 6-Dot Drag Handle (Direct Native Touch Responder so Modal/ScrollView/Pressable never block it) */}
+                                <View
+                                  style={styles.dragHandleBtn}
+                                  onStartShouldSetResponder={() => true}
+                                  onStartShouldSetResponderCapture={() => true}
+                                  onMoveShouldSetResponder={() => true}
+                                  onMoveShouldSetResponderCapture={() => true}
+                                  onResponderTerminationRequest={() => false}
+                                  onResponderGrant={(e) => handleSubjectTouchStart(subj, e.nativeEvent.pageY)}
+                                  onResponderMove={(e) => handleSubjectTouchMove(e.nativeEvent.pageY)}
+                                  onResponderRelease={handleSubjectTouchEnd}
+                                  onResponderTerminate={handleSubjectTouchEnd}
                                 >
-                                  <View style={styles.dragHandleBtn}>
-                                    <MaterialCommunityIcons
-                                      name="drag-vertical"
-                                      size={22}
-                                      color={isDragging ? COLORS.gold : COLORS.silver}
-                                    />
-                                  </View>
-                                </PanGestureHandler>
+                                  <MaterialCommunityIcons
+                                    name="drag-vertical"
+                                    size={24}
+                                    color={isDragging ? COLORS.navy : COLORS.silver}
+                                  />
+                                </View>
 
-                                <Text style={[styles.recordPrimaryTitle, { flex: 1 }]}>
-                                  {idx + 1}. {subj.name}
-                                </Text>
+                                <Pressable
+                                  style={{ flex: 1, paddingVertical: 6 }}
+                                  onLongPress={() => {
+                                    if (draggingSubjectId) return;
+                                    setSubjectsModal(false);
+                                    setTimeout(() => openLongPressMenu('subject', subj, subj.name, true), 250);
+                                  }}
+                                  delayLongPress={320}
+                                >
+                                  <Text style={styles.recordPrimaryTitle}>
+                                    {idx + 1}. {subj.name}
+                                  </Text>
+                                </Pressable>
 
                                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                                   <TouchableOpacity style={styles.iconActionBtn} onPress={() => setSubjectForm({ id: subj.id, name: subj.name })}>
@@ -1767,15 +1761,15 @@ export default function App() {
                                   </TouchableOpacity>
                                 </View>
                               </Surface>
-                            </Pressable>
-                          </Animated.View>
-                        );
-                      })
-                    )}
-                  </ScrollView>
-                  <PaperButton mode="outlined" textColor={COLORS.navy} style={{ alignSelf: 'flex-end', borderColor: COLORS.silver }} onPress={() => { Keyboard.dismiss(); setSubjectForm({ id: null, name: '' }); setSubjectsModal(false); }}>Done</PaperButton>
-                </Surface>
-              </KeyboardAvoidingView>
+                            </Animated.View>
+                          );
+                        })
+                      )}
+                    </ScrollView>
+                    <PaperButton mode="outlined" textColor={COLORS.navy} style={{ alignSelf: 'flex-end', borderColor: COLORS.silver }} onPress={() => { Keyboard.dismiss(); setSubjectForm({ id: null, name: '' }); setSubjectsModal(false); }}>Done</PaperButton>
+                  </Surface>
+                </KeyboardAvoidingView>
+              </GestureHandlerRootView>
             </Modal>
 
             {/* REGISTER / EDIT STUDENT MODAL */}
@@ -1949,7 +1943,7 @@ export default function App() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: COLORS.ivory },
-  leftEdgeSwipeZone: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 22, zIndex: 50 },
+  leftEdgeSwipeZone: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 16, zIndex: 50 },
   scrollContent: { padding: 16, paddingBottom: 36 },
   heroCard: { backgroundColor: COLORS.navy, borderRadius: 16, padding: 20, borderWidth: 1.5, borderColor: COLORS.gold, marginBottom: 16 },
   crestBadge: { alignSelf: 'flex-start', backgroundColor: COLORS.goldLight, borderColor: COLORS.gold, borderWidth: 1, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 3, marginBottom: 10 },
@@ -1996,7 +1990,7 @@ const styles = StyleSheet.create({
   monthSubHeader: { color: COLORS.navy, fontSize: 13, fontWeight: '700', marginVertical: 6, paddingLeft: 4 },
   cleanRecordCard: { backgroundColor: COLORS.white, borderRadius: 12, padding: 14, marginTop: 8, borderWidth: 1, borderColor: COLORS.border, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
   draggingSubjectCard: { backgroundColor: COLORS.cream, borderColor: COLORS.gold, borderWidth: 1.5 },
-  dragHandleBtn: { paddingVertical: 6, paddingHorizontal: 4, justifyContent: 'center', alignItems: 'center' },
+  dragHandleBtn: { paddingVertical: 10, paddingHorizontal: 8, marginRight: 2, justifyContent: 'center', alignItems: 'center', borderRadius: 6, backgroundColor: COLORS.ivory },
   cardPressed: { opacity: 0.7 },
   recordPrimaryTitle: { color: COLORS.navy, fontSize: 15, fontWeight: '700' },
   recordSecondarySub: { color: COLORS.silver, fontSize: 12, marginTop: 3 },
