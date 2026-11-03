@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { Component, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Pressable, Modal, Alert, Animated, Easing, LayoutAnimation, Platform, UIManager, StatusBar, Switch, ActivityIndicator, KeyboardAvoidingView, Linking, Keyboard, Vibration, BackHandler } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -14,7 +14,9 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-const triggerLayoutAnimation = () => LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+const triggerLayoutAnimation = () => {
+  try { LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut); } catch (e) {}
+};
 const triggerHaptic = (ms = 12) => {
   try { Vibration.vibrate(ms); } catch (e) {}
 };
@@ -53,8 +55,60 @@ const PROFILE_TABS = ['Classes', 'Attendance', 'Notes', 'Fees'];
 const SUBJECT_ROW_HEIGHT = 60;
 
 // ==========================================
-// 3. UTILITIES & BATCH HELPERS
+// 3. UTILITIES, SANITIZERS & BATCH HELPERS
 // ==========================================
+const safeString = (val, fallback = '') => (val === null || val === undefined ? fallback : String(val));
+const safeNumber = (val, fallback = 0) => {
+  const n = Number(val);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const sanitizeDocRecord = (id, raw = {}) => {
+  const data = raw && typeof raw === 'object' ? raw : {};
+  return {
+    ...data,
+    id: safeString(id),
+    name: safeString(data.name),
+    title: safeString(data.title),
+    subtitle: safeString(data.subtitle),
+    subjectId: safeString(data.subjectId),
+    studentId: safeString(data.studentId),
+    phone: safeString(data.phone),
+    guardian: safeString(data.guardian),
+    joinedDate: safeString(data.joinedDate),
+    date: safeString(data.date),
+    dateISO: safeString(data.dateISO),
+    technique: safeString(data.technique),
+    repertoire: safeString(data.repertoire),
+    assignment: safeString(data.assignment),
+    status: safeString(data.status, 'Present'),
+    remarks: safeString(data.remarks),
+    notes: safeString(data.notes),
+    feeType: safeString(data.feeType, 'Monthly Fee'),
+    monthPaidFor: safeString(data.monthPaidFor),
+    mode: safeString(data.mode, 'UPI'),
+    amountPaid: safeNumber(data.amountPaid, 0),
+    balanceDue: safeNumber(data.balanceDue, 0),
+    order: safeNumber(data.order, 999),
+    timestamp: safeNumber(data.timestamp, 0),
+    deletedAt: data.deletedAt ? safeNumber(data.deletedAt, Date.now()) : null,
+    isDeleted: Boolean(data.isDeleted),
+    priorityNote: Boolean(data.priorityNote),
+  };
+};
+
+// Prevents Firestore writes from hanging indefinitely when device is offline
+const withWriteTimeout = (promise, ms = 3500) => {
+  let timerId;
+  const timeoutPromise = new Promise((resolve) => {
+    timerId = setTimeout(() => resolve({ timedOutOffline: true }), ms);
+  });
+  return Promise.race([
+    promise.then((res) => { clearTimeout(timerId); return res; }).catch((err) => { clearTimeout(timerId); throw err; }),
+    timeoutPromise,
+  ]);
+};
+
 const getOffsetDateISO = (daysOffset = 0) => {
   const d = new Date();
   d.setDate(d.getDate() + daysOffset);
@@ -81,7 +135,7 @@ const getGreetingByLocalTime = () => {
 };
 
 const formatReadableLocalDate = (isoDateStr) => {
-  const safeStr = String(isoDateStr ?? '').trim();
+  const safeStr = safeString(isoDateStr).trim();
   if (!safeStr) return 'Unknown Date';
   const normalized = normalizeISODate(safeStr) || safeStr;
   const parts = normalized.split('-');
@@ -91,7 +145,7 @@ const formatReadableLocalDate = (isoDateStr) => {
 };
 
 const getMonthYearFromISO = (isoDateStr) => {
-  const safeStr = String(isoDateStr ?? '').trim();
+  const safeStr = safeString(isoDateStr).trim();
   if (!safeStr) return 'Unknown Month';
   const normalized = normalizeISODate(safeStr) || safeStr;
   const parts = normalized.split('-');
@@ -102,7 +156,7 @@ const getMonthYearFromISO = (isoDateStr) => {
 };
 
 const isWithinLastTwoLocalMonths = (isoDateStr) => {
-  const safeStr = String(isoDateStr ?? '').trim();
+  const safeStr = safeString(isoDateStr).trim();
   const normalized = normalizeISODate(safeStr) || safeStr;
   if (!normalized) return false;
   const parts = normalized.split('-');
@@ -117,12 +171,12 @@ const isWithinLastTwoLocalMonths = (isoDateStr) => {
 
 const getDaysRemainingInTrash = (deletedAtMs) => {
   if (!deletedAtMs) return 30;
-  return Math.max(0, 30 - Math.floor((Date.now() - Number(deletedAtMs)) / (1000 * 60 * 60 * 24)));
+  return Math.max(0, 30 - Math.floor((Date.now() - safeNumber(deletedAtMs, Date.now())) / (1000 * 60 * 60 * 24)));
 };
 
-const escapeHtml = (unsafe) => String(unsafe ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+const escapeHtml = (unsafe) => safeString(unsafe).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 const sanitizeCurrency = (val) => {
-  const cleaned = String(val ?? '').replace(/[^0-9.]/g, '');
+  const cleaned = safeString(val).replace(/[^0-9.]/g, '');
   const parts = cleaned.split('.');
   return parts.length <= 1 ? cleaned : `${parts[0]}.${parts.slice(1).join('').slice(0, 2)}`;
 };
@@ -132,7 +186,7 @@ const commitBatchDeletes = async (entries) => {
   for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
     const batch = writeBatch(db);
     entries.slice(i, i + CHUNK_SIZE).forEach((entry) => batch.delete(doc(db, entry.col, entry.id)));
-    await batch.commit();
+    await withWriteTimeout(batch.commit());
   }
 };
 
@@ -142,17 +196,51 @@ const commitBatchSoftDeletes = async (entries) => {
   for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
     const batch = writeBatch(db);
     entries.slice(i, i + CHUNK_SIZE).forEach((entry) => batch.update(doc(db, entry.col, entry.id), { isDeleted: true, deletedAt: now }));
-    await batch.commit();
+    await withWriteTimeout(batch.commit());
   }
 };
 
 // ==========================================
-// 4. SMOOTH SLIDE & FADE SCREEN WRAPPER
+// 4. ERROR BOUNDARY & SWIPE SCREEN WRAPPER
 // ==========================================
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, errorMessage: '' };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, errorMessage: safeString(error?.message, 'Unexpected UI error') };
+  }
+  componentDidCatch() {}
+  render() {
+    if (this.state.hasError) {
+      return (
+        <SafeAreaView style={styles.errorBoundaryContainer}>
+          <Ionicons name="shield-checkmark-outline" size={44} color={COLORS.gold} />
+          <Text style={styles.errorBoundaryTitle}>JSM Safe Recovery</Text>
+          <Text style={styles.errorBoundarySub}>{this.state.errorMessage}</Text>
+          <TouchableOpacity
+            style={styles.errorBoundaryBtn}
+            onPress={() => this.setState({ hasError: false, errorMessage: '' })}
+          >
+            <Text style={styles.errorBoundaryBtnText}>Reload Interface</Text>
+          </TouchableOpacity>
+        </SafeAreaView>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled = true }) => {
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const slideAnim = useRef(new Animated.Value(0)).current;
   const dragX = useRef(new Animated.Value(0)).current;
+  const onSwipeRef = useRef(onSwipe);
+
+  useEffect(() => {
+    onSwipeRef.current = onSwipe;
+  }, [onSwipe]);
 
   const onGestureEvent = useMemo(
     () => Animated.event([{ nativeEvent: { translationX: dragX } }], { useNativeDriver: true }),
@@ -184,7 +272,7 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
     fadeAnim.setValue(0);
     slideAnim.setValue(direction * 36);
 
-    Animated.parallel([
+    const anim = Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
         duration: 280,
@@ -197,15 +285,17 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
-    ]).start();
+    ]);
+    anim.start();
+    return () => anim.stop();
   }, [triggerKey, direction, fadeAnim, slideAnim, dragX]);
 
-  const handleGestureStateChange = (e) => {
+  const handleGestureStateChange = useCallback((e) => {
     const { state } = e.nativeEvent;
     if (state === State.END || state === State.CANCELLED || state === State.FAILED) {
       let didNavigate = false;
-      if (state === State.END && typeof onSwipe === 'function') {
-        didNavigate = Boolean(onSwipe(e));
+      if (state === State.END && typeof onSwipeRef.current === 'function') {
+        didNavigate = Boolean(onSwipeRef.current(e));
       }
       if (didNavigate) {
         dragX.stopAnimation(() => dragX.setValue(0));
@@ -218,7 +308,7 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
         }).start();
       }
     }
-  };
+  }, [dragX]);
 
   if (!swipeEnabled) {
     return (
@@ -268,7 +358,7 @@ const QuickDateRow = ({ currentDate, onSelectDate, onOpenCalendar }) => {
 // ==========================================
 // 5. MAIN APPLICATION COMPONENT
 // ==========================================
-export default function App() {
+function JSMAppContent() {
   const [activeTab, setActiveTab] = useState('Home');
   const [selectedStudentId, setSelectedStudentId] = useState(null);
   const [profileTab, setProfileTab] = useState('Classes');
@@ -279,6 +369,26 @@ export default function App() {
   const drawerSlideAnim = useRef(new Animated.Value(-290)).current;
   const drawerBackdropAnim = useRef(new Animated.Value(0)).current;
   const savingLockRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const pendingTimeoutsRef = useRef([]);
+
+  const scheduleTimeout = useCallback((fn, delayMs) => {
+    const id = setTimeout(() => {
+      pendingTimeoutsRef.current = pendingTimeoutsRef.current.filter((t) => t !== id);
+      if (isMountedRef.current) fn();
+    }, delayMs);
+    pendingTimeoutsRef.current.push(id);
+    return id;
+  }, []);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      pendingTimeoutsRef.current.forEach((id) => clearTimeout(id));
+      pendingTimeoutsRef.current = [];
+    };
+  }, []);
 
   const openDrawer = useCallback(() => {
     Keyboard.dismiss();
@@ -297,6 +407,7 @@ export default function App() {
       Animated.timing(drawerSlideAnim, { toValue: -290, duration: 210, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
       Animated.timing(drawerBackdropAnim, { toValue: 0, duration: 210, easing: Easing.in(Easing.quad), useNativeDriver: true }),
     ]).start(() => {
+      if (!isMountedRef.current) return;
       setDrawerOpen(false);
       if (typeof callback === 'function') callback();
     });
@@ -336,12 +447,22 @@ export default function App() {
   const [calendarPicker, setCalendarPicker] = useState({ visible: false, selectedDate: getTodayISO(), viewYear: new Date().getFullYear(), viewMonth: new Date().getMonth(), onSelect: null });
   const initialLoadDone = useRef(false);
 
-  // Drag-and-drop state for Subject 6-dot handle reordering
+  // Drag-and-drop state and refs for Subject 6-dot handle reordering
   const [orderedSubjects, setOrderedSubjects] = useState([]);
   const [draggingSubjectId, setDraggingSubjectId] = useState(null);
   const [subjectScrollLocked, setSubjectScrollLocked] = useState(false);
   const dragSubjectY = useRef(new Animated.Value(0)).current;
   const dragInfoRef = useRef({ active: false, subjectId: null, startIdx: 0, currentIdx: 0, list: [] });
+
+  // Refs to prevent stale closures in gesture handlers
+  const activeTabRef = useRef(activeTab);
+  const profileTabRef = useRef(profileTab);
+  const orderedSubjectsRef = useRef(orderedSubjects);
+  const activeSubjectsRef = useRef([]);
+
+  useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
+  useEffect(() => { profileTabRef.current = profileTab; }, [profileTab]);
+  useEffect(() => { orderedSubjectsRef.current = orderedSubjects; }, [orderedSubjects]);
 
   const openCalendarPicker = useCallback((currentDateStr, onSelectCallback) => {
     const norm = normalizeISODate(currentDateStr) || getTodayISO();
@@ -358,6 +479,10 @@ export default function App() {
         setCalendarPicker((prev) => ({ ...prev, visible: false }));
         return true;
       }
+      if (drawerOpen) {
+        closeDrawer();
+        return true;
+      }
       if (activeTab === 'Students' && selectedStudentId) {
         setNavDirection(-1);
         setSelectedStudentId(null);
@@ -371,18 +496,21 @@ export default function App() {
       return false;
     });
     return () => sub.remove();
-  }, [activeTab, selectedStudentId, calendarPicker.visible]);
+  }, [activeTab, selectedStudentId, calendarPicker.visible, drawerOpen, closeDrawer]);
 
   useEffect(() => {
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
     const timer = setTimeout(() => { initialLoadDone.current = true; }, 1200);
     const handleSnapshotWithAutoPurge = (colName, snapshot, setter) => {
+      if (!isMountedRef.current) return;
       const records = [];
       snapshot.forEach((docSnap) => {
-        const data = docSnap.data();
-        if (data.isDeleted && data.deletedAt && Date.now() - Number(data.deletedAt) > THIRTY_DAYS_MS) {
-          deleteDoc(doc(db, colName, docSnap.id)).catch(() => {});
-        } else { records.push({ id: docSnap.id, ...data }); }
+        const clean = sanitizeDocRecord(docSnap.id, docSnap.data());
+        if (clean.isDeleted && clean.deletedAt && Date.now() - clean.deletedAt > THIRTY_DAYS_MS) {
+          deleteDoc(doc(db, colName, clean.id)).catch(() => {});
+        } else {
+          records.push(clean);
+        }
       });
       if (initialLoadDone.current) triggerLayoutAnimation();
       setter(records);
@@ -394,15 +522,17 @@ export default function App() {
     const unsubAttendance = onSnapshot(collection(db, 'attendance'), (snap) => handleSnapshotWithAutoPurge('attendance', snap, setAttendance), () => {});
     const unsubFees = onSnapshot(collection(db, 'fees'), (snap) => handleSnapshotWithAutoPurge('fees', snap, setFees), () => {});
     const unsubActivities = onSnapshot(collection(db, 'activities'), (snap) => {
+      if (!isMountedRef.current) return;
       const list = [];
+      snapshot.forEach ? null : null;
       snap.forEach((d) => {
-        const data = d.data();
-        if (data.isDeleted && data.deletedAt && Date.now() - Number(data.deletedAt) > THIRTY_DAYS_MS) {
-          deleteDoc(doc(db, 'activities', d.id)).catch(() => {});
-        } else if (!data.isDeleted && data.timestamp && Date.now() - Number(data.timestamp) > THIRTY_DAYS_MS) {
-          deleteDoc(doc(db, 'activities', d.id)).catch(() => {});
+        const clean = sanitizeDocRecord(d.id, d.data());
+        if (clean.isDeleted && clean.deletedAt && Date.now() - clean.deletedAt > THIRTY_DAYS_MS) {
+          deleteDoc(doc(db, 'activities', clean.id)).catch(() => {});
+        } else if (!clean.isDeleted && clean.timestamp && Date.now() - clean.timestamp > THIRTY_DAYS_MS) {
+          deleteDoc(doc(db, 'activities', clean.id)).catch(() => {});
         } else {
-          list.push({ id: d.id, ...data });
+          list.push(clean);
         }
       });
       list.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
@@ -410,27 +540,52 @@ export default function App() {
       setActivities(list);
     }, () => {});
     const unsubNotice = onSnapshot(doc(db, 'settings', 'noticeBoard'), (docSnap) => {
-      if (docSnap.exists()) { setNoticeText(docSnap.data().text || ''); setNoticeUpdatedAt(docSnap.data().updatedDate || ''); }
+      if (!isMountedRef.current) return;
+      if (docSnap.exists()) {
+        const d = docSnap.data() || {};
+        setNoticeText(safeString(d.text));
+        setNoticeUpdatedAt(safeString(d.updatedDate));
+      }
     }, () => {});
 
-    return () => { clearTimeout(timer); unsubSubjects(); unsubStudents(); unsubLessons(); unsubAttendance(); unsubFees(); unsubActivities(); unsubNotice(); };
+    return () => {
+      clearTimeout(timer);
+      unsubSubjects();
+      unsubStudents();
+      unsubLessons();
+      unsubAttendance();
+      unsubFees();
+      unsubActivities();
+      unsubNotice();
+    };
   }, []);
 
   const logActivity = async (actionTitle, subtitle) => {
-    try { await addDoc(collection(db, 'activities'), { title: actionTitle, subtitle: subtitle || '', dateISO: getTodayISO(), timestamp: Date.now(), isDeleted: false, deletedAt: null }); } catch (e) {}
+    try {
+      await withWriteTimeout(
+        addDoc(collection(db, 'activities'), {
+          title: safeString(actionTitle),
+          subtitle: safeString(subtitle),
+          dateISO: getTodayISO(),
+          timestamp: Date.now(),
+          isDeleted: false,
+          deletedAt: null,
+        })
+      );
+    } catch (e) {}
   };
 
   const activeSubjects = useMemo(() => subjects.filter((s) => !s.isDeleted).sort((a, b) => (a.order ?? 999) - (b.order ?? 999)), [subjects]);
   const subjectMap = useMemo(() => Object.fromEntries(subjects.map((s) => [s.id, s])), [subjects]);
-  const activeStudents = useMemo(() => students.filter((st) => !st.isDeleted).sort((a, b) => (a.name || '').localeCompare(b.name || '')), [students]);
+  const activeStudents = useMemo(() => students.filter((st) => !st.isDeleted).sort((a, b) => safeString(a.name).localeCompare(safeString(b.name))), [students]);
   const studentMap = useMemo(() => Object.fromEntries(students.map((s) => [s.id, s])), [students]);
-  const activeLessons = useMemo(() => lessons.filter((l) => !l.isDeleted && studentMap[l.studentId] && !studentMap[l.studentId].isDeleted).sort((a, b) => (b.date || '').localeCompare(a.date || '')), [lessons, studentMap]);
-  const activeAttendance = useMemo(() => attendance.filter((a) => !a.isDeleted && studentMap[a.studentId] && !studentMap[a.studentId].isDeleted).sort((a, b) => (b.date || '').localeCompare(a.date || '')), [attendance, studentMap]);
-  const activeFees = useMemo(() => fees.filter((f) => !f.isDeleted && studentMap[f.studentId] && !studentMap[f.studentId].isDeleted).sort((a, b) => (b.date || '').localeCompare(a.date || '')), [fees, studentMap]);
+  const activeLessons = useMemo(() => lessons.filter((l) => !l.isDeleted && studentMap[l.studentId] && !studentMap[l.studentId].isDeleted).sort((a, b) => safeString(b.date).localeCompare(safeString(a.date))), [lessons, studentMap]);
+  const activeAttendance = useMemo(() => attendance.filter((a) => !a.isDeleted && studentMap[a.studentId] && !studentMap[a.studentId].isDeleted).sort((a, b) => safeString(b.date).localeCompare(safeString(a.date))), [attendance, studentMap]);
+  const activeFees = useMemo(() => fees.filter((f) => !f.isDeleted && studentMap[f.studentId] && !studentMap[f.studentId].isDeleted).sort((a, b) => safeString(b.date).localeCompare(safeString(a.date))), [fees, studentMap]);
   const activeActivities = useMemo(() => activities.filter((a) => !a.isDeleted), [activities]);
 
-  // Only sync orderedSubjects when Firestore activeSubjects updates (prevents snap-back when drag ends)
   useEffect(() => {
+    activeSubjectsRef.current = activeSubjects;
     if (!dragInfoRef.current.active) {
       setOrderedSubjects(activeSubjects);
     }
@@ -438,24 +593,24 @@ export default function App() {
 
   const globalFeeTotals = useMemo(() => {
     let collected = 0, pending = 0;
-    activeFees.forEach((f) => { collected += Number(f.amountPaid || 0); pending += Number(f.balanceDue || 0); });
+    activeFees.forEach((f) => { collected += safeNumber(f.amountPaid, 0); pending += safeNumber(f.balanceDue, 0); });
     return { collected, pending };
   }, [activeFees]);
 
   const trashItems = useMemo(() => [
-    ...subjects.filter((x) => x.isDeleted).map((x) => ({ ...x, _col: 'subjects', _label: `Subject: ${x.name}` })),
-    ...students.filter((x) => x.isDeleted).map((x) => ({ ...x, _col: 'students', _label: `Student: ${x.name}` })),
-    ...lessons.filter((x) => x.isDeleted).map((x) => ({ ...x, _col: 'lessons', _label: `Lesson: ${studentMap[x.studentId]?.name || 'Student'} (${formatReadableLocalDate(x.date)})` })),
-    ...attendance.filter((x) => x.isDeleted).map((x) => ({ ...x, _col: 'attendance', _label: `Attendance: ${studentMap[x.studentId]?.name || 'Student'} - ${x.status} (${formatReadableLocalDate(x.date)})` })),
-    ...fees.filter((x) => x.isDeleted).map((x) => ({ ...x, _col: 'fees', _label: `Fee: ${studentMap[x.studentId]?.name || 'Student'} - ₹${x.amountPaid} (${formatReadableLocalDate(x.date)})` })),
-    ...activities.filter((x) => x.isDeleted).map((x) => ({ ...x, _col: 'activities', _label: `Activity: ${x.title}${x.subtitle ? ` (${x.subtitle})` : ''}` })),
-  ].sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0)), [subjects, students, lessons, attendance, fees, activities, studentMap]);
+    ...subjects.filter((x) => x.isDeleted).map((x) => ({ ...x, _col: 'subjects', _label: `Subject: ${safeString(x.name, 'Unnamed')}` })),
+    ...students.filter((x) => x.isDeleted).map((x) => ({ ...x, _col: 'students', _label: `Student: ${safeString(x.name, 'Unnamed')}` })),
+    ...lessons.filter((x) => x.isDeleted).map((x) => ({ ...x, _col: 'lessons', _label: `Lesson: ${safeString(studentMap[x.studentId]?.name, 'Student')} (${formatReadableLocalDate(x.date)})` })),
+    ...attendance.filter((x) => x.isDeleted).map((x) => ({ ...x, _col: 'attendance', _label: `Attendance: ${safeString(studentMap[x.studentId]?.name, 'Student')} - ${safeString(x.status)} (${formatReadableLocalDate(x.date)})` })),
+    ...fees.filter((x) => x.isDeleted).map((x) => ({ ...x, _col: 'fees', _label: `Fee: ${safeString(studentMap[x.studentId]?.name, 'Student')} - ₹${safeNumber(x.amountPaid, 0)} (${formatReadableLocalDate(x.date)})` })),
+    ...activities.filter((x) => x.isDeleted).map((x) => ({ ...x, _col: 'activities', _label: `Activity: ${safeString(x.title)}${x.subtitle ? ` (${x.subtitle})` : ''}` })),
+  ].sort((a, b) => safeNumber(b.deletedAt, 0) - safeNumber(a.deletedAt, 0)), [subjects, students, lessons, attendance, fees, activities, studentMap]);
 
   const selectedStudent = useMemo(() => activeStudents.find((s) => s.id === selectedStudentId) || null, [activeStudents, selectedStudentId]);
 
   useEffect(() => {
     if (selectedStudent) {
-      setNoteDraft(selectedStudent.notes || '');
+      setNoteDraft(safeString(selectedStudent.notes));
       setPriorityDraft(Boolean(selectedStudent.priorityNote));
     }
   }, [selectedStudentId, selectedStudent?.notes, selectedStudent?.priorityNote]);
@@ -476,8 +631,8 @@ export default function App() {
     }
     let feeStatus = 'No Records', totalDue = 0;
     if (stFees.length > 0) {
-      stFees.forEach((f) => { totalDue += Number(f.balanceDue || 0); });
-      feeStatus = stFees.some((f) => f.status === 'Unpaid' || f.status === 'Partial' || Number(f.balanceDue || 0) > 0) ? 'Due / Unpaid' : 'Paid';
+      stFees.forEach((f) => { totalDue += safeNumber(f.balanceDue, 0); });
+      feeStatus = stFees.some((f) => f.status === 'Unpaid' || f.status === 'Partial' || safeNumber(f.balanceDue, 0) > 0) ? 'Due / Unpaid' : 'Paid';
     }
     return { classesTaken: stLessons.length, attendancePct, feeStatus, totalDue, stLessons, stAttendance, stFees };
   }, [activeLessons, activeAttendance, activeFees]);
@@ -490,22 +645,25 @@ export default function App() {
         await Updates.fetchUpdateAsync();
         Alert.alert('Update Ready', 'Restarting JSM with the latest version.', [{ text: 'Restart Now', onPress: () => Updates.reloadAsync() }]);
       } else { Alert.alert('Up to Date', 'You are running the latest JSM build.'); }
-    } catch (e) { Alert.alert('OTA Notice', 'OTA check requires a production/preview Expo Updates build.'); } finally { setCheckingOTA(false); }
+    } catch (e) { Alert.alert('OTA Notice', 'OTA check requires a production/preview Expo Updates build.'); } finally {
+      if (isMountedRef.current) setCheckingOTA(false);
+    }
   };
 
   const handlePhoneCall = (phoneStr) => {
-    const cleaned = String(phoneStr || '').replace(/[^\d+]/g, '');
+    const cleaned = safeString(phoneStr).replace(/[^\d+]/g, '');
     if (!cleaned) return;
     Linking.openURL(`tel:${cleaned}`).catch(() => Alert.alert('Action Unavailable', 'Could not open phone dialer.'));
   };
 
   const handleOpenWhatsApp = (phoneStr, studentName) => {
-    const digits = String(phoneStr || '').replace(/[^\d]/g, '');
+    const digits = safeString(phoneStr).replace(/[^\d]/g, '');
     if (!digits) return;
-    Linking.openURL(`https://wa.me/${digits.length === 10 ? `91${digits}` : digits}?text=${encodeURIComponent(`Hello from JSM regarding ${studentName || 'your music classes'}.`)}`).catch(() => Alert.alert('WhatsApp Unavailable', 'Could not open WhatsApp.'));
+    Linking.openURL(`https://wa.me/${digits.length === 10 ? `91${digits}` : digits}?text=${encodeURIComponent(`Hello from JSM regarding ${safeString(studentName, 'your music classes')}.`)}`).catch(() => Alert.alert('WhatsApp Unavailable', 'Could not open WhatsApp.'));
   };
 
   const generateAndShareReceiptPDF = async (feeRecord) => {
+    if (!feeRecord) return;
     const st = studentMap[feeRecord.studentId];
     const html = `
       <!DOCTYPE html><html><head><meta charset="utf-8" />
@@ -531,8 +689,8 @@ export default function App() {
         <div class="row"><span class="label">Payment Mode:</span><span class="val">${escapeHtml(feeRecord.mode || 'UPI')}</span></div>
         <div class="row"><span class="label">Payment Status:</span><span class="val">${escapeHtml(feeRecord.status || 'Paid')}</span></div>
         <div class="total-box">
-          <div class="row"><span class="label">Amount Paid:</span><span class="val">₹${Number(feeRecord.amountPaid || 0).toFixed(2)}</span></div>
-          <div class="row"><span class="label">Balance Due:</span><span class="val">₹${Number(feeRecord.balanceDue || 0).toFixed(2)}</span></div>
+          <div class="row"><span class="label">Amount Paid:</span><span class="val">₹${safeNumber(feeRecord.amountPaid, 0).toFixed(2)}</span></div>
+          <div class="row"><span class="label">Balance Due:</span><span class="val">₹${safeNumber(feeRecord.balanceDue, 0).toFixed(2)}</span></div>
         </div>
         ${feeRecord.remarks ? `<div class="row" style="margin-top:16px;"><span class="label">Remarks:</span><span class="val">${escapeHtml(feeRecord.remarks)}</span></div>` : ''}
         <div class="footer">Generated by JSM Administration • Est. 2022</div>
@@ -541,7 +699,7 @@ export default function App() {
     try {
       const { uri } = await Print.printToFileAsync({ html });
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Share Receipt - ${st?.name || 'Student'}`, UTI: 'com.adobe.pdf' });
+        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Share Receipt - ${safeString(st?.name, 'Student')}`, UTI: 'com.adobe.pdf' });
       } else { Alert.alert('PDF Created', `Saved to: ${uri}`); }
     } catch (err) { Alert.alert('Receipt Error', 'Could not generate or share the PDF receipt.'); }
   };
@@ -549,20 +707,21 @@ export default function App() {
   const openLongPressMenu = (entityType, item, title, reopenSubjectsModal = false, reopenTodayLogModal = false) => {
     Keyboard.dismiss();
     triggerHaptic(18);
-    setContextMenu({ visible: true, entityType, item, title, reopenSubjectsModal, reopenTodayLogModal });
+    setContextMenu({ visible: true, entityType, item, title: safeString(title), reopenSubjectsModal, reopenTodayLogModal });
   };
   const closeContextMenu = () => setContextMenu({ visible: false, entityType: null, item: null, title: '', reopenSubjectsModal: false, reopenTodayLogModal: false });
 
   const handleSoftDelete = async (collectionName, item, label) => {
+    if (!item?.id) return;
     try {
       triggerLayoutAnimation();
       triggerHaptic(15);
-      await updateDoc(doc(db, collectionName, item.id), { isDeleted: true, deletedAt: Date.now() });
+      if (collectionName === 'students' && selectedStudentId === item.id) setSelectedStudentId(null);
+      if (collectionName === 'subjects' && subjectForm.id === item.id) setSubjectForm({ id: null, name: '' });
+      await withWriteTimeout(updateDoc(doc(db, collectionName, item.id), { isDeleted: true, deletedAt: Date.now() }));
       if (collectionName !== 'activities') {
         await logActivity('Moved to Trash', label);
       }
-      if (collectionName === 'students' && selectedStudentId === item.id) setSelectedStudentId(null);
-      if (collectionName === 'subjects' && subjectForm.id === item.id) setSubjectForm({ id: null, name: '' });
     } catch (e) { Alert.alert('Error', 'Unable to move item to Trash.'); }
   };
 
@@ -602,17 +761,19 @@ export default function App() {
     try {
       const batch = writeBatch(db);
       reorderedList.forEach((subj, index) => batch.update(doc(db, 'subjects', subj.id), { order: index }));
-      await batch.commit();
+      await withWriteTimeout(batch.commit());
       await logActivity('Reordered Subjects', 'Updated instrument display order');
     } catch (e) {
       Alert.alert('Error', 'Could not save new subject order.');
     }
   };
 
-  // Reliable PanGestureHandler Drag Handlers for 6-Dot Subject Grip
-  const handleSubjectDragStart = (subj) => {
+  // Stale-closure-free PanGestureHandler callbacks for 6-Dot Subject Grip
+  const handleSubjectDragStart = useCallback((subj) => {
     Keyboard.dismiss();
-    const listSnapshot = orderedSubjects.length > 0 ? [...orderedSubjects] : [...activeSubjects];
+    const currentOrdered = orderedSubjectsRef.current;
+    const currentActive = activeSubjectsRef.current;
+    const listSnapshot = currentOrdered.length > 0 ? [...currentOrdered] : [...currentActive];
     const idx = listSnapshot.findIndex((s) => s.id === subj.id);
     if (idx === -1) return;
     dragInfoRef.current = {
@@ -626,9 +787,9 @@ export default function App() {
     dragSubjectY.setValue(0);
     setDraggingSubjectId(subj.id);
     triggerHaptic(14);
-  };
+  }, [dragSubjectY]);
 
-  const handleSubjectDragMove = (subj, event) => {
+  const handleSubjectDragMove = useCallback((subj, event) => {
     const { translationY } = event.nativeEvent;
     if (!dragInfoRef.current.active) {
       handleSubjectDragStart(subj);
@@ -643,13 +804,14 @@ export default function App() {
       updated.splice(targetIdx, 0, moved);
       dragInfoRef.current.currentIdx = targetIdx;
       dragInfoRef.current.list = updated;
+      orderedSubjectsRef.current = updated;
       triggerHaptic(10);
       setOrderedSubjects(updated);
     }
     dragSubjectY.setValue(translationY - (dragInfoRef.current.currentIdx - startIdx) * SUBJECT_ROW_HEIGHT);
-  };
+  }, [dragSubjectY, handleSubjectDragStart]);
 
-  const handleSubjectDragStateChange = (subj, event) => {
+  const handleSubjectDragStateChange = useCallback((subj, event) => {
     const { state } = event.nativeEvent;
     if (state === State.BEGAN) {
       handleSubjectDragStart(subj);
@@ -657,7 +819,8 @@ export default function App() {
       setSubjectScrollLocked(false);
       if (!dragInfoRef.current.active) return;
       const finalOrder = [...dragInfoRef.current.list];
-      const didChange = finalOrder.some((s, i) => s.id !== activeSubjects[i]?.id);
+      const currentActive = activeSubjectsRef.current;
+      const didChange = finalOrder.some((s, i) => s.id !== currentActive[i]?.id);
       dragInfoRef.current.active = false;
 
       Animated.timing(dragSubjectY, {
@@ -666,6 +829,7 @@ export default function App() {
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }).start(() => {
+        if (!isMountedRef.current) return;
         setDraggingSubjectId(null);
         setOrderedSubjects(finalOrder);
         if (didChange) {
@@ -673,7 +837,7 @@ export default function App() {
         }
       });
     }
-  };
+  }, [dragSubjectY, handleSubjectDragStart]);
 
   const handleContextAction = async (action) => {
     const { entityType, item, title, reopenSubjectsModal, reopenTodayLogModal } = contextMenu;
@@ -682,27 +846,27 @@ export default function App() {
     const colMap = { subject: 'subjects', student: 'students', lesson: 'lessons', attendance: 'attendance', fee: 'fees', activity: 'activities' };
     if (action === 'delete') {
       await handleSoftDelete(colMap[entityType], item, title);
-      if (reopenSubjectsModal) setTimeout(() => setSubjectsModal(true), 250);
-      if (reopenTodayLogModal) setTimeout(() => setTodayLogModal(true), 250);
+      if (reopenSubjectsModal) scheduleTimeout(() => setSubjectsModal(true), 250);
+      if (reopenTodayLogModal) scheduleTimeout(() => setTodayLogModal(true), 250);
       return;
     }
     if (action === 'edit') {
-      setTimeout(() => {
+      scheduleTimeout(() => {
         if (entityType === 'subject') {
-          setSubjectForm({ id: item.id, name: item.name });
+          setSubjectForm({ id: item.id, name: safeString(item.name) });
           setSubjectsModal(true);
         } else if (entityType === 'student') {
           const validSubjectId = activeSubjects.some((s) => s.id === item.subjectId) ? item.subjectId : (activeSubjects[0]?.id || '');
-          setStudentForm({ id: item.id, name: item.name || '', subjectId: validSubjectId, phone: item.phone || '', guardian: item.guardian || '', joinedDate: item.joinedDate || getTodayISO() });
+          setStudentForm({ id: item.id, name: safeString(item.name), subjectId: validSubjectId, phone: safeString(item.phone), guardian: safeString(item.guardian), joinedDate: safeString(item.joinedDate, getTodayISO()) });
           setStudentModal(true);
         } else if (entityType === 'lesson') {
-          setLessonEditForm({ id: item.id, studentId: item.studentId, date: item.date || getTodayISO(), technique: item.technique || '', repertoire: item.repertoire || '', assignment: item.assignment || '' });
+          setLessonEditForm({ id: item.id, studentId: item.studentId, date: safeString(item.date, getTodayISO()), technique: safeString(item.technique), repertoire: safeString(item.repertoire), assignment: safeString(item.assignment) });
           setLessonEditModal(true);
         } else if (entityType === 'attendance') {
-          setAttendanceModalForm({ id: item.id, studentId: item.studentId, date: item.date || getTodayISO(), status: item.status || 'Present', remarks: item.remarks || '' });
+          setAttendanceModalForm({ id: item.id, studentId: item.studentId, date: safeString(item.date, getTodayISO()), status: safeString(item.status, 'Present'), remarks: safeString(item.remarks) });
           setAttendanceModal(true);
         } else if (entityType === 'fee') {
-          setFeeForm({ id: item.id, studentId: item.studentId, feeType: item.feeType || 'Monthly Fee', monthPaidFor: item.monthPaidFor || getLocalCurrentMonthLabel(), date: item.date || getTodayISO(), mode: item.mode || 'UPI', status: item.status || 'Paid', amountPaid: String(item.amountPaid ?? '0'), balanceDue: String(item.balanceDue ?? '0'), remarks: item.remarks || '' });
+          setFeeForm({ id: item.id, studentId: item.studentId, feeType: safeString(item.feeType, 'Monthly Fee'), monthPaidFor: safeString(item.monthPaidFor, getLocalCurrentMonthLabel()), date: safeString(item.date, getTodayISO()), mode: safeString(item.mode, 'UPI'), status: safeString(item.status, 'Paid'), amountPaid: String(safeNumber(item.amountPaid, 0)), balanceDue: String(safeNumber(item.balanceDue, 0)), remarks: safeString(item.remarks) });
           setFeeModal(true);
         }
       }, 250);
@@ -711,7 +875,7 @@ export default function App() {
 
   const handleSaveSubject = async () => {
     Keyboard.dismiss();
-    const trimmed = subjectForm.name.trim();
+    const trimmed = safeString(subjectForm.name).trim();
     if (!trimmed) return Alert.alert('Validation', 'Please enter a subject/instrument name.');
     if (savingLockRef.current) return;
     savingLockRef.current = true;
@@ -720,14 +884,19 @@ export default function App() {
       triggerHaptic(12);
       const editingId = subjectForm.id;
       setSubjectForm({ id: null, name: '' });
-      if (editingId) { await updateDoc(doc(db, 'subjects', editingId), { name: trimmed }); await logActivity('Updated Subject', trimmed); }
-      else { await addDoc(collection(db, 'subjects'), { name: trimmed, order: activeSubjects.length, isDeleted: false, deletedAt: null }); await logActivity('Added Subject', trimmed); }
+      if (editingId) {
+        await withWriteTimeout(updateDoc(doc(db, 'subjects', editingId), { name: trimmed }));
+        await logActivity('Updated Subject', trimmed);
+      } else {
+        await withWriteTimeout(addDoc(collection(db, 'subjects'), { name: trimmed, order: activeSubjects.length, isDeleted: false, deletedAt: null }));
+        await logActivity('Added Subject', trimmed);
+      }
     } catch (e) { Alert.alert('Error', 'Could not save subject.'); } finally { savingLockRef.current = false; }
   };
 
   const handleSaveStudent = async () => {
     Keyboard.dismiss();
-    if (!studentForm.name.trim() || !studentForm.subjectId) return Alert.alert('Validation', 'Student Name and Subject are required.');
+    if (!safeString(studentForm.name).trim() || !studentForm.subjectId) return Alert.alert('Validation', 'Student Name and Subject are required.');
     const validDate = normalizeISODate(studentForm.joinedDate);
     if (!validDate) return Alert.alert('Validation', 'Please enter a valid enrollment date in YYYY-MM-DD format.');
     if (savingLockRef.current) return;
@@ -735,12 +904,17 @@ export default function App() {
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
-      const payload = { name: studentForm.name.trim(), subjectId: studentForm.subjectId, phone: studentForm.phone.trim(), guardian: studentForm.guardian.trim(), joinedDate: validDate };
+      const payload = { name: safeString(studentForm.name).trim(), subjectId: studentForm.subjectId, phone: safeString(studentForm.phone).trim(), guardian: safeString(studentForm.guardian).trim(), joinedDate: validDate };
       const editingId = studentForm.id;
       setStudentModal(false);
       setStudentForm({ id: null, name: '', subjectId: activeSubjects[0]?.id || '', phone: '', guardian: '', joinedDate: getTodayISO() });
-      if (editingId) { await updateDoc(doc(db, 'students', editingId), payload); await logActivity('Updated Student', payload.name); }
-      else { await addDoc(collection(db, 'students'), { ...payload, notes: '', priorityNote: false, isDeleted: false, deletedAt: null }); await logActivity('Enrolled Student', `${payload.name} (${subjectMap[payload.subjectId]?.name || ''})`); }
+      if (editingId) {
+        await withWriteTimeout(updateDoc(doc(db, 'students', editingId), payload));
+        await logActivity('Updated Student', payload.name);
+      } else {
+        await withWriteTimeout(addDoc(collection(db, 'students'), { ...payload, notes: '', priorityNote: false, isDeleted: false, deletedAt: null }));
+        await logActivity('Enrolled Student', `${payload.name} (${safeString(subjectMap[payload.subjectId]?.name)})`);
+      }
     } catch (e) { Alert.alert('Error', 'Could not save student record.'); } finally { savingLockRef.current = false; }
   };
 
@@ -749,16 +923,16 @@ export default function App() {
     if (!selectedStudentId) return;
     const validDate = normalizeISODate(inlineLessonForm.date);
     if (!validDate) return Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
-    if (!inlineLessonForm.technique.trim() && !inlineLessonForm.repertoire.trim() && !inlineLessonForm.assignment.trim()) return Alert.alert('Validation', 'Enter at least one lesson detail.');
+    if (!safeString(inlineLessonForm.technique).trim() && !safeString(inlineLessonForm.repertoire).trim() && !safeString(inlineLessonForm.assignment).trim()) return Alert.alert('Validation', 'Enter at least one lesson detail.');
     if (savingLockRef.current) return;
     savingLockRef.current = true;
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
-      const payload = { studentId: selectedStudentId, date: validDate, technique: inlineLessonForm.technique.trim(), repertoire: inlineLessonForm.repertoire.trim(), assignment: inlineLessonForm.assignment.trim(), isDeleted: false, deletedAt: null };
+      const payload = { studentId: selectedStudentId, date: validDate, technique: safeString(inlineLessonForm.technique).trim(), repertoire: safeString(inlineLessonForm.repertoire).trim(), assignment: safeString(inlineLessonForm.assignment).trim(), isDeleted: false, deletedAt: null };
       setInlineLessonForm({ date: getTodayISO(), technique: '', repertoire: '', assignment: '' });
-      await addDoc(collection(db, 'lessons'), payload);
-      await logActivity('Logged Lesson', `${studentMap[selectedStudentId]?.name || 'Student'} (${formatReadableLocalDate(validDate)})`);
+      await withWriteTimeout(addDoc(collection(db, 'lessons'), payload));
+      await logActivity('Logged Lesson', `${safeString(studentMap[selectedStudentId]?.name, 'Student')} (${formatReadableLocalDate(validDate)})`);
     } catch (e) { Alert.alert('Error', 'Could not log lesson.'); } finally { savingLockRef.current = false; }
   };
 
@@ -767,17 +941,17 @@ export default function App() {
     if (!lessonEditForm.id || !lessonEditForm.studentId) return;
     const validDate = normalizeISODate(lessonEditForm.date);
     if (!validDate) return Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
-    if (!lessonEditForm.technique.trim() && !lessonEditForm.repertoire.trim() && !lessonEditForm.assignment.trim()) return Alert.alert('Validation', 'Enter at least one lesson detail.');
+    if (!safeString(lessonEditForm.technique).trim() && !safeString(lessonEditForm.repertoire).trim() && !safeString(lessonEditForm.assignment).trim()) return Alert.alert('Validation', 'Enter at least one lesson detail.');
     if (savingLockRef.current) return;
     savingLockRef.current = true;
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
       const editingId = lessonEditForm.id;
-      const payload = { studentId: lessonEditForm.studentId, date: validDate, technique: lessonEditForm.technique.trim(), repertoire: lessonEditForm.repertoire.trim(), assignment: lessonEditForm.assignment.trim() };
+      const payload = { studentId: lessonEditForm.studentId, date: validDate, technique: safeString(lessonEditForm.technique).trim(), repertoire: safeString(lessonEditForm.repertoire).trim(), assignment: safeString(lessonEditForm.assignment).trim() };
       setLessonEditModal(false);
-      await updateDoc(doc(db, 'lessons', editingId), payload);
-      await logActivity('Updated Lesson', `${studentMap[payload.studentId]?.name || 'Student'} (${formatReadableLocalDate(validDate)})`);
+      await withWriteTimeout(updateDoc(doc(db, 'lessons', editingId), payload));
+      await logActivity('Updated Lesson', `${safeString(studentMap[payload.studentId]?.name, 'Student')} (${formatReadableLocalDate(validDate)})`);
     } catch (e) { Alert.alert('Error', 'Could not update lesson.'); } finally { savingLockRef.current = false; }
   };
 
@@ -792,15 +966,15 @@ export default function App() {
       triggerLayoutAnimation();
       triggerHaptic(12);
       const statusVal = inlineAttendanceForm.status;
-      const remarksVal = inlineAttendanceForm.remarks.trim();
+      const remarksVal = safeString(inlineAttendanceForm.remarks).trim();
       setInlineAttendanceForm({ date: getTodayISO(), status: 'Present', remarks: '' });
       const existingRecord = activeAttendance.find((a) => a.studentId === selectedStudentId && a.date === validDate);
       if (existingRecord) {
-        await updateDoc(doc(db, 'attendance', existingRecord.id), { status: statusVal, remarks: remarksVal });
-        await logActivity('Updated Attendance', `${studentMap[selectedStudentId]?.name || 'Student'} • ${statusVal}`);
+        await withWriteTimeout(updateDoc(doc(db, 'attendance', existingRecord.id), { status: statusVal, remarks: remarksVal }));
+        await logActivity('Updated Attendance', `${safeString(studentMap[selectedStudentId]?.name, 'Student')} • ${statusVal}`);
       } else {
-        await addDoc(collection(db, 'attendance'), { studentId: selectedStudentId, date: validDate, status: statusVal, remarks: remarksVal, isDeleted: false, deletedAt: null });
-        await logActivity('Marked Attendance', `${studentMap[selectedStudentId]?.name || 'Student'} • ${statusVal}`);
+        await withWriteTimeout(addDoc(collection(db, 'attendance'), { studentId: selectedStudentId, date: validDate, status: statusVal, remarks: remarksVal, isDeleted: false, deletedAt: null }));
+        await logActivity('Marked Attendance', `${safeString(studentMap[selectedStudentId]?.name, 'Student')} • ${statusVal}`);
       }
     } catch (e) { Alert.alert('Error', 'Could not save attendance.'); } finally { savingLockRef.current = false; }
   };
@@ -810,7 +984,7 @@ export default function App() {
     if (!attendanceModalForm.studentId) return Alert.alert('Validation', 'Please select a Student.');
     const validDate = normalizeISODate(attendanceModalForm.date);
     if (!validDate) return Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
-    const payload = { studentId: attendanceModalForm.studentId, date: validDate, status: attendanceModalForm.status, remarks: attendanceModalForm.remarks.trim() };
+    const payload = { studentId: attendanceModalForm.studentId, date: validDate, status: attendanceModalForm.status, remarks: safeString(attendanceModalForm.remarks).trim() };
     const duplicateRecord = activeAttendance.find((a) => a.studentId === payload.studentId && a.date === validDate && a.id !== attendanceModalForm.id);
     if (attendanceModalForm.id && duplicateRecord) {
       return Alert.alert('Duplicate Date', 'An attendance entry already exists for this student on that date.');
@@ -823,14 +997,14 @@ export default function App() {
       const editingId = attendanceModalForm.id;
       setAttendanceModal(false);
       if (editingId) {
-        await updateDoc(doc(db, 'attendance', editingId), payload);
-        await logActivity('Updated Attendance', `${studentMap[payload.studentId]?.name || 'Student'} • ${payload.status}`);
+        await withWriteTimeout(updateDoc(doc(db, 'attendance', editingId), payload));
+        await logActivity('Updated Attendance', `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ${payload.status}`);
       } else if (duplicateRecord) {
-        await updateDoc(doc(db, 'attendance', duplicateRecord.id), payload);
-        await logActivity('Updated Attendance', `${studentMap[payload.studentId]?.name || 'Student'} • ${payload.status}`);
+        await withWriteTimeout(updateDoc(doc(db, 'attendance', duplicateRecord.id), payload));
+        await logActivity('Updated Attendance', `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ${payload.status}`);
       } else {
-        await addDoc(collection(db, 'attendance'), { ...payload, isDeleted: false, deletedAt: null });
-        await logActivity('Marked Attendance', `${studentMap[payload.studentId]?.name || 'Student'} • ${payload.status}`);
+        await withWriteTimeout(addDoc(collection(db, 'attendance'), { ...payload, isDeleted: false, deletedAt: null }));
+        await logActivity('Marked Attendance', `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ${payload.status}`);
       }
     } catch (e) { Alert.alert('Error', 'Could not save attendance.'); } finally { savingLockRef.current = false; }
   };
@@ -841,8 +1015,8 @@ export default function App() {
     savingLockRef.current = true;
     try {
       triggerHaptic(12);
-      await updateDoc(doc(db, 'students', selectedStudentId), { notes: noteDraft, priorityNote: priorityDraft });
-      await logActivity('Updated Student Notes', studentMap[selectedStudentId]?.name || '');
+      await withWriteTimeout(updateDoc(doc(db, 'students', selectedStudentId), { notes: safeString(noteDraft), priorityNote: Boolean(priorityDraft) }));
+      await logActivity('Updated Student Notes', safeString(studentMap[selectedStudentId]?.name));
       Alert.alert('Saved', 'Student notes updated.');
     } catch (e) { Alert.alert('Error', 'Could not update student notes.'); } finally { savingLockRef.current = false; }
   };
@@ -850,7 +1024,7 @@ export default function App() {
   const handleSaveFee = async (shouldSharePDF = false) => {
     Keyboard.dismiss();
     if (!feeForm.studentId) return Alert.alert('Validation', 'Please select a Student.');
-    if (feeForm.feeType === 'Monthly Fee' && !feeForm.monthPaidFor.trim()) return Alert.alert('Validation', '"Month Paid For" is required for Monthly Fees.');
+    if (feeForm.feeType === 'Monthly Fee' && !safeString(feeForm.monthPaidFor).trim()) return Alert.alert('Validation', '"Month Paid For" is required for Monthly Fees.');
     const validDate = normalizeISODate(feeForm.date);
     if (!validDate) return Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
     const numericPaid = feeForm.status === 'Unpaid' ? 0 : parseFloat(sanitizeCurrency(feeForm.amountPaid)) || 0;
@@ -865,12 +1039,17 @@ export default function App() {
       triggerLayoutAnimation();
       triggerHaptic(12);
       const editingId = feeForm.id;
-      const payload = { studentId: feeForm.studentId, feeType: feeForm.feeType, monthPaidFor: feeForm.feeType === 'Monthly Fee' ? feeForm.monthPaidFor.trim() : '', date: validDate, mode: feeForm.mode, status: feeForm.status, amountPaid: numericPaid, balanceDue: numericBalance, remarks: feeForm.remarks.trim() };
+      const payload = { studentId: feeForm.studentId, feeType: feeForm.feeType, monthPaidFor: feeForm.feeType === 'Monthly Fee' ? safeString(feeForm.monthPaidFor).trim() : '', date: validDate, mode: feeForm.mode, status: feeForm.status, amountPaid: numericPaid, balanceDue: numericBalance, remarks: safeString(feeForm.remarks).trim() };
       setFeeModal(false);
-      if (editingId) { await updateDoc(doc(db, 'fees', editingId), payload); await logActivity('Updated Fee Record', `${studentMap[payload.studentId]?.name || 'Student'} • ₹${numericPaid}`); }
-      else { await addDoc(collection(db, 'fees'), { ...payload, isDeleted: false, deletedAt: null }); await logActivity('Recorded Fee', `${studentMap[payload.studentId]?.name || 'Student'} • ₹${numericPaid} (${payload.status})`); }
+      if (editingId) {
+        await withWriteTimeout(updateDoc(doc(db, 'fees', editingId), payload));
+        await logActivity('Updated Fee Record', `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ₹${numericPaid}`);
+      } else {
+        await withWriteTimeout(addDoc(collection(db, 'fees'), { ...payload, isDeleted: false, deletedAt: null }));
+        await logActivity('Recorded Fee', `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ₹${numericPaid} (${payload.status})`);
+      }
       if (shouldSharePDF) {
-        setTimeout(() => { generateAndShareReceiptPDF(payload); }, 350);
+        scheduleTimeout(() => { generateAndShareReceiptPDF(payload); }, 350);
       }
     } catch (e) { Alert.alert('Error', 'Could not save fee record.'); } finally { savingLockRef.current = false; }
   };
@@ -882,18 +1061,19 @@ export default function App() {
     try {
       triggerHaptic(12);
       const today = getTodayISO();
-      const textVal = noticeInput.trim();
+      const textVal = safeString(noticeInput).trim();
       setNoticeEditModal(false);
-      await setDoc(doc(db, 'settings', 'noticeBoard'), { text: textVal, updatedDate: today });
+      await withWriteTimeout(setDoc(doc(db, 'settings', 'noticeBoard'), { text: textVal, updatedDate: today }));
       await logActivity('Updated Notice Board', formatReadableLocalDate(today));
     } catch (e) { Alert.alert('Error', 'Could not update notice board.'); } finally { savingLockRef.current = false; }
   };
 
   const handleRestoreTrashItem = async (item) => {
+    if (!item?._col || !item?.id) return;
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
-      await updateDoc(doc(db, item._col, item.id), { isDeleted: false, deletedAt: null });
+      await withWriteTimeout(updateDoc(doc(db, item._col, item.id), { isDeleted: false, deletedAt: null }));
       if (item._col !== 'activities') {
         await logActivity('Restored from Trash', item._label);
       }
@@ -901,6 +1081,7 @@ export default function App() {
   };
 
   const handlePermanentDeleteItem = async (item) => {
+    if (!item?._col || !item?.id) return;
     try {
       triggerLayoutAnimation();
       triggerHaptic(18);
@@ -960,11 +1141,11 @@ export default function App() {
     return grouped;
   }, [activeSubjects, studentMap]);
 
-  const handleMainTabSwipe = (event) => {
+  const handleMainTabSwipe = useCallback((event) => {
     const { translationX } = event.nativeEvent;
     if (Math.abs(translationX) < 35) return false;
 
-    const currentIndex = MAIN_TABS.indexOf(activeTab);
+    const currentIndex = MAIN_TABS.indexOf(activeTabRef.current);
     if (translationX < -35 && currentIndex < MAIN_TABS.length - 1) {
       Keyboard.dismiss();
       setNavDirection(1);
@@ -977,13 +1158,13 @@ export default function App() {
       return true;
     }
     return false;
-  };
+  }, []);
 
-  const handleProfileSubTabSwipe = (event) => {
+  const handleProfileSubTabSwipe = useCallback((event) => {
     const { translationX } = event.nativeEvent;
     if (Math.abs(translationX) < 35) return false;
 
-    const currentIndex = PROFILE_TABS.indexOf(profileTab);
+    const currentIndex = PROFILE_TABS.indexOf(profileTabRef.current);
     if (translationX < -35 && currentIndex < PROFILE_TABS.length - 1) {
       Keyboard.dismiss();
       setSubTabDirection(1);
@@ -996,7 +1177,7 @@ export default function App() {
       return true;
     }
     return false;
-  };
+  }, []);
 
   const renderCalendarDays = () => {
     const { viewYear, viewMonth, selectedDate, onSelect } = calendarPicker;
@@ -1031,7 +1212,6 @@ export default function App() {
     );
   };
 
-  // Non-Modal Portal Overlay for Calendar Picker (Prevents Dual-Modal Freeze on iOS/Android)
   const renderCalendarOverlay = () => {
     if (!calendarPicker.visible) return null;
     return (
@@ -1173,7 +1353,7 @@ export default function App() {
         <Surface style={styles.cleanRecordCard} elevation={2}>
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <Text style={styles.recordPrimaryTitle}>{st.name}</Text>
+              <Text style={styles.recordPrimaryTitle}>{safeString(st.name, 'Unnamed Student')}</Text>
               {st.priorityNote ? <View style={styles.priorityBadge}><Text style={styles.priorityBadgeText}>★ NOTE</Text></View> : null}
             </View>
             <Text style={styles.recordSecondarySub}>Joined {formatReadableLocalDate(st.joinedDate)} • Attendance: {metrics.attendancePct}</Text>
@@ -1188,9 +1368,9 @@ export default function App() {
 
   const renderStudentsTab = () => {
     if (selectedStudent) return renderStudentProfile(selectedStudent);
-    const query = studentSearch.trim().toLowerCase();
+    const query = safeString(studentSearch).trim().toLowerCase();
     const filteredStudents = activeStudents.filter((st) => {
-      const matchesQuery = !query || (st.name || '').toLowerCase().includes(query) || (st.phone || '').toLowerCase().includes(query) || (subjectMap[st.subjectId]?.name || '').toLowerCase().includes(query);
+      const matchesQuery = !query || safeString(st.name).toLowerCase().includes(query) || safeString(st.phone).toLowerCase().includes(query) || safeString(subjectMap[st.subjectId]?.name).toLowerCase().includes(query);
       if (!matchesQuery) return false;
       if (studentFilter === 'Priority') return Boolean(st.priorityNote);
       if (studentFilter === 'Due') return getStudentMetrics(st.id).feeStatus === 'Due / Unpaid';
@@ -1230,7 +1410,7 @@ export default function App() {
               if ((query || studentFilter !== 'All') && subjStudents.length === 0) return null;
               return (
                 <View key={subj.id} style={styles.groupBlock}>
-                  <View style={styles.groupHeaderBar}><Text style={styles.groupHeaderTitle}>{subj.name.toUpperCase()}</Text><Text style={styles.groupHeaderCount}>{subjStudents.length}</Text></View>
+                  <View style={styles.groupHeaderBar}><Text style={styles.groupHeaderTitle}>{safeString(subj.name, 'Instrument').toUpperCase()}</Text><Text style={styles.groupHeaderCount}>{subjStudents.length}</Text></View>
                   {subjStudents.length === 0 ? <Text style={styles.emptyGroupText}>No students enrolled in {subj.name}</Text> : subjStudents.map(renderStudentCard)}
                 </View>
               );
@@ -1251,7 +1431,6 @@ export default function App() {
     const metrics = getStudentMetrics(student.id);
     return (
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
-        {/* Stationary Profile Header & Hero Card */}
         <View style={styles.cardHeaderRow}>
           <TouchableOpacity style={styles.backButtonRow} onPress={() => { Keyboard.dismiss(); setNavDirection(-1); setSelectedStudentId(null); }}>
             <Ionicons name="arrow-back" size={18} color={COLORS.navy} /><Text style={styles.backButtonText}>Back to Directory</Text>
@@ -1264,8 +1443,8 @@ export default function App() {
         <Surface style={styles.heroCard} elevation={3}>
           <View style={styles.cardHeaderRow}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.crestBadgeText}>{(subjectMap[student.subjectId]?.name || 'Unassigned').toUpperCase()} DEPARTMENT</Text>
-              <Text style={styles.heroGreeting}>{student.name}</Text>
+              <Text style={styles.crestBadgeText}>{safeString(subjectMap[student.subjectId]?.name, 'Unassigned').toUpperCase()} DEPARTMENT</Text>
+              <Text style={styles.heroGreeting}>{safeString(student.name, 'Student')}</Text>
               {student.guardian ? <Text style={styles.heroDate}>Guardian: {student.guardian}</Text> : null}
               {student.phone ? <Text style={styles.heroDate}>Contact: {student.phone}</Text> : null}
             </View>
@@ -1288,7 +1467,6 @@ export default function App() {
           </View>
         </Surface>
 
-        {/* Stationary Sub-Tab Pill Bar */}
         <View style={styles.pillNavContainer}>
           {PROFILE_TABS.map((tab) => (
             <TouchableOpacity key={tab} style={[styles.pillNavItem, profileTab === tab && styles.pillNavItemActive]} onPress={() => {
@@ -1304,7 +1482,6 @@ export default function App() {
           ))}
         </View>
 
-        {/* Isolated Slide & Fade Container for Sub-Tab Content Only */}
         <AnimatedScreen
           direction={subTabDirection}
           triggerKey={`${student.id}-${profileTab}`}
@@ -1442,17 +1619,17 @@ export default function App() {
 
         {groupedAttendance.length === 0 ? <Surface style={styles.whiteCard} elevation={1}><Text style={styles.emptyText}>No attendance records in this timeframe.</Text></Surface> : groupedAttendance.map((group) => (
           <View key={group.subject.id} style={styles.groupBlock}>
-            <View style={styles.groupHeaderBar}><Text style={styles.groupHeaderTitle}>{group.subject.name.toUpperCase()}</Text></View>
+            <View style={styles.groupHeaderBar}><Text style={styles.groupHeaderTitle}>{safeString(group.subject.name, 'Instrument').toUpperCase()}</Text></View>
             {group.months.map((mGroup) => (
               <View key={mGroup.monthName} style={{ marginTop: 8 }}>
                 <Text style={styles.monthSubHeader}>{mGroup.monthName}</Text>
                 {mGroup.items.map((att) => {
                   const st = studentMap[att.studentId];
                   return (
-                    <Pressable key={att.id} style={({ pressed }) => pressed && styles.cardPressed} onLongPress={() => openLongPressMenu('attendance', att, `${st?.name || 'Student'} - ${att.status} (${formatReadableLocalDate(att.date)})`)} delayLongPress={280}>
+                    <Pressable key={att.id} style={({ pressed }) => pressed && styles.cardPressed} onLongPress={() => openLongPressMenu('attendance', att, `${safeString(st?.name, 'Student')} - ${att.status} (${formatReadableLocalDate(att.date)})`)} delayLongPress={280}>
                       <Surface style={styles.cleanRecordCard} elevation={2}>
                         <View style={{ flex: 1 }}>
-                          <Text style={styles.recordPrimaryTitle}>{st?.name || 'Unknown'}</Text>
+                          <Text style={styles.recordPrimaryTitle}>{safeString(st?.name, 'Unknown')}</Text>
                           <Text style={styles.recordSecondarySub}>{formatReadableLocalDate(att.date)}{att.remarks ? ` • ${att.remarks}` : ''}</Text>
                         </View>
                         <View style={styles.statusPill}><Text style={styles.statusPillText}>{att.status}</Text></View>
@@ -1489,18 +1666,18 @@ export default function App() {
 
         {groupedFees.length === 0 ? <Surface style={styles.whiteCard} elevation={1}><Text style={styles.emptyText}>No fee transactions recorded yet.</Text></Surface> : groupedFees.map((group) => (
           <View key={group.subject.id} style={styles.groupBlock}>
-            <View style={styles.groupHeaderBar}><Text style={styles.groupHeaderTitle}>{group.subject.name.toUpperCase()}</Text></View>
+            <View style={styles.groupHeaderBar}><Text style={styles.groupHeaderTitle}>{safeString(group.subject.name, 'Instrument').toUpperCase()}</Text></View>
             {group.months.map((mGroup) => (
               <View key={mGroup.monthName} style={{ marginTop: 8 }}>
                 <Text style={styles.monthSubHeader}>{mGroup.monthName}</Text>
                 {mGroup.items.map((fee) => {
                   const st = studentMap[fee.studentId];
-                  const isFullyPaid = fee.status === 'Paid' && Number(fee.balanceDue || 0) === 0;
+                  const isFullyPaid = fee.status === 'Paid' && safeNumber(fee.balanceDue, 0) === 0;
                   return (
-                    <Pressable key={fee.id} style={({ pressed }) => pressed && styles.cardPressed} onLongPress={() => openLongPressMenu('fee', fee, `${st?.name || 'Student'} - ₹${fee.amountPaid}`)} delayLongPress={280}>
+                    <Pressable key={fee.id} style={({ pressed }) => pressed && styles.cardPressed} onLongPress={() => openLongPressMenu('fee', fee, `${safeString(st?.name, 'Student')} - ₹${fee.amountPaid}`)} delayLongPress={280}>
                       <Surface style={styles.cleanRecordCard} elevation={2}>
                         <View style={{ flex: 1 }}>
-                          <Text style={styles.recordPrimaryTitle}>{st?.name || 'Unknown'} • {fee.feeType}</Text>
+                          <Text style={styles.recordPrimaryTitle}>{safeString(st?.name, 'Unknown')} • {fee.feeType}</Text>
                           <Text style={styles.recordSecondarySub}>{formatReadableLocalDate(fee.date)} • {fee.mode}{fee.feeType === 'Monthly Fee' && fee.monthPaidFor ? ` • For ${fee.monthPaidFor}` : ''}</Text>
                           <Text style={styles.recordDetailLine}>Paid: ₹{fee.amountPaid} | Balance: ₹{fee.balanceDue}</Text>
                         </View>
@@ -1542,7 +1719,7 @@ export default function App() {
               ]);
             }}>
               <Surface style={styles.cleanRecordCard} elevation={2}>
-                <View style={{ flex: 1 }}><Text style={styles.recordPrimaryTitle}>{item._label}</Text><Text style={styles.recordSecondarySub}>Collection: {item._col.toUpperCase()}</Text></View>
+                <View style={{ flex: 1 }}><Text style={styles.recordPrimaryTitle}>{item._label}</Text><Text style={styles.recordSecondarySub}>Collection: {safeString(item._col).toUpperCase()}</Text></View>
                 <View style={styles.daysRemainingBadge}><Text style={styles.daysRemainingText}>{daysLeft}d left</Text></View>
               </Surface>
             </TouchableOpacity>
@@ -1557,461 +1734,466 @@ export default function App() {
   const anyFormModalOpen = studentModal || lessonEditModal || attendanceModal || feeModal;
 
   return (
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+      <StatusBar barStyle="light-content" backgroundColor={COLORS.navy} />
+
+      <Appbar.Header style={{ backgroundColor: COLORS.navy, borderBottomWidth: 2, borderBottomColor: COLORS.gold }}>
+        <Appbar.Action icon="menu" color={COLORS.gold} onPress={openDrawer} />
+        <Appbar.Content title="JSM" subtitle="EST. 2022" titleStyle={{ color: COLORS.white, fontSize: 18, fontWeight: '700', letterSpacing: 2 }} subtitleStyle={{ color: COLORS.gold, fontSize: 10, letterSpacing: 3, fontWeight: '600' }} style={{ alignItems: 'center' }} />
+        <View style={{ width: 48 }} />
+      </Appbar.Header>
+
+      <View style={{ flex: 1 }}>
+        {/* Strict Very-Edge Swipe Strip (16px wide at left: 0) */}
+        <PanGestureHandler
+          activeOffsetX={10}
+          failOffsetY={[-18, 18]}
+          onEnded={(e) => {
+            if (e.nativeEvent.translationX > 24) openDrawer();
+          }}
+        >
+          <View style={styles.leftEdgeSwipeZone} />
+        </PanGestureHandler>
+
+        <AnimatedScreen
+          direction={navDirection}
+          onSwipe={handleMainTabSwipe}
+          swipeEnabled={!isInsideStudentProfile}
+          triggerKey={`${activeTab}-${selectedStudentId || 'list'}`}
+        >
+          {activeTab === 'Home' && renderHomeTab()}
+          {activeTab === 'Students' && renderStudentsTab()}
+          {activeTab === 'Attendance' && renderAttendanceTab()}
+          {activeTab === 'Fees' && renderFeesTab()}
+          {activeTab === 'Trash' && renderTrashTab()}
+        </AnimatedScreen>
+
+        {!anyFormModalOpen && renderCalendarOverlay()}
+      </View>
+
+      <View style={styles.bottomTabBar}>
+        {[{ key: 'Home', icon: 'grid-outline', label: 'Home' }, { key: 'Students', icon: 'people-outline', label: 'Students' }, { key: 'Attendance', icon: 'calendar-check-outline', label: 'Attendance', mci: true }, { key: 'Fees', icon: 'card-outline', label: 'Fees' }, { key: 'Trash', icon: 'trash-outline', label: 'Trash' }].map((tab) => {
+          const isFocused = activeTab === tab.key;
+          return (
+            <TouchableOpacity key={tab.key} style={styles.bottomTabItem} onPress={() => {
+                Keyboard.dismiss();
+                if (tab.key === 'Students' && activeTab === 'Students' && selectedStudentId) {
+                  setNavDirection(-1);
+                  setSelectedStudentId(null);
+                  return;
+                }
+                if (tab.key === activeTab) return;
+                const newIdx = MAIN_TABS.indexOf(tab.key);
+                const oldIdx = MAIN_TABS.indexOf(activeTab);
+                setNavDirection(newIdx > oldIdx ? 1 : -1);
+                if (tab.key !== 'Students') setSelectedStudentId(null);
+                setActiveTab(tab.key);
+              }}>
+              <View>
+                {tab.mci ? <MaterialCommunityIcons name={tab.icon} size={22} color={isFocused ? COLORS.gold : COLORS.silver} /> : <Ionicons name={tab.icon} size={22} color={isFocused ? COLORS.gold : COLORS.silver} />}
+                {tab.key === 'Trash' && trashItems.length > 0 && <View style={styles.trashTabBadge}><Text style={styles.trashTabBadgeText}>{trashItems.length}</Text></View>}
+              </View>
+              <Text style={[styles.bottomTabLabel, isFocused && styles.bottomTabLabelActive]}>{tab.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      {/* ANIMATED SLIDE DRAWER */}
+      <Modal visible={drawerOpen} transparent animationType="none" onRequestClose={() => closeDrawer()}>
+        <GestureHandlerRootView style={{ flex: 1 }}>
+          <Animated.View style={[styles.drawerOverlay, { opacity: drawerBackdropAnim }]}>
+            <PanGestureHandler
+              activeOffsetX={[-15, 15]}
+              onEnded={(e) => {
+                if (e.nativeEvent.translationX < -30) closeDrawer();
+              }}
+            >
+              <Animated.View style={[styles.drawerContainer, { transform: [{ translateX: drawerSlideAnim }] }]}>
+                <View style={styles.drawerHeader}><Text style={styles.crestBadgeText}>★ JSM ★</Text><Text style={styles.drawerTitle}>Music School Portal</Text><Text style={styles.drawerSub}>Est. 2022 • Official Edition</Text></View>
+                <ScrollView contentContainerStyle={{ padding: 16, gap: 10 }} keyboardShouldPersistTaps="handled">
+                  {[{ label: 'Home Dashboard', tab: 'Home', icon: 'grid-outline' }, { label: 'Student Directory', tab: 'Students', icon: 'people-outline' }, { label: 'Global Attendance', tab: 'Attendance', icon: 'calendar-outline' }, { label: 'Global Fee Register', tab: 'Fees', icon: 'card-outline' }, { label: `Trash Archive (${trashItems.length})`, tab: 'Trash', icon: 'trash-outline' }].map((nav) => (
+                    <TouchableOpacity key={nav.tab} style={[styles.drawerNavItem, activeTab === nav.tab && styles.drawerNavItemActive]} onPress={() => {
+                        closeDrawer(() => {
+                          const newIdx = MAIN_TABS.indexOf(nav.tab);
+                          const oldIdx = MAIN_TABS.indexOf(activeTabRef.current);
+                          setNavDirection(newIdx >= oldIdx ? 1 : -1);
+                          setSelectedStudentId(null);
+                          setActiveTab(nav.tab);
+                        });
+                      }}>
+                      <Ionicons name={nav.icon} size={18} color={activeTab === nav.tab ? COLORS.gold : COLORS.navy} /><Text style={[styles.drawerNavText, activeTab === nav.tab && styles.drawerNavTextActive]}>{nav.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                  <View style={styles.drawerDivider} />
+                  <TouchableOpacity style={styles.drawerNavItem} onPress={() => { closeDrawer(() => { setSubjectForm({ id: null, name: '' }); setSubjectsModal(true); }); }}>
+                    <Ionicons name="musical-notes-outline" size={18} color={COLORS.navy} /><Text style={styles.drawerNavText}>Manage Instruments & Order</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.drawerNavItem} onPress={handleCheckOTA} disabled={checkingOTA}>
+                    {checkingOTA ? <ActivityIndicator size="small" color={COLORS.navy} /> : <><Ionicons name="cloud-download-outline" size={18} color={COLORS.navy} /><Text style={styles.drawerNavText}>Check for OTA Update</Text></>}
+                  </TouchableOpacity>
+                </ScrollView>
+              </Animated.View>
+            </PanGestureHandler>
+            <Pressable style={{ flex: 1 }} onPress={() => closeDrawer()} />
+          </Animated.View>
+        </GestureHandlerRootView>
+      </Modal>
+
+      {/* LONG-PRESS CONTEXT MENU */}
+      <Modal visible={contextMenu.visible} transparent animationType="fade" onRequestClose={closeContextMenu}>
+        <Pressable style={styles.modalBackdrop} onPress={closeContextMenu}>
+          <Pressable style={styles.contextSheet} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.contextSheetHeader}>{contextMenu.title}</Text>
+            <View style={styles.contextDivider} />
+            {contextMenu.entityType !== 'activity' && (
+              <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('edit')}><Text style={styles.contextOptionText}>Edit Record</Text></TouchableOpacity>
+            )}
+            <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('delete')}><Text style={[styles.contextOptionText, { color: COLORS.danger }]}>Delete (Move to Trash)</Text></TouchableOpacity>
+            <PaperButton mode="outlined" textColor={COLORS.navy} style={{ marginTop: 10, width: '100%', borderColor: COLORS.silver }} onPress={() => {
+              const shouldReopenSubj = contextMenu.reopenSubjectsModal;
+              const shouldReopenLog = contextMenu.reopenTodayLogModal;
+              closeContextMenu();
+              if (shouldReopenSubj) scheduleTimeout(() => setSubjectsModal(true), 250);
+              if (shouldReopenLog) scheduleTimeout(() => setTodayLogModal(true), 250);
+            }}>Cancel</PaperButton>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* NOTICE READ MODAL */}
+      <Modal visible={noticeReadModal} transparent animationType="fade" onRequestClose={() => setNoticeReadModal(false)}>
+        <View style={styles.modalBackdrop}>
+          <Surface style={styles.modalCard} elevation={5}>
+            <Text style={styles.sectionTitle}>JSM OFFICIAL NOTICE</Text>
+            {noticeUpdatedAt ? <Text style={styles.silverMeta}>Posted {formatReadableLocalDate(noticeUpdatedAt)}</Text> : null}
+            <ScrollView style={{ maxHeight: 260, marginVertical: 14 }} keyboardShouldPersistTaps="handled"><Text style={styles.noticeFullText}>{noticeText || 'No active notice has been posted.'}</Text></ScrollView>
+            <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => setNoticeReadModal(false)}>Close</PaperButton>
+          </Surface>
+        </View>
+      </Modal>
+
+      {/* NOTICE EDIT MODAL */}
+      <Modal visible={noticeEditModal} transparent animationType="fade" onRequestClose={() => setNoticeEditModal(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+          <Surface style={styles.modalCard} elevation={5}>
+            <Text style={styles.sectionTitle}>UPDATE NOTICE BOARD</Text>
+            <PaperInput mode="outlined" multiline numberOfLines={5} value={noticeInput} onChangeText={setNoticeInput} placeholder="Type new JSM announcement..." outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginTop: 10, marginBottom: 14 }} />
+            <View style={styles.modalBtnRow}>
+              <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => { Keyboard.dismiss(); setNoticeEditModal(false); }}>Cancel</PaperButton>
+              <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleUpdateNotice}>Publish</PaperButton>
+            </View>
+          </Surface>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* TODAY'S AUDIT LOG MODAL */}
+      <Modal visible={todayLogModal} transparent animationType="fade" onRequestClose={() => setTodayLogModal(false)}>
+        <View style={styles.modalBackdrop}>
+          <Surface style={styles.modalCard} elevation={5}>
+            <View style={[styles.cardHeaderRow, { gap: 8 }]}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sectionTitle}>TODAY'S AUDIT LOG ({formatReadableLocalDate(getTodayISO())})</Text>
+                <Text style={styles.silverMeta}>Hold any entry to move to Trash</Text>
+              </View>
+              {todayActivities.length > 0 ? (
+                <TouchableOpacity style={styles.dangerOutlineBtnSmall} onPress={() => handleClearAllActivities(true)}>
+                  <Ionicons name="trash-outline" size={13} color={COLORS.danger} />
+                  <Text style={styles.dangerOutlineBtnSmallText}>Delete All</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+            <ScrollView style={{ maxHeight: 320, marginVertical: 12 }} keyboardShouldPersistTaps="handled">
+              {todayActivities.length === 0 ? <Text style={styles.emptyText}>No actions logged today.</Text> : todayActivities.map((act) => (
+                <Pressable
+                  key={act.id}
+                  style={({ pressed }) => [styles.activityItem, pressed && styles.cardPressed]}
+                  onLongPress={() => {
+                    setTodayLogModal(false);
+                    scheduleTimeout(() => openLongPressMenu('activity', act, `${act.title}${act.subtitle ? ` • ${act.subtitle}` : ''}`, false, true), 250);
+                  }}
+                  delayLongPress={280}
+                >
+                  <View style={styles.activityDot} /><View style={{ flex: 1 }}><Text style={styles.activityTitle}>{act.title}</Text>{act.subtitle ? <Text style={styles.activitySub}>{act.subtitle}</Text> : null}</View>
+                </Pressable>
+              ))}
+            </ScrollView>
+            <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => setTodayLogModal(false)}>Close</PaperButton>
+          </Surface>
+        </View>
+      </Modal>
+
+      {/* MANAGE SUBJECTS MODAL (WITH 6-DOT DRAG HANDLE REORDERING) */}
+      <Modal visible={subjectsModal} transparent animationType="fade" onRequestClose={() => setSubjectsModal(false)}>
+        <GestureHandlerRootView style={{ flex: 1 }}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+            <Surface style={styles.modalCard} elevation={5}>
+              <Text style={styles.sectionTitle}>MANAGE INSTRUMENTS & SUBJECTS</Text>
+              <Text style={styles.silverMeta}>Touch & slide the 6-dot handle to reorder, or use edit/delete.</Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, alignItems: 'center' }}>
+                <PaperInput mode="outlined" value={subjectForm.name} onChangeText={(t) => setSubjectForm({ ...subjectForm, name: t })} placeholder="e.g., Piano, Violin, Guitar" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ flex: 1, backgroundColor: COLORS.white, height: 50 }} />
+                <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveSubject}>{subjectForm.id ? 'Update' : 'Add'}</PaperButton>
+              </View>
+              <ScrollView
+                style={{ maxHeight: 290, marginVertical: 14 }}
+                scrollEnabled={!subjectScrollLocked && !draggingSubjectId}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+              >
+                {orderedSubjects.length === 0 ? (
+                  <Text style={styles.emptyText}>No subjects added yet.</Text>
+                ) : (
+                  orderedSubjects.map((subj, idx) => {
+                    const isDragging = draggingSubjectId === subj.id;
+                    return (
+                      <Animated.View
+                        key={subj.id}
+                        style={[
+                          isDragging && {
+                            zIndex: 50,
+                            elevation: 8,
+                            transform: [{ translateY: dragSubjectY }, { scale: 1.02 }],
+                          },
+                        ]}
+                      >
+                        <Surface
+                          style={[
+                            styles.cleanRecordCard,
+                            { minHeight: 52, paddingVertical: 8, paddingHorizontal: 10 },
+                            isDragging && styles.draggingSubjectCard,
+                          ]}
+                          elevation={isDragging ? 5 : 2}
+                        >
+                          <PanGestureHandler
+                            activeOffsetY={[-2, 2]}
+                            onGestureEvent={(e) => handleSubjectDragMove(subj, e)}
+                            onHandlerStateChange={(e) => handleSubjectDragStateChange(subj, e)}
+                          >
+                            <View
+                              style={styles.dragHandleBtn}
+                              onTouchStart={() => setSubjectScrollLocked(true)}
+                              onTouchEnd={() => { if (!dragInfoRef.current.active) setSubjectScrollLocked(false); }}
+                              onTouchCancel={() => { if (!dragInfoRef.current.active) setSubjectScrollLocked(false); }}
+                            >
+                              <MaterialCommunityIcons
+                                name="drag-vertical"
+                                size={24}
+                                color={isDragging ? COLORS.navy : COLORS.silver}
+                              />
+                            </View>
+                          </PanGestureHandler>
+
+                          <Pressable
+                            style={{ flex: 1, paddingVertical: 6 }}
+                            onLongPress={() => {
+                              if (draggingSubjectId) return;
+                              setSubjectsModal(false);
+                              scheduleTimeout(() => openLongPressMenu('subject', subj, subj.name, true), 250);
+                            }}
+                            delayLongPress={320}
+                          >
+                            <Text style={styles.recordPrimaryTitle}>
+                              {idx + 1}. {subj.name}
+                            </Text>
+                          </Pressable>
+
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <TouchableOpacity style={styles.iconActionBtn} onPress={() => setSubjectForm({ id: subj.id, name: subj.name })}>
+                              <Ionicons name="pencil" size={15} color={COLORS.navy} />
+                            </TouchableOpacity>
+                            <TouchableOpacity style={styles.iconActionBtn} onPress={() => handleSoftDelete('subjects', subj, `Subject: ${subj.name}`)}>
+                              <Ionicons name="trash-outline" size={15} color={COLORS.danger} />
+                            </TouchableOpacity>
+                          </View>
+                        </Surface>
+                      </Animated.View>
+                    );
+                  })
+                )}
+              </ScrollView>
+              <PaperButton mode="outlined" textColor={COLORS.navy} style={{ alignSelf: 'flex-end', borderColor: COLORS.silver }} onPress={() => { Keyboard.dismiss(); setSubjectForm({ id: null, name: '' }); setSubjectsModal(false); }}>Done</PaperButton>
+            </Surface>
+          </KeyboardAvoidingView>
+        </GestureHandlerRootView>
+      </Modal>
+
+      {/* REGISTER / EDIT STUDENT MODAL */}
+      <Modal visible={studentModal} transparent animationType="fade" onRequestClose={() => setStudentModal(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+          <Surface style={styles.modalCard} elevation={5}>
+            <Text style={styles.sectionTitle}>{studentForm.id ? 'EDIT STUDENT DETAILS' : 'REGISTER NEW STUDENT'}</Text>
+            <ScrollView style={{ maxHeight: 380 }} keyboardShouldPersistTaps="handled">
+              <Text style={styles.inputLabel}>Full Name *</Text>
+              <PaperInput mode="outlined" value={studentForm.name} onChangeText={(t) => setStudentForm({ ...studentForm, name: t })} placeholder="Student Full Name" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+              <Text style={styles.inputLabel}>Select Subject / Instrument *</Text>
+              <View style={styles.chipRow}>
+                {activeSubjects.map((s) => (
+                  <TouchableOpacity key={s.id} style={[styles.choiceChip, studentForm.subjectId === s.id && styles.choiceChipSelected]} onPress={() => { Keyboard.dismiss(); setStudentForm({ ...studentForm, subjectId: s.id }); }}>
+                    <Text style={[styles.choiceChipText, studentForm.subjectId === s.id && styles.choiceChipTextSelected]}>{s.name}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <Text style={styles.inputLabel}>Phone / WhatsApp</Text>
+              <PaperInput mode="outlined" value={studentForm.phone} onChangeText={(t) => setStudentForm({ ...studentForm, phone: t })} keyboardType="phone-pad" placeholder="+91 98765 43210" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+              <Text style={styles.inputLabel}>Parent / Guardian Name</Text>
+              <PaperInput mode="outlined" value={studentForm.guardian} onChangeText={(t) => setStudentForm({ ...studentForm, guardian: t })} placeholder="Optional" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+              <Text style={styles.inputLabel}>Enrollment Date (YYYY-MM-DD)</Text>
+              <QuickDateRow currentDate={studentForm.joinedDate} onSelectDate={(d) => setStudentForm({ ...studentForm, joinedDate: d })} onOpenCalendar={openCalendarPicker} />
+              <PaperInput mode="outlined" value={studentForm.joinedDate} onChangeText={(t) => setStudentForm({ ...studentForm, joinedDate: t })} right={<PaperInput.Icon icon="calendar" onPress={() => openCalendarPicker(studentForm.joinedDate, (d) => setStudentForm({ ...studentForm, joinedDate: d }))} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+            </ScrollView>
+            <View style={styles.modalBtnRow}>
+              <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => { Keyboard.dismiss(); setStudentModal(false); }}>Cancel</PaperButton>
+              <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveStudent}>Save Student</PaperButton>
+            </View>
+          </Surface>
+          {renderCalendarOverlay()}
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* EDIT LESSON MODAL */}
+      <Modal visible={lessonEditModal} transparent animationType="fade" onRequestClose={() => setLessonEditModal(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+          <Surface style={styles.modalCard} elevation={5}>
+            <Text style={styles.sectionTitle}>EDIT LESSON RECORD</Text>
+            <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
+              <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+              <QuickDateRow currentDate={lessonEditForm.date} onSelectDate={(d) => setLessonEditForm({ ...lessonEditForm, date: d })} onOpenCalendar={openCalendarPicker} />
+              <PaperInput mode="outlined" value={lessonEditForm.date} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, date: t })} right={<PaperInput.Icon icon="calendar" onPress={() => openCalendarPicker(lessonEditForm.date, (d) => setLessonEditForm({ ...lessonEditForm, date: d }))} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+              <Text style={styles.inputLabel}>Technique</Text>
+              <PaperInput mode="outlined" value={lessonEditForm.technique} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, technique: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+              <Text style={styles.inputLabel}>Repertoire</Text>
+              <PaperInput mode="outlined" value={lessonEditForm.repertoire} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, repertoire: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+              <Text style={styles.inputLabel}>Assignment</Text>
+              <PaperInput mode="outlined" value={lessonEditForm.assignment} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, assignment: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+            </ScrollView>
+            <View style={styles.modalBtnRow}>
+              <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => { Keyboard.dismiss(); setLessonEditModal(false); }}>Cancel</PaperButton>
+              <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveEditedLesson}>Update</PaperButton>
+            </View>
+          </Surface>
+          {renderCalendarOverlay()}
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* MARK / EDIT ATTENDANCE MODAL */}
+      <Modal visible={attendanceModal} transparent animationType="fade" onRequestClose={() => setAttendanceModal(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+          <Surface style={styles.modalCard} elevation={5}>
+            <Text style={styles.sectionTitle}>{attendanceModalForm.id ? 'EDIT ATTENDANCE' : 'MARK GLOBAL ATTENDANCE'}</Text>
+            <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
+              <Text style={styles.inputLabel}>Select Student *</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }} keyboardShouldPersistTaps="handled">
+                <View style={{ flexDirection: 'row', gap: 6 }}>
+                  {activeStudents.map((st) => (
+                    <TouchableOpacity key={st.id} style={[styles.choiceChip, attendanceModalForm.studentId === st.id && styles.choiceChipSelected]} onPress={() => { Keyboard.dismiss(); setAttendanceModalForm({ ...attendanceModalForm, studentId: st.id }); }}>
+                      <Text style={[styles.choiceChipText, attendanceModalForm.studentId === st.id && styles.choiceChipTextSelected]}>{st.name}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </ScrollView>
+              <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+              <QuickDateRow currentDate={attendanceModalForm.date} onSelectDate={(d) => setAttendanceModalForm({ ...attendanceModalForm, date: d })} onOpenCalendar={openCalendarPicker} />
+              <PaperInput mode="outlined" value={attendanceModalForm.date} onChangeText={(t) => setAttendanceModalForm({ ...attendanceModalForm, date: t })} right={<PaperInput.Icon icon="calendar" onPress={() => openCalendarPicker(attendanceModalForm.date, (d) => setAttendanceModalForm({ ...attendanceModalForm, date: d }))} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+              <Text style={styles.inputLabel}>Attendance Status</Text>
+              <View style={styles.chipRow}>
+                {ATTENDANCE_STATUSES.map((st) => (
+                  <TouchableOpacity key={st} style={[styles.choiceChip, attendanceModalForm.status === st && styles.choiceChipSelected]} onPress={() => { Keyboard.dismiss(); setAttendanceModalForm({ ...attendanceModalForm, status: st }); }}>
+                    <Text style={[styles.choiceChipText, attendanceModalForm.status === st && styles.choiceChipTextSelected]}>{st}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <Text style={styles.inputLabel}>Remarks</Text>
+              <PaperInput mode="outlined" value={attendanceModalForm.remarks} onChangeText={(t) => setAttendanceModalForm({ ...attendanceModalForm, remarks: t })} placeholder="Optional remarks" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+            </ScrollView>
+            <View style={styles.modalBtnRow}>
+              <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => { Keyboard.dismiss(); setAttendanceModal(false); }}>Cancel</PaperButton>
+              <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveModalAttendance}>Save</PaperButton>
+            </View>
+          </Surface>
+          {renderCalendarOverlay()}
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* RECORD / EDIT FEE MODAL */}
+      <Modal visible={feeModal} transparent animationType="fade" onRequestClose={() => setFeeModal(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+          <Surface style={styles.modalCard} elevation={5}>
+            <Text style={styles.sectionTitle}>{feeForm.id ? 'EDIT FEE TRANSACTION' : 'RECORD FEE'}</Text>
+            <ScrollView style={{ maxHeight: 420 }} keyboardShouldPersistTaps="handled">
+              <Text style={styles.inputLabel}>Select Student *</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }} keyboardShouldPersistTaps="handled">
+                <View style={{ flexDirection: 'row', gap: 6 }}>
+                  {activeStudents.map((st) => (
+                    <TouchableOpacity key={st.id} style={[styles.choiceChip, feeForm.studentId === st.id && styles.choiceChipSelected]} onPress={() => { Keyboard.dismiss(); setFeeForm({ ...feeForm, studentId: st.id }); }}>
+                      <Text style={[styles.choiceChipText, feeForm.studentId === st.id && styles.choiceChipTextSelected]}>{st.name}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </ScrollView>
+              <Text style={styles.inputLabel}>Fee Type</Text>
+              <View style={styles.chipRow}>
+                {FEE_TYPES.map((ft) => (
+                  <TouchableOpacity key={ft} style={[styles.choiceChip, feeForm.feeType === ft && styles.choiceChipSelected]} onPress={() => { Keyboard.dismiss(); setFeeForm({ ...feeForm, feeType: ft }); }}>
+                    <Text style={[styles.choiceChipText, feeForm.feeType === ft && styles.choiceChipTextSelected]}>{ft}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              {feeForm.feeType === 'Monthly Fee' && (
+                <><Text style={styles.inputLabel}>Month Paid For * (Required for Monthly Fee)</Text>
+                <PaperInput mode="outlined" value={feeForm.monthPaidFor} onChangeText={(t) => setFeeForm({ ...feeForm, monthPaidFor: t })} placeholder="e.g., October 2026" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} /></>
+              )}
+              <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+              <QuickDateRow currentDate={feeForm.date} onSelectDate={(d) => setFeeForm({ ...feeForm, date: d })} onOpenCalendar={openCalendarPicker} />
+              <PaperInput mode="outlined" value={feeForm.date} onChangeText={(t) => setFeeForm({ ...feeForm, date: t })} right={<PaperInput.Icon icon="calendar" onPress={() => openCalendarPicker(feeForm.date, (d) => setFeeForm({ ...feeForm, date: d }))} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+              <Text style={styles.inputLabel}>Payment Mode</Text>
+              <View style={styles.chipRow}>
+                {PAYMENT_MODES.map((m) => (
+                  <TouchableOpacity key={m} style={[styles.choiceChip, feeForm.mode === m && styles.choiceChipSelected]} onPress={() => { Keyboard.dismiss(); setFeeForm({ ...feeForm, mode: m }); }}>
+                    <Text style={[styles.choiceChipText, feeForm.mode === m && styles.choiceChipTextSelected]}>{m}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <Text style={styles.inputLabel}>Fee Status</Text>
+              <View style={styles.chipRow}>
+                {FEE_STATUSES.map((st) => (
+                  <TouchableOpacity key={st} style={[styles.choiceChip, feeForm.status === st && styles.choiceChipSelected]} onPress={() => {
+                    Keyboard.dismiss();
+                    if (st === 'Unpaid') setFeeForm({ ...feeForm, status: st, amountPaid: '0' });
+                    else if (st === 'Paid') setFeeForm({ ...feeForm, status: st, balanceDue: '0' });
+                    else setFeeForm({ ...feeForm, status: st });
+                  }}>
+                    <Text style={[styles.choiceChipText, feeForm.status === st && styles.choiceChipTextSelected]}>{st}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <Text style={styles.inputLabel}>Amount Paid (₹) {feeForm.status === 'Unpaid' ? '(Auto-locked to 0)' : '*'}</Text>
+              <PaperInput mode="outlined" editable={feeForm.status !== 'Unpaid'} keyboardType="numeric" value={feeForm.status === 'Unpaid' ? '0' : feeForm.amountPaid} onChangeText={(t) => setFeeForm({ ...feeForm, amountPaid: sanitizeCurrency(t) })} placeholder="0" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: feeForm.status === 'Unpaid' ? '#E5E5E5' : COLORS.white, marginBottom: 8 }} />
+              <Text style={styles.inputLabel}>Balance Due (₹) {feeForm.status === 'Paid' ? '(Auto-locked to 0)' : '*'}</Text>
+              <PaperInput mode="outlined" editable={feeForm.status !== 'Paid'} keyboardType="numeric" value={feeForm.status === 'Paid' ? '0' : feeForm.balanceDue} onChangeText={(t) => setFeeForm({ ...feeForm, balanceDue: sanitizeCurrency(t) })} placeholder="0" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: feeForm.status === 'Paid' ? '#E5E5E5' : COLORS.white, marginBottom: 8 }} />
+              <Text style={styles.inputLabel}>Remarks</Text>
+              <PaperInput mode="outlined" value={feeForm.remarks} onChangeText={(t) => setFeeForm({ ...feeForm, remarks: t })} placeholder="Optional receipt notes" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+            </ScrollView>
+            <View style={[styles.modalBtnRow, { flexWrap: 'wrap', gap: 8 }]}>
+              <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => { Keyboard.dismiss(); setFeeModal(false); }}>Cancel</PaperButton>
+              <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => handleSaveFee(false)}>Save</PaperButton>
+              <PaperButton mode="contained" buttonColor={COLORS.gold} textColor={COLORS.navy} onPress={() => handleSaveFee(true)}>Save & Share</PaperButton>
+            </View>
+          </Surface>
+          {renderCalendarOverlay()}
+        </KeyboardAvoidingView>
+      </Modal>
+    </SafeAreaView>
+  );
+}
+
+export default function App() {
+  return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <PaperProvider theme={jsmTheme}>
-          <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-            <StatusBar barStyle="light-content" backgroundColor={COLORS.navy} />
-
-            <Appbar.Header style={{ backgroundColor: COLORS.navy, borderBottomWidth: 2, borderBottomColor: COLORS.gold }}>
-              <Appbar.Action icon="menu" color={COLORS.gold} onPress={openDrawer} />
-              <Appbar.Content title="JSM" subtitle="EST. 2022" titleStyle={{ color: COLORS.white, fontSize: 18, fontWeight: '700', letterSpacing: 2 }} subtitleStyle={{ color: COLORS.gold, fontSize: 10, letterSpacing: 3, fontWeight: '600' }} style={{ alignItems: 'center' }} />
-              <View style={{ width: 48 }} />
-            </Appbar.Header>
-
-            <View style={{ flex: 1 }}>
-              {/* Strict Very-Edge Swipe Strip (16px wide at left: 0) */}
-              <PanGestureHandler
-                activeOffsetX={10}
-                failOffsetY={[-18, 18]}
-                onEnded={(e) => {
-                  if (e.nativeEvent.translationX > 24) openDrawer();
-                }}
-              >
-                <View style={styles.leftEdgeSwipeZone} />
-              </PanGestureHandler>
-
-              <AnimatedScreen
-                direction={navDirection}
-                onSwipe={handleMainTabSwipe}
-                swipeEnabled={!isInsideStudentProfile}
-                triggerKey={`${activeTab}-${selectedStudentId || 'list'}`}
-              >
-                {activeTab === 'Home' && renderHomeTab()}
-                {activeTab === 'Students' && renderStudentsTab()}
-                {activeTab === 'Attendance' && renderAttendanceTab()}
-                {activeTab === 'Fees' && renderFeesTab()}
-                {activeTab === 'Trash' && renderTrashTab()}
-              </AnimatedScreen>
-
-              {/* Root-level Calendar Overlay when no form modal is open */}
-              {!anyFormModalOpen && renderCalendarOverlay()}
-            </View>
-
-            <View style={styles.bottomTabBar}>
-              {[{ key: 'Home', icon: 'grid-outline', label: 'Home' }, { key: 'Students', icon: 'people-outline', label: 'Students' }, { key: 'Attendance', icon: 'calendar-check-outline', label: 'Attendance', mci: true }, { key: 'Fees', icon: 'card-outline', label: 'Fees' }, { key: 'Trash', icon: 'trash-outline', label: 'Trash' }].map((tab) => {
-                const isFocused = activeTab === tab.key;
-                return (
-                  <TouchableOpacity key={tab.key} style={styles.bottomTabItem} onPress={() => {
-                      Keyboard.dismiss();
-                      if (tab.key === 'Students' && activeTab === 'Students' && selectedStudentId) {
-                        setNavDirection(-1);
-                        setSelectedStudentId(null);
-                        return;
-                      }
-                      if (tab.key === activeTab) return;
-                      const newIdx = MAIN_TABS.indexOf(tab.key);
-                      const oldIdx = MAIN_TABS.indexOf(activeTab);
-                      setNavDirection(newIdx > oldIdx ? 1 : -1);
-                      if (tab.key !== 'Students') setSelectedStudentId(null);
-                      setActiveTab(tab.key);
-                    }}>
-                    <View>
-                      {tab.mci ? <MaterialCommunityIcons name={tab.icon} size={22} color={isFocused ? COLORS.gold : COLORS.silver} /> : <Ionicons name={tab.icon} size={22} color={isFocused ? COLORS.gold : COLORS.silver} />}
-                      {tab.key === 'Trash' && trashItems.length > 0 && <View style={styles.trashTabBadge}><Text style={styles.trashTabBadgeText}>{trashItems.length}</Text></View>}
-                    </View>
-                    <Text style={[styles.bottomTabLabel, isFocused && styles.bottomTabLabelActive]}>{tab.label}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-
-            {/* ANIMATED SLIDE DRAWER */}
-            <Modal visible={drawerOpen} transparent animationType="none" onRequestClose={() => closeDrawer()}>
-              <GestureHandlerRootView style={{ flex: 1 }}>
-                <Animated.View style={[styles.drawerOverlay, { opacity: drawerBackdropAnim }]}>
-                  <PanGestureHandler
-                    activeOffsetX={[-15, 15]}
-                    onEnded={(e) => {
-                      if (e.nativeEvent.translationX < -30) closeDrawer();
-                    }}
-                  >
-                    <Animated.View style={[styles.drawerContainer, { transform: [{ translateX: drawerSlideAnim }] }]}>
-                      <View style={styles.drawerHeader}><Text style={styles.crestBadgeText}>★ JSM ★</Text><Text style={styles.drawerTitle}>Music School Portal</Text><Text style={styles.drawerSub}>Est. 2022 • Official Edition</Text></View>
-                      <ScrollView contentContainerStyle={{ padding: 16, gap: 10 }} keyboardShouldPersistTaps="handled">
-                        {[{ label: 'Home Dashboard', tab: 'Home', icon: 'grid-outline' }, { label: 'Student Directory', tab: 'Students', icon: 'people-outline' }, { label: 'Global Attendance', tab: 'Attendance', icon: 'calendar-outline' }, { label: 'Global Fee Register', tab: 'Fees', icon: 'card-outline' }, { label: `Trash Archive (${trashItems.length})`, tab: 'Trash', icon: 'trash-outline' }].map((nav) => (
-                          <TouchableOpacity key={nav.tab} style={[styles.drawerNavItem, activeTab === nav.tab && styles.drawerNavItemActive]} onPress={() => {
-                              closeDrawer(() => {
-                                const newIdx = MAIN_TABS.indexOf(nav.tab);
-                                const oldIdx = MAIN_TABS.indexOf(activeTab);
-                                setNavDirection(newIdx >= oldIdx ? 1 : -1);
-                                setSelectedStudentId(null);
-                                setActiveTab(nav.tab);
-                              });
-                            }}>
-                            <Ionicons name={nav.icon} size={18} color={activeTab === nav.tab ? COLORS.gold : COLORS.navy} /><Text style={[styles.drawerNavText, activeTab === nav.tab && styles.drawerNavTextActive]}>{nav.label}</Text>
-                          </TouchableOpacity>
-                        ))}
-                        <View style={styles.drawerDivider} />
-                        <TouchableOpacity style={styles.drawerNavItem} onPress={() => { closeDrawer(() => { setSubjectForm({ id: null, name: '' }); setSubjectsModal(true); }); }}>
-                          <Ionicons name="musical-notes-outline" size={18} color={COLORS.navy} /><Text style={styles.drawerNavText}>Manage Instruments & Order</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity style={styles.drawerNavItem} onPress={handleCheckOTA} disabled={checkingOTA}>
-                          {checkingOTA ? <ActivityIndicator size="small" color={COLORS.navy} /> : <><Ionicons name="cloud-download-outline" size={18} color={COLORS.navy} /><Text style={styles.drawerNavText}>Check for OTA Update</Text></>}
-                        </TouchableOpacity>
-                      </ScrollView>
-                    </Animated.View>
-                  </PanGestureHandler>
-                  <Pressable style={{ flex: 1 }} onPress={() => closeDrawer()} />
-                </Animated.View>
-              </GestureHandlerRootView>
-            </Modal>
-
-            {/* LONG-PRESS CONTEXT MENU */}
-            <Modal visible={contextMenu.visible} transparent animationType="fade" onRequestClose={closeContextMenu}>
-              <Pressable style={styles.modalBackdrop} onPress={closeContextMenu}>
-                <Pressable style={styles.contextSheet} onPress={(e) => e.stopPropagation()}>
-                  <Text style={styles.contextSheetHeader}>{contextMenu.title}</Text>
-                  <View style={styles.contextDivider} />
-                  {contextMenu.entityType !== 'activity' && (
-                    <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('edit')}><Text style={styles.contextOptionText}>Edit Record</Text></TouchableOpacity>
-                  )}
-                  <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('delete')}><Text style={[styles.contextOptionText, { color: COLORS.danger }]}>Delete (Move to Trash)</Text></TouchableOpacity>
-                  <PaperButton mode="outlined" textColor={COLORS.navy} style={{ marginTop: 10, width: '100%', borderColor: COLORS.silver }} onPress={() => {
-                    const shouldReopenSubj = contextMenu.reopenSubjectsModal;
-                    const shouldReopenLog = contextMenu.reopenTodayLogModal;
-                    closeContextMenu();
-                    if (shouldReopenSubj) setTimeout(() => setSubjectsModal(true), 250);
-                    if (shouldReopenLog) setTimeout(() => setTodayLogModal(true), 250);
-                  }}>Cancel</PaperButton>
-                </Pressable>
-              </Pressable>
-            </Modal>
-
-            {/* NOTICE READ MODAL */}
-            <Modal visible={noticeReadModal} transparent animationType="fade" onRequestClose={() => setNoticeReadModal(false)}>
-              <View style={styles.modalBackdrop}>
-                <Surface style={styles.modalCard} elevation={5}>
-                  <Text style={styles.sectionTitle}>JSM OFFICIAL NOTICE</Text>
-                  {noticeUpdatedAt ? <Text style={styles.silverMeta}>Posted {formatReadableLocalDate(noticeUpdatedAt)}</Text> : null}
-                  <ScrollView style={{ maxHeight: 260, marginVertical: 14 }} keyboardShouldPersistTaps="handled"><Text style={styles.noticeFullText}>{noticeText || 'No active notice has been posted.'}</Text></ScrollView>
-                  <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => setNoticeReadModal(false)}>Close</PaperButton>
-                </Surface>
-              </View>
-            </Modal>
-
-            {/* NOTICE EDIT MODAL */}
-            <Modal visible={noticeEditModal} transparent animationType="fade" onRequestClose={() => setNoticeEditModal(false)}>
-              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
-                <Surface style={styles.modalCard} elevation={5}>
-                  <Text style={styles.sectionTitle}>UPDATE NOTICE BOARD</Text>
-                  <PaperInput mode="outlined" multiline numberOfLines={5} value={noticeInput} onChangeText={setNoticeInput} placeholder="Type new JSM announcement..." outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginTop: 10, marginBottom: 14 }} />
-                  <View style={styles.modalBtnRow}>
-                    <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => { Keyboard.dismiss(); setNoticeEditModal(false); }}>Cancel</PaperButton>
-                    <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleUpdateNotice}>Publish</PaperButton>
-                  </View>
-                </Surface>
-              </KeyboardAvoidingView>
-            </Modal>
-
-            {/* TODAY'S AUDIT LOG MODAL */}
-            <Modal visible={todayLogModal} transparent animationType="fade" onRequestClose={() => setTodayLogModal(false)}>
-              <View style={styles.modalBackdrop}>
-                <Surface style={styles.modalCard} elevation={5}>
-                  <View style={[styles.cardHeaderRow, { gap: 8 }]}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.sectionTitle}>TODAY'S AUDIT LOG ({formatReadableLocalDate(getTodayISO())})</Text>
-                      <Text style={styles.silverMeta}>Hold any entry to move to Trash</Text>
-                    </View>
-                    {todayActivities.length > 0 ? (
-                      <TouchableOpacity style={styles.dangerOutlineBtnSmall} onPress={() => handleClearAllActivities(true)}>
-                        <Ionicons name="trash-outline" size={13} color={COLORS.danger} />
-                        <Text style={styles.dangerOutlineBtnSmallText}>Delete All</Text>
-                      </TouchableOpacity>
-                    ) : null}
-                  </View>
-                  <ScrollView style={{ maxHeight: 320, marginVertical: 12 }} keyboardShouldPersistTaps="handled">
-                    {todayActivities.length === 0 ? <Text style={styles.emptyText}>No actions logged today.</Text> : todayActivities.map((act) => (
-                      <Pressable
-                        key={act.id}
-                        style={({ pressed }) => [styles.activityItem, pressed && styles.cardPressed]}
-                        onLongPress={() => {
-                          setTodayLogModal(false);
-                          setTimeout(() => openLongPressMenu('activity', act, `${act.title}${act.subtitle ? ` • ${act.subtitle}` : ''}`, false, true), 250);
-                        }}
-                        delayLongPress={280}
-                      >
-                        <View style={styles.activityDot} /><View style={{ flex: 1 }}><Text style={styles.activityTitle}>{act.title}</Text>{act.subtitle ? <Text style={styles.activitySub}>{act.subtitle}</Text> : null}</View>
-                      </Pressable>
-                    ))}
-                  </ScrollView>
-                  <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => setTodayLogModal(false)}>Close</PaperButton>
-                </Surface>
-              </View>
-            </Modal>
-
-            {/* MANAGE SUBJECTS MODAL (WITH 6-DOT DRAG HANDLE REORDERING) */}
-            <Modal visible={subjectsModal} transparent animationType="fade" onRequestClose={() => setSubjectsModal(false)}>
-              <GestureHandlerRootView style={{ flex: 1 }}>
-                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
-                  <Surface style={styles.modalCard} elevation={5}>
-                    <Text style={styles.sectionTitle}>MANAGE INSTRUMENTS & SUBJECTS</Text>
-                    <Text style={styles.silverMeta}>Touch & slide the 6-dot handle to reorder, or use edit/delete.</Text>
-                    <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, alignItems: 'center' }}>
-                      <PaperInput mode="outlined" value={subjectForm.name} onChangeText={(t) => setSubjectForm({ ...subjectForm, name: t })} placeholder="e.g., Piano, Violin, Guitar" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ flex: 1, backgroundColor: COLORS.white, height: 50 }} />
-                      <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveSubject}>{subjectForm.id ? 'Update' : 'Add'}</PaperButton>
-                    </View>
-                    <ScrollView
-                      style={{ maxHeight: 290, marginVertical: 14 }}
-                      scrollEnabled={!subjectScrollLocked && !draggingSubjectId}
-                      keyboardShouldPersistTaps="handled"
-                      showsVerticalScrollIndicator={false}
-                    >
-                      {orderedSubjects.length === 0 ? (
-                        <Text style={styles.emptyText}>No subjects added yet.</Text>
-                      ) : (
-                        orderedSubjects.map((subj, idx) => {
-                          const isDragging = draggingSubjectId === subj.id;
-                          return (
-                            <Animated.View
-                              key={subj.id}
-                              style={[
-                                isDragging && {
-                                  zIndex: 50,
-                                  elevation: 8,
-                                  transform: [{ translateY: dragSubjectY }, { scale: 1.02 }],
-                                },
-                              ]}
-                            >
-                              <Surface
-                                style={[
-                                  styles.cleanRecordCard,
-                                  { minHeight: 52, paddingVertical: 8, paddingHorizontal: 10 },
-                                  isDragging && styles.draggingSubjectCard,
-                                ]}
-                                elevation={isDragging ? 5 : 2}
-                              >
-                                {/* 6-Dot Drag Handle */}
-                                <PanGestureHandler
-                                  activeOffsetY={[-2, 2]}
-                                  onGestureEvent={(e) => handleSubjectDragMove(subj, e)}
-                                  onHandlerStateChange={(e) => handleSubjectDragStateChange(subj, e)}
-                                >
-                                  <View
-                                    style={styles.dragHandleBtn}
-                                    onTouchStart={() => setSubjectScrollLocked(true)}
-                                    onTouchEnd={() => { if (!dragInfoRef.current.active) setSubjectScrollLocked(false); }}
-                                    onTouchCancel={() => { if (!dragInfoRef.current.active) setSubjectScrollLocked(false); }}
-                                  >
-                                    <MaterialCommunityIcons
-                                      name="drag-vertical"
-                                      size={24}
-                                      color={isDragging ? COLORS.navy : COLORS.silver}
-                                    />
-                                  </View>
-                                </PanGestureHandler>
-
-                                <Pressable
-                                  style={{ flex: 1, paddingVertical: 6 }}
-                                  onLongPress={() => {
-                                    if (draggingSubjectId) return;
-                                    setSubjectsModal(false);
-                                    setTimeout(() => openLongPressMenu('subject', subj, subj.name, true), 250);
-                                  }}
-                                  delayLongPress={320}
-                                >
-                                  <Text style={styles.recordPrimaryTitle}>
-                                    {idx + 1}. {subj.name}
-                                  </Text>
-                                </Pressable>
-
-                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                                  <TouchableOpacity style={styles.iconActionBtn} onPress={() => setSubjectForm({ id: subj.id, name: subj.name })}>
-                                    <Ionicons name="pencil" size={15} color={COLORS.navy} />
-                                  </TouchableOpacity>
-                                  <TouchableOpacity style={styles.iconActionBtn} onPress={() => handleSoftDelete('subjects', subj, `Subject: ${subj.name}`)}>
-                                    <Ionicons name="trash-outline" size={15} color={COLORS.danger} />
-                                  </TouchableOpacity>
-                                </View>
-                              </Surface>
-                            </Animated.View>
-                          );
-                        })
-                      )}
-                    </ScrollView>
-                    <PaperButton mode="outlined" textColor={COLORS.navy} style={{ alignSelf: 'flex-end', borderColor: COLORS.silver }} onPress={() => { Keyboard.dismiss(); setSubjectForm({ id: null, name: '' }); setSubjectsModal(false); }}>Done</PaperButton>
-                  </Surface>
-                </KeyboardAvoidingView>
-              </GestureHandlerRootView>
-            </Modal>
-
-            {/* REGISTER / EDIT STUDENT MODAL */}
-            <Modal visible={studentModal} transparent animationType="fade" onRequestClose={() => setStudentModal(false)}>
-              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
-                <Surface style={styles.modalCard} elevation={5}>
-                  <Text style={styles.sectionTitle}>{studentForm.id ? 'EDIT STUDENT DETAILS' : 'REGISTER NEW STUDENT'}</Text>
-                  <ScrollView style={{ maxHeight: 380 }} keyboardShouldPersistTaps="handled">
-                    <Text style={styles.inputLabel}>Full Name *</Text>
-                    <PaperInput mode="outlined" value={studentForm.name} onChangeText={(t) => setStudentForm({ ...studentForm, name: t })} placeholder="Student Full Name" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                    <Text style={styles.inputLabel}>Select Subject / Instrument *</Text>
-                    <View style={styles.chipRow}>
-                      {activeSubjects.map((s) => (
-                        <TouchableOpacity key={s.id} style={[styles.choiceChip, studentForm.subjectId === s.id && styles.choiceChipSelected]} onPress={() => { Keyboard.dismiss(); setStudentForm({ ...studentForm, subjectId: s.id }); }}>
-                          <Text style={[styles.choiceChipText, studentForm.subjectId === s.id && styles.choiceChipTextSelected]}>{s.name}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                    <Text style={styles.inputLabel}>Phone / WhatsApp</Text>
-                    <PaperInput mode="outlined" value={studentForm.phone} onChangeText={(t) => setStudentForm({ ...studentForm, phone: t })} keyboardType="phone-pad" placeholder="+91 98765 43210" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                    <Text style={styles.inputLabel}>Parent / Guardian Name</Text>
-                    <PaperInput mode="outlined" value={studentForm.guardian} onChangeText={(t) => setStudentForm({ ...studentForm, guardian: t })} placeholder="Optional" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                    <Text style={styles.inputLabel}>Enrollment Date (YYYY-MM-DD)</Text>
-                    <QuickDateRow currentDate={studentForm.joinedDate} onSelectDate={(d) => setStudentForm({ ...studentForm, joinedDate: d })} onOpenCalendar={openCalendarPicker} />
-                    <PaperInput mode="outlined" value={studentForm.joinedDate} onChangeText={(t) => setStudentForm({ ...studentForm, joinedDate: t })} right={<PaperInput.Icon icon="calendar" onPress={() => openCalendarPicker(studentForm.joinedDate, (d) => setStudentForm({ ...studentForm, joinedDate: d }))} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                  </ScrollView>
-                  <View style={styles.modalBtnRow}>
-                    <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => { Keyboard.dismiss(); setStudentModal(false); }}>Cancel</PaperButton>
-                    <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveStudent}>Save Student</PaperButton>
-                  </View>
-                </Surface>
-                {renderCalendarOverlay()}
-              </KeyboardAvoidingView>
-            </Modal>
-
-            {/* EDIT LESSON MODAL */}
-            <Modal visible={lessonEditModal} transparent animationType="fade" onRequestClose={() => setLessonEditModal(false)}>
-              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
-                <Surface style={styles.modalCard} elevation={5}>
-                  <Text style={styles.sectionTitle}>EDIT LESSON RECORD</Text>
-                  <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
-                    <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
-                    <QuickDateRow currentDate={lessonEditForm.date} onSelectDate={(d) => setLessonEditForm({ ...lessonEditForm, date: d })} onOpenCalendar={openCalendarPicker} />
-                    <PaperInput mode="outlined" value={lessonEditForm.date} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, date: t })} right={<PaperInput.Icon icon="calendar" onPress={() => openCalendarPicker(lessonEditForm.date, (d) => setLessonEditForm({ ...lessonEditForm, date: d }))} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                    <Text style={styles.inputLabel}>Technique</Text>
-                    <PaperInput mode="outlined" value={lessonEditForm.technique} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, technique: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                    <Text style={styles.inputLabel}>Repertoire</Text>
-                    <PaperInput mode="outlined" value={lessonEditForm.repertoire} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, repertoire: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                    <Text style={styles.inputLabel}>Assignment</Text>
-                    <PaperInput mode="outlined" value={lessonEditForm.assignment} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, assignment: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                  </ScrollView>
-                  <View style={styles.modalBtnRow}>
-                    <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => { Keyboard.dismiss(); setLessonEditModal(false); }}>Cancel</PaperButton>
-                    <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveEditedLesson}>Update</PaperButton>
-                  </View>
-                </Surface>
-                {renderCalendarOverlay()}
-              </KeyboardAvoidingView>
-            </Modal>
-
-            {/* MARK / EDIT ATTENDANCE MODAL */}
-            <Modal visible={attendanceModal} transparent animationType="fade" onRequestClose={() => setAttendanceModal(false)}>
-              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
-                <Surface style={styles.modalCard} elevation={5}>
-                  <Text style={styles.sectionTitle}>{attendanceModalForm.id ? 'EDIT ATTENDANCE' : 'MARK GLOBAL ATTENDANCE'}</Text>
-                  <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
-                    <Text style={styles.inputLabel}>Select Student *</Text>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }} keyboardShouldPersistTaps="handled">
-                      <View style={{ flexDirection: 'row', gap: 6 }}>
-                        {activeStudents.map((st) => (
-                          <TouchableOpacity key={st.id} style={[styles.choiceChip, attendanceModalForm.studentId === st.id && styles.choiceChipSelected]} onPress={() => { Keyboard.dismiss(); setAttendanceModalForm({ ...attendanceModalForm, studentId: st.id }); }}>
-                            <Text style={[styles.choiceChipText, attendanceModalForm.studentId === st.id && styles.choiceChipTextSelected]}>{st.name}</Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                    </ScrollView>
-                    <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
-                    <QuickDateRow currentDate={attendanceModalForm.date} onSelectDate={(d) => setAttendanceModalForm({ ...attendanceModalForm, date: d })} onOpenCalendar={openCalendarPicker} />
-                    <PaperInput mode="outlined" value={attendanceModalForm.date} onChangeText={(t) => setAttendanceModalForm({ ...attendanceModalForm, date: t })} right={<PaperInput.Icon icon="calendar" onPress={() => openCalendarPicker(attendanceModalForm.date, (d) => setAttendanceModalForm({ ...attendanceModalForm, date: d }))} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                    <Text style={styles.inputLabel}>Attendance Status</Text>
-                    <View style={styles.chipRow}>
-                      {ATTENDANCE_STATUSES.map((st) => (
-                        <TouchableOpacity key={st} style={[styles.choiceChip, attendanceModalForm.status === st && styles.choiceChipSelected]} onPress={() => { Keyboard.dismiss(); setAttendanceModalForm({ ...attendanceModalForm, status: st }); }}>
-                          <Text style={[styles.choiceChipText, attendanceModalForm.status === st && styles.choiceChipTextSelected]}>{st}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                    <Text style={styles.inputLabel}>Remarks</Text>
-                    <PaperInput mode="outlined" value={attendanceModalForm.remarks} onChangeText={(t) => setAttendanceModalForm({ ...attendanceModalForm, remarks: t })} placeholder="Optional remarks" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                  </ScrollView>
-                  <View style={styles.modalBtnRow}>
-                    <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => { Keyboard.dismiss(); setAttendanceModal(false); }}>Cancel</PaperButton>
-                    <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={handleSaveModalAttendance}>Save</PaperButton>
-                  </View>
-                </Surface>
-                {renderCalendarOverlay()}
-              </KeyboardAvoidingView>
-            </Modal>
-
-            {/* RECORD / EDIT FEE MODAL */}
-            <Modal visible={feeModal} transparent animationType="fade" onRequestClose={() => setFeeModal(false)}>
-              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
-                <Surface style={styles.modalCard} elevation={5}>
-                  <Text style={styles.sectionTitle}>{feeForm.id ? 'EDIT FEE TRANSACTION' : 'RECORD FEE'}</Text>
-                  <ScrollView style={{ maxHeight: 420 }} keyboardShouldPersistTaps="handled">
-                    <Text style={styles.inputLabel}>Select Student *</Text>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }} keyboardShouldPersistTaps="handled">
-                      <View style={{ flexDirection: 'row', gap: 6 }}>
-                        {activeStudents.map((st) => (
-                          <TouchableOpacity key={st.id} style={[styles.choiceChip, feeForm.studentId === st.id && styles.choiceChipSelected]} onPress={() => { Keyboard.dismiss(); setFeeForm({ ...feeForm, studentId: st.id }); }}>
-                            <Text style={[styles.choiceChipText, feeForm.studentId === st.id && styles.choiceChipTextSelected]}>{st.name}</Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                    </ScrollView>
-                    <Text style={styles.inputLabel}>Fee Type</Text>
-                    <View style={styles.chipRow}>
-                      {FEE_TYPES.map((ft) => (
-                        <TouchableOpacity key={ft} style={[styles.choiceChip, feeForm.feeType === ft && styles.choiceChipSelected]} onPress={() => { Keyboard.dismiss(); setFeeForm({ ...feeForm, feeType: ft }); }}>
-                          <Text style={[styles.choiceChipText, feeForm.feeType === ft && styles.choiceChipTextSelected]}>{ft}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                    {feeForm.feeType === 'Monthly Fee' && (
-                      <><Text style={styles.inputLabel}>Month Paid For * (Required for Monthly Fee)</Text>
-                      <PaperInput mode="outlined" value={feeForm.monthPaidFor} onChangeText={(t) => setFeeForm({ ...feeForm, monthPaidFor: t })} placeholder="e.g., October 2026" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} /></>
-                    )}
-                    <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
-                    <QuickDateRow currentDate={feeForm.date} onSelectDate={(d) => setFeeForm({ ...feeForm, date: d })} onOpenCalendar={openCalendarPicker} />
-                    <PaperInput mode="outlined" value={feeForm.date} onChangeText={(t) => setFeeForm({ ...feeForm, date: t })} right={<PaperInput.Icon icon="calendar" onPress={() => openCalendarPicker(feeForm.date, (d) => setFeeForm({ ...feeForm, date: d }))} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                    <Text style={styles.inputLabel}>Payment Mode</Text>
-                    <View style={styles.chipRow}>
-                      {PAYMENT_MODES.map((m) => (
-                        <TouchableOpacity key={m} style={[styles.choiceChip, feeForm.mode === m && styles.choiceChipSelected]} onPress={() => { Keyboard.dismiss(); setFeeForm({ ...feeForm, mode: m }); }}>
-                          <Text style={[styles.choiceChipText, feeForm.mode === m && styles.choiceChipTextSelected]}>{m}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                    <Text style={styles.inputLabel}>Fee Status</Text>
-                    <View style={styles.chipRow}>
-                      {FEE_STATUSES.map((st) => (
-                        <TouchableOpacity key={st} style={[styles.choiceChip, feeForm.status === st && styles.choiceChipSelected]} onPress={() => {
-                          Keyboard.dismiss();
-                          if (st === 'Unpaid') setFeeForm({ ...feeForm, status: st, amountPaid: '0' });
-                          else if (st === 'Paid') setFeeForm({ ...feeForm, status: st, balanceDue: '0' });
-                          else setFeeForm({ ...feeForm, status: st });
-                        }}>
-                          <Text style={[styles.choiceChipText, feeForm.status === st && styles.choiceChipTextSelected]}>{st}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                    <Text style={styles.inputLabel}>Amount Paid (₹) {feeForm.status === 'Unpaid' ? '(Auto-locked to 0)' : '*'}</Text>
-                    <PaperInput mode="outlined" editable={feeForm.status !== 'Unpaid'} keyboardType="numeric" value={feeForm.status === 'Unpaid' ? '0' : feeForm.amountPaid} onChangeText={(t) => setFeeForm({ ...feeForm, amountPaid: sanitizeCurrency(t) })} placeholder="0" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: feeForm.status === 'Unpaid' ? '#E5E5E5' : COLORS.white, marginBottom: 8 }} />
-                    <Text style={styles.inputLabel}>Balance Due (₹) {feeForm.status === 'Paid' ? '(Auto-locked to 0)' : '*'}</Text>
-                    <PaperInput mode="outlined" editable={feeForm.status !== 'Paid'} keyboardType="numeric" value={feeForm.status === 'Paid' ? '0' : feeForm.balanceDue} onChangeText={(t) => setFeeForm({ ...feeForm, balanceDue: sanitizeCurrency(t) })} placeholder="0" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: feeForm.status === 'Paid' ? '#E5E5E5' : COLORS.white, marginBottom: 8 }} />
-                    <Text style={styles.inputLabel}>Remarks</Text>
-                    <PaperInput mode="outlined" value={feeForm.remarks} onChangeText={(t) => setFeeForm({ ...feeForm, remarks: t })} placeholder="Optional receipt notes" outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
-                  </ScrollView>
-                  <View style={[styles.modalBtnRow, { flexWrap: 'wrap', gap: 8 }]}>
-                    <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => { Keyboard.dismiss(); setFeeModal(false); }}>Cancel</PaperButton>
-                    <PaperButton mode="contained" buttonColor={COLORS.navy} textColor={COLORS.gold} onPress={() => handleSaveFee(false)}>Save</PaperButton>
-                    <PaperButton mode="contained" buttonColor={COLORS.gold} textColor={COLORS.navy} onPress={() => handleSaveFee(true)}>Save & Share</PaperButton>
-                  </View>
-                </Surface>
-                {renderCalendarOverlay()}
-              </KeyboardAvoidingView>
-            </Modal>
-
-          </SafeAreaView>
+          <ErrorBoundary>
+            <JSMAppContent />
+          </ErrorBoundary>
         </PaperProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
@@ -2020,6 +2202,11 @@ export default function App() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: COLORS.ivory },
+  errorBoundaryContainer: { flex: 1, backgroundColor: COLORS.navy, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  errorBoundaryTitle: { color: COLORS.gold, fontSize: 20, fontWeight: '800', marginTop: 12 },
+  errorBoundarySub: { color: COLORS.cream, fontSize: 13, textAlign: 'center', marginVertical: 12 },
+  errorBoundaryBtn: { backgroundColor: COLORS.gold, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8, marginTop: 8 },
+  errorBoundaryBtnText: { color: COLORS.navy, fontSize: 14, fontWeight: '800' },
   leftEdgeSwipeZone: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 16, zIndex: 50 },
   scrollContent: { padding: 16, paddingBottom: 36 },
   heroCard: { backgroundColor: COLORS.navy, borderRadius: 16, padding: 20, borderWidth: 1.5, borderColor: COLORS.gold, marginBottom: 16 },
