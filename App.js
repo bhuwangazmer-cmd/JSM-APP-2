@@ -146,28 +146,86 @@ const commitBatchSoftDeletes = async (entries) => {
 };
 
 // ==========================================
-// 4. FLUID FADE-SWIPE SCREEN WRAPPER
+// 4. INTERACTIVE SWIPE & FADE SCREEN WRAPPER
 // ==========================================
-const AnimatedScreen = ({ children, triggerKey, direction }) => {
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(direction * 22)).current;
-  const scaleAnim = useRef(new Animated.Value(0.985)).current;
+const AnimatedScreen = ({ children, triggerKey, direction, onSwipe }) => {
+  const fadeAnim = useRef(new Animated.Value(1)).current;
+  const slideAnim = useRef(new Animated.Value(0)).current;
+  const dragX = useRef(new Animated.Value(0)).current;
+
+  const onGestureEvent = useMemo(
+    () => Animated.event([{ nativeEvent: { translationX: dragX } }], { useNativeDriver: true }),
+    [dragX]
+  );
+
+  const dragTranslateX = useMemo(
+    () =>
+      dragX.interpolate({
+        inputRange: [-320, 0, 320],
+        outputRange: [-130, 0, 130],
+        extrapolate: 'clamp',
+      }),
+    [dragX]
+  );
+
+  const dragOpacity = useMemo(
+    () =>
+      dragX.interpolate({
+        inputRange: [-260, 0, 260],
+        outputRange: [0.65, 1, 0.65],
+        extrapolate: 'clamp',
+      }),
+    [dragX]
+  );
 
   useEffect(() => {
-    fadeAnim.setValue(0);
-    slideAnim.setValue(direction * 22);
-    scaleAnim.setValue(0.985);
+    dragX.stopAnimation(() => dragX.setValue(0));
+    fadeAnim.setValue(0.15);
+    slideAnim.setValue(direction * 110);
+
     Animated.parallel([
-      Animated.timing(fadeAnim, { toValue: 1, duration: 310, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-      Animated.timing(slideAnim, { toValue: 0, duration: 310, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-      Animated.timing(scaleAnim, { toValue: 1, duration: 310, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 240,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.spring(slideAnim, {
+        toValue: 0,
+        damping: 22,
+        stiffness: 175,
+        mass: 0.75,
+        useNativeDriver: true,
+      }),
     ]).start();
-  }, [triggerKey, direction, fadeAnim, slideAnim, scaleAnim]);
+  }, [triggerKey, direction, fadeAnim, slideAnim, dragX]);
+
+  const handleGestureEnd = (e) => {
+    if (typeof onSwipe === 'function') {
+      onSwipe(e);
+    }
+    Animated.spring(dragX, {
+      toValue: 0,
+      damping: 20,
+      stiffness: 220,
+      mass: 0.7,
+      useNativeDriver: true,
+    }).start();
+  };
 
   return (
-    <Animated.View style={{ flex: 1, opacity: fadeAnim, transform: [{ translateX: slideAnim }, { scale: scaleAnim }] }}>
-      {children}
-    </Animated.View>
+    <PanGestureHandler
+      activeOffsetX={[-18, 18]}
+      failOffsetY={[-15, 15]}
+      onGestureEvent={onGestureEvent}
+      onEnded={handleGestureEnd}
+    >
+      <Animated.View style={{ flex: 1, opacity: dragOpacity, transform: [{ translateX: dragTranslateX }] }}>
+        <Animated.View style={{ flex: 1, opacity: fadeAnim, transform: [{ translateX: slideAnim }] }}>
+          {children}
+        </Animated.View>
+      </Animated.View>
+    </PanGestureHandler>
   );
 };
 
@@ -1327,17 +1385,17 @@ export default function App() {
                 <View style={styles.leftEdgeSwipeZone} />
               </PanGestureHandler>
 
-              <PanGestureHandler activeOffsetX={[-35, 35]} failOffsetY={[-15, 15]} onEnded={handleSwipe}>
-                <Animated.View style={{ flex: 1 }}>
-                  <AnimatedScreen direction={navDirection} triggerKey={`${activeTab}-${selectedStudentId || 'list'}-${selectedStudentId ? profileTab : ''}`}>
-                    {activeTab === 'Home' && renderHomeTab()}
-                    {activeTab === 'Students' && renderStudentsTab()}
-                    {activeTab === 'Attendance' && renderAttendanceTab()}
-                    {activeTab === 'Fees' && renderFeesTab()}
-                    {activeTab === 'Trash' && renderTrashTab()}
-                  </AnimatedScreen>
-                </Animated.View>
-              </PanGestureHandler>
+              <AnimatedScreen
+                direction={navDirection}
+                onSwipe={handleSwipe}
+                triggerKey={`${activeTab}-${selectedStudentId || 'list'}-${selectedStudentId ? profileTab : ''}`}
+              >
+                {activeTab === 'Home' && renderHomeTab()}
+                {activeTab === 'Students' && renderStudentsTab()}
+                {activeTab === 'Attendance' && renderAttendanceTab()}
+                {activeTab === 'Fees' && renderFeesTab()}
+                {activeTab === 'Trash' && renderTrashTab()}
+              </AnimatedScreen>
             </View>
 
             <View style={styles.bottomTabBar}>
