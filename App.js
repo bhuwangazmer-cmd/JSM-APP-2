@@ -929,7 +929,7 @@ function JSMAppContent() {
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
-      const payload = { studentId: selectedStudentId, date: validDate, technique: safeString(inlineLessonForm.technique).trim(), repertoire: safeString(inlineLessonForm.repertoire).trim(), assignment: safeString(inlineLessonForm.assignment).trim(), isDeleted: false, deletedAt: null };
+      const payload = { studentId: selectedStudentId, date: validDate, lesson: safeString(inlineLessonForm.lesson).trim(), technique: safeString(inlineLessonForm.technique).trim(), repertoire: safeString(inlineLessonForm.repertoire).trim(), assignment: safeString(inlineLessonForm.assignment).trim(), isDeleted: false, deletedAt: null };
       setInlineLessonForm({ date: getTodayISO(), technique: '', repertoire: '', assignment: '' });
       await withWriteTimeout(addDoc(collection(db, 'lessons'), payload));
       await logActivity('Logged Lesson', `${safeString(studentMap[selectedStudentId]?.name, 'Student')} (${formatReadableLocalDate(validDate)})`);
@@ -948,7 +948,7 @@ function JSMAppContent() {
       triggerLayoutAnimation();
       triggerHaptic(12);
       const editingId = lessonEditForm.id;
-      const payload = { studentId: lessonEditForm.studentId, date: validDate, technique: safeString(lessonEditForm.technique).trim(), repertoire: safeString(lessonEditForm.repertoire).trim(), assignment: safeString(lessonEditForm.assignment).trim() };
+      const payload = { studentId: lessonEditForm.studentId, date: validDate, lesson: safeString(lessonEditForm.lesson).trim(), technique: safeString(lessonEditForm.technique).trim(), repertoire: safeString(lessonEditForm.repertoire).trim(), assignment: safeString(lessonEditForm.assignment).trim() };
       setLessonEditModal(false);
       await withWriteTimeout(updateDoc(doc(db, 'lessons', editingId), payload));
       await logActivity('Updated Lesson', `${safeString(studentMap[payload.studentId]?.name, 'Student')} (${formatReadableLocalDate(validDate)})`);
@@ -1497,6 +1497,8 @@ function JSMAppContent() {
                 <PaperInput mode="outlined" value={inlineLessonForm.date} onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, date: t })} placeholder="YYYY-MM-DD" right={<PaperInput.Icon icon="calendar" onPress={() => openCalendarPicker(inlineLessonForm.date, (d) => setInlineLessonForm({ ...inlineLessonForm, date: d }))} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
                 <Text style={styles.inputLabel}>Technique</Text>
                 <PaperInput mode="outlined" value={inlineLessonForm.technique} onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, technique: t })} placeholder="Scales, arpeggios, posture..." outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+                <Text style={styles.inputLabel}>Lesson</Text>
+                <PaperInput mode="outlined" value={inlineLessonForm.lesson} onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, lesson: t })} placeholder="Main lesson topic..." outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
                 <Text style={styles.inputLabel}>Repertoire</Text>
                 <PaperInput mode="outlined" value={inlineLessonForm.repertoire} onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, repertoire: t })} placeholder="Sonatina in C, Etude Op. 10..." outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
                 <Text style={styles.inputLabel}>Assignment</Text>
@@ -1510,6 +1512,7 @@ function JSMAppContent() {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(les.date)}</Text>
                       {les.technique ? <Text style={styles.recordDetailLine}><Text style={styles.boldLabel}>Technique: </Text>{les.technique}</Text> : null}
+                      {les.lesson ? <Text style={styles.recordDetailLine}><Text style={styles.boldLabel}>Lesson: </Text>{les.lesson}</Text> : null}
                       {les.repertoire ? <Text style={styles.recordDetailLine}><Text style={styles.boldLabel}>Repertoire: </Text>{les.repertoire}</Text> : null}
                       {les.assignment ? <Text style={styles.recordDetailLine}><Text style={styles.boldLabel}>Assignment: </Text>{les.assignment}</Text> : null}
                     </View>
@@ -2061,6 +2064,8 @@ function JSMAppContent() {
               <PaperInput mode="outlined" value={lessonEditForm.date} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, date: t })} right={<PaperInput.Icon icon="calendar" onPress={() => openCalendarPicker(lessonEditForm.date, (d) => setLessonEditForm({ ...lessonEditForm, date: d }))} />} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
               <Text style={styles.inputLabel}>Technique</Text>
               <PaperInput mode="outlined" value={lessonEditForm.technique} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, technique: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
+              <Text style={styles.inputLabel}>Lesson</Text>
+              <PaperInput mode="outlined" value={lessonEditForm.lesson} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, lesson: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
               <Text style={styles.inputLabel}>Repertoire</Text>
               <PaperInput mode="outlined" value={lessonEditForm.repertoire} onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, repertoire: t })} outlineColor={COLORS.border} activeOutlineColor={COLORS.navy} style={{ backgroundColor: COLORS.white, marginBottom: 8 }} />
               <Text style={styles.inputLabel}>Assignment</Text>
