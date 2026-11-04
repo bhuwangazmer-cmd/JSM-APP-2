@@ -58,6 +58,7 @@ const triggerLayoutAnimation = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
   } catch (e) {}
 };
+
 const triggerHaptic = (ms = 12) => {
   try {
     Vibration.vibrate(ms);
@@ -109,15 +110,6 @@ const COLORS = {
   border: '#E6E1D6',
 };
 
-// Precomputed 28-step 1-RGB-unit smooth interpolation between #071B36 and #0C2D57 (zero banding)
-const SMOOTH_NAVY_STEPS = Array.from({ length: 28 }, (_, i) => {
-  const t = i / 27;
-  const r = Math.round(7 + t * (12 - 7));
-  const g = Math.round(27 + t * (45 - 27));
-  const b = Math.round(54 + t * (87 - 54));
-  return `rgb(${r},${g},${b})`;
-});
-
 const jsmTheme = {
   ...MD3LightTheme,
   colors: {
@@ -144,7 +136,6 @@ const FEE_STATUSES = ['Paid', 'Partial', 'Unpaid'];
 
 const MAIN_TABS = ['Home', 'Students', 'Attendance', 'Fees', 'Trash'];
 const PROFILE_TABS = ['Classes', 'Attendance', 'Notes', 'Fees'];
-const LIVE_FEED_FILTERS = ['All', 'Classes', 'Attendance', 'Fees', 'Subjects'];
 const SUBJECT_ROW_HEIGHT = 60;
 
 // ==========================================
@@ -192,7 +183,6 @@ const sanitizeDocRecord = (id, raw = {}, hasPendingWrites = false) => {
   };
 };
 
-// Allows instant local offline caching in Firestore without blocking UI when offline
 const withWriteTimeout = (promise, ms = 2500) => {
   let timerId;
   const timeoutPromise = new Promise((resolve) => {
@@ -239,7 +229,7 @@ const getGreetingByLocalTime = () => {
 
 const formatReadableLocalDate = (isoDateStr) => {
   const safeStr = safeString(isoDateStr).trim();
-  if (!safeStr) return 'Unknown Date';
+  if (!safeStr) return '—';
   const normalized = normalizeISODate(safeStr) || safeStr;
   const parts = normalized.split('-');
   if (parts.length !== 3) return safeStr;
@@ -317,25 +307,78 @@ const commitBatchSoftDeletes = async (entries) => {
 };
 
 // ==========================================
-// 4. REUSABLE AESTHETIC & UI COMPONENTS
+// 4. REUSABLE AESTHETIC & MICRO-INTERACTION COMPONENTS
 // ==========================================
+// Band-free, zero-stripe rich surface (eliminates Android sub-pixel flex slicing lines)
 const SmoothNavyGradient = ({ style }) => (
-  <View style={[StyleSheet.absoluteFill, { overflow: 'hidden' }, style]} pointerEvents="none">
-    {SMOOTH_NAVY_STEPS.map((color, idx) => (
-      <View key={idx} style={{ flex: 1, backgroundColor: color }} />
-    ))}
-  </View>
+  <View
+    style={[
+      StyleSheet.absoluteFill,
+      { backgroundColor: COLORS.navy, overflow: 'hidden' },
+      style,
+    ]}
+    pointerEvents="none"
+  />
 );
 
-const EmptyStateWatermark = ({ message, compact = false }) => (
-  <View style={[styles.emptyWatermarkContainer, compact && { paddingVertical: 10 }]}>
+// Subtle tactile scale-down micro-interaction wrapper (scale: 0.96)
+const ScalePressable = ({ children, onPress, onLongPress, delayLongPress = 280, style, disabled = false }) => {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  const handlePressIn = useCallback(() => {
+    Animated.spring(scaleAnim, {
+      toValue: 0.96,
+      useNativeDriver: true,
+      speed: 40,
+      bounciness: 4,
+    }).start();
+  }, [scaleAnim]);
+
+  const handlePressOut = useCallback(() => {
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 35,
+      bounciness: 5,
+    }).start();
+  }, [scaleAnim]);
+
+  return (
+    <Pressable
+      disabled={disabled}
+      onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={delayLongPress}
+      onPressIn={handlePressIn}
+      onPressOut={handlePressOut}
+    >
+      <Animated.View style={[style, { transform: [{ scale: scaleAnim }] }]}>
+        {children}
+      </Animated.View>
+    </Pressable>
+  );
+};
+
+const EmptyStateWatermark = ({ message, compact = false, actionLabel, onAction }) => (
+  <View style={[styles.emptyWatermarkContainer, compact && { paddingVertical: 14 }]}>
     <MaterialCommunityIcons
       name="music-clef-treble"
-      size={compact ? 40 : 64}
-      color="rgba(12, 45, 87, 0.06)"
+      size={compact ? 44 : 72}
+      color="rgba(12, 45, 87, 0.055)"
       style={styles.watermarkIcon}
     />
     <Text style={styles.emptyText}>{message}</Text>
+    {actionLabel && onAction ? (
+      <TouchableOpacity
+        style={styles.emptyStateActionBtn}
+        onPress={() => {
+          triggerHaptic(10);
+          onAction();
+        }}
+      >
+        <Text style={styles.emptyStateActionText}>{actionLabel}</Text>
+      </TouchableOpacity>
+    ) : null}
   </View>
 );
 
@@ -387,7 +430,7 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
     () =>
       dragX.interpolate({
         inputRange: [-260, 0, 260],
-        outputRange: [-42, 0, 42],
+        outputRange: [-38, 0, 38],
         extrapolate: 'clamp',
       }),
     [dragX]
@@ -397,7 +440,7 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
     () =>
       dragX.interpolate({
         inputRange: [-220, 0, 220],
-        outputRange: [0.68, 1, 0.68],
+        outputRange: [0.74, 1, 0.74],
         extrapolate: 'clamp',
       }),
     [dragX]
@@ -406,18 +449,18 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
   useEffect(() => {
     dragX.stopAnimation(() => dragX.setValue(0));
     fadeAnim.setValue(0);
-    slideAnim.setValue(direction * 36);
+    slideAnim.setValue(direction * 28);
 
     const anim = Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
-        duration: 280,
+        duration: 240,
         easing: Easing.out(Easing.quad),
         useNativeDriver: true,
       }),
       Animated.timing(slideAnim, {
         toValue: 0,
-        duration: 280,
+        duration: 240,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
@@ -439,7 +482,7 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
         } else {
           Animated.timing(dragX, {
             toValue: 0,
-            duration: 200,
+            duration: 180,
             easing: Easing.out(Easing.cubic),
             useNativeDriver: true,
           }).start();
@@ -486,7 +529,7 @@ const QuickDateRow = ({ currentDate, onSelectDate, onOpenCalendar }) => {
         }}
       >
         <Text style={[styles.quickDateChipText, currentDate === today && styles.quickDateChipTextActive]}>
-          Today ({today})
+          Today
         </Text>
       </TouchableOpacity>
       <TouchableOpacity
@@ -538,8 +581,17 @@ function JSMAppContent() {
   // Network & Offline Sync States
   const [isNetworkOnline, setIsNetworkOnline] = useState(true);
   const [pendingSyncByCol, setPendingSyncByCol] = useState({});
-  const [liveFeedFilter, setLiveFeedFilter] = useState('All');
-  const [liveSheetModal, setLiveSheetModal] = useState(false);
+
+  // Master List / Report Generator Modal States
+  const [masterListModal, setMasterListModal] = useState(false);
+  const [masterStudentFilter, setMasterStudentFilter] = useState('ALL');
+  const [masterMonthFilter, setMasterMonthFilter] = useState('ALL');
+  const [masterDateFilter, setMasterDateFilter] = useState('');
+
+  // Floating Search Toggle in Student Directory
+  const [searchBarVisible, setSearchBarVisible] = useState(false);
+  const [studentSearch, setStudentSearch] = useState('');
+  const [studentFilter, setStudentFilter] = useState('All');
 
   const scheduleTimeout = useCallback((fn, delayMs) => {
     const id = setTimeout(() => {
@@ -559,7 +611,6 @@ function JSMAppContent() {
     };
   }, []);
 
-  // Subtle pulse animation for the live indicator dot
   useEffect(() => {
     const pulse = Animated.loop(
       Animated.sequence([
@@ -571,7 +622,6 @@ function JSMAppContent() {
     return () => pulse.stop();
   }, [liveDotPulseAnim]);
 
-  // Lightweight Network Connectivity Monitor (detects offline vs online for the Live Feed dot)
   useEffect(() => {
     let active = true;
     const verifyConnection = async () => {
@@ -606,13 +656,13 @@ function JSMAppContent() {
     Animated.parallel([
       Animated.timing(drawerSlideAnim, {
         toValue: 0,
-        duration: 260,
+        duration: 250,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
       Animated.timing(drawerBackdropAnim, {
         toValue: 1,
-        duration: 260,
+        duration: 250,
         easing: Easing.out(Easing.quad),
         useNativeDriver: true,
       }),
@@ -624,13 +674,13 @@ function JSMAppContent() {
       Animated.parallel([
         Animated.timing(drawerSlideAnim, {
           toValue: -290,
-          duration: 210,
+          duration: 200,
           easing: Easing.in(Easing.cubic),
           useNativeDriver: true,
         }),
         Animated.timing(drawerBackdropAnim, {
           toValue: 0,
-          duration: 210,
+          duration: 200,
           easing: Easing.in(Easing.quad),
           useNativeDriver: true,
         }),
@@ -651,8 +701,7 @@ function JSMAppContent() {
   const [activities, setActivities] = useState([]);
   const [noticeText, setNoticeText] = useState('');
   const [noticeUpdatedAt, setNoticeUpdatedAt] = useState('');
-  const [studentSearch, setStudentSearch] = useState('');
-  const [studentFilter, setStudentFilter] = useState('All');
+
   const [contextMenu, setContextMenu] = useState({
     visible: false,
     entityType: null,
@@ -769,8 +818,8 @@ function JSMAppContent() {
         setCalendarPicker((prev) => ({ ...prev, visible: false }));
         return true;
       }
-      if (liveSheetModal) {
-        setLiveSheetModal(false);
+      if (masterListModal) {
+        setMasterListModal(false);
         return true;
       }
       if (drawerOpen) {
@@ -790,14 +839,14 @@ function JSMAppContent() {
       return false;
     });
     return () => sub.remove();
-  }, [activeTab, selectedStudentId, calendarPicker.visible, liveSheetModal, drawerOpen, closeDrawer]);
+  }, [activeTab, selectedStudentId, calendarPicker.visible, masterListModal, drawerOpen, closeDrawer]);
 
   // Real-Time Firestore Listeners with Metadata Tracking for Offline Caching
   useEffect(() => {
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
     const timer = setTimeout(() => {
       initialLoadDone.current = true;
-    }, 1200);
+    }, 1000);
 
     const handleSnapshotWithAutoPurge = (colName, snapshot, setter) => {
       if (!isMountedRef.current) return;
@@ -950,96 +999,6 @@ function JSMAppContent() {
   );
   const activeActivities = useMemo(() => activities.filter((a) => !a.isDeleted), [activities]);
 
-  // Unified Live Firebase Feed (combines latest entries across Classes, Attendance, Fees, and Subjects)
-  const unifiedLiveFeed = useMemo(() => {
-    const items = [];
-
-    activeLessons.slice(0, 20).forEach((l) => {
-      const st = studentMap[l.studentId];
-      const subjName = safeString(subjectMap[st?.subjectId]?.name, 'Music');
-      const details = [l.lesson, l.technique, l.repertoire, l.assignment].filter(Boolean).join(' • ');
-      items.push({
-        id: `les-${l.id}`,
-        category: 'Classes',
-        badge: 'CLASS',
-        badgeBg: '#E0F2FE',
-        badgeColor: '#0369A1',
-        studentId: l.studentId,
-        primary: `${safeString(st?.name, 'Student')} (${subjName})`,
-        secondary: details || 'Lesson entry recorded',
-        dateISO: safeString(l.date),
-        pendingSync: l._pendingSync,
-      });
-    });
-
-    activeAttendance.slice(0, 20).forEach((a) => {
-      const st = studentMap[a.studentId];
-      const subjName = safeString(subjectMap[st?.subjectId]?.name, 'Music');
-      items.push({
-        id: `att-${a.id}`,
-        category: 'Attendance',
-        badge: a.status.toUpperCase(),
-        badgeBg:
-          a.status === 'Present'
-            ? COLORS.successBg
-            : a.status === 'Absent'
-            ? COLORS.dangerBg
-            : COLORS.warningBg,
-        badgeColor:
-          a.status === 'Present'
-            ? COLORS.success
-            : a.status === 'Absent'
-            ? COLORS.danger
-            : COLORS.warning,
-        studentId: a.studentId,
-        primary: `${safeString(st?.name, 'Student')} (${subjName})`,
-        secondary: a.remarks ? `Attendance: ${a.status} • ${a.remarks}` : `Marked ${a.status}`,
-        dateISO: safeString(a.date),
-        pendingSync: a._pendingSync,
-      });
-    });
-
-    activeFees.slice(0, 20).forEach((f) => {
-      const st = studentMap[f.studentId];
-      const subjName = safeString(subjectMap[st?.subjectId]?.name, 'Music');
-      items.push({
-        id: `fee-${f.id}`,
-        category: 'Fees',
-        badge: `₹${safeNumber(f.amountPaid, 0)}`,
-        badgeBg: f.status === 'Paid' ? COLORS.successBg : COLORS.dangerBg,
-        badgeColor: f.status === 'Paid' ? COLORS.success : COLORS.danger,
-        studentId: f.studentId,
-        primary: `${safeString(st?.name, 'Student')} (${subjName})`,
-        secondary: `${f.feeType}${f.monthPaidFor ? ` • ${f.monthPaidFor}` : ''} • ${f.mode} (${f.status})`,
-        dateISO: safeString(f.date),
-        pendingSync: f._pendingSync,
-      });
-    });
-
-    activeSubjects.forEach((subj) => {
-      const count = activeStudents.filter((st) => st.subjectId === subj.id).length;
-      items.push({
-        id: `subj-${subj.id}`,
-        category: 'Subjects',
-        badge: 'SUBJECT',
-        badgeBg: COLORS.cream,
-        badgeColor: COLORS.navy,
-        studentId: null,
-        primary: safeString(subj.name, 'Instrument'),
-        secondary: `${count} active student${count === 1 ? '' : 's'} enrolled`,
-        dateISO: getTodayISO(),
-        pendingSync: subj._pendingSync,
-      });
-    });
-
-    return items.sort((a, b) => safeString(b.dateISO).localeCompare(safeString(a.dateISO)));
-  }, [activeLessons, activeAttendance, activeFees, activeSubjects, activeStudents, studentMap, subjectMap]);
-
-  const filteredLiveFeed = useMemo(() => {
-    if (liveFeedFilter === 'All') return unifiedLiveFeed.slice(0, 35);
-    return unifiedLiveFeed.filter((item) => item.category === liveFeedFilter).slice(0, 35);
-  }, [unifiedLiveFeed, liveFeedFilter]);
-
   useEffect(() => {
     activeSubjectsRef.current = activeSubjects;
     if (!dragInfoRef.current.active) {
@@ -1056,6 +1015,21 @@ function JSMAppContent() {
     });
     return { collected, pending };
   }, [activeFees]);
+
+  // Distinct available months across all records for the Master List Filter
+  const availableMasterMonths = useMemo(() => {
+    const monthSet = new Set([getLocalCurrentMonthLabel()]);
+    activeLessons.forEach((l) => {
+      if (l.date) monthSet.add(getMonthYearFromISO(l.date));
+    });
+    activeAttendance.forEach((a) => {
+      if (a.date) monthSet.add(getMonthYearFromISO(a.date));
+    });
+    activeFees.forEach((f) => {
+      if (f.date) monthSet.add(getMonthYearFromISO(f.date));
+    });
+    return Array.from(monthSet).filter((m) => m && m !== 'Unknown Month');
+  }, [activeLessons, activeAttendance, activeFees]);
 
   const trashItems = useMemo(
     () =>
@@ -1133,6 +1107,127 @@ function JSMAppContent() {
     },
     [activeLessons, activeAttendance, activeFees]
   );
+
+  // Filtered Master List data computation
+  const masterListData = useMemo(() => {
+    const targetStudents =
+      masterStudentFilter === 'ALL'
+        ? activeStudents
+        : activeStudents.filter((s) => s.id === masterStudentFilter);
+
+    const matchesTimeframe = (isoDate) => {
+      if (masterDateFilter && isoDate !== masterDateFilter) return false;
+      if (masterMonthFilter !== 'ALL' && getMonthYearFromISO(isoDate) !== masterMonthFilter) return false;
+      return true;
+    };
+
+    return targetStudents.map((st) => {
+      const stLessons = activeLessons.filter((l) => l.studentId === st.id && matchesTimeframe(l.date));
+      const stAtt = activeAttendance.filter((a) => a.studentId === st.id && matchesTimeframe(a.date));
+      const stFees = activeFees.filter((f) => f.studentId === st.id && matchesTimeframe(f.date));
+      const totalPaid = stFees.reduce((acc, f) => acc + safeNumber(f.amountPaid, 0), 0);
+      const totalDue = stFees.reduce((acc, f) => acc + safeNumber(f.balanceDue, 0), 0);
+      const presentCount = stAtt.filter((a) => a.status === 'Present' || a.status === 'Tardy').length;
+      const absentCount = stAtt.filter((a) => a.status === 'Absent').length;
+      const reschedCount = stAtt.filter((a) => a.status === 'Rescheduled').length;
+
+      return {
+        student: st,
+        subjectName: safeString(subjectMap[st.subjectId]?.name, 'Unassigned'),
+        stLessons,
+        stAtt,
+        stFees,
+        totalPaid,
+        totalDue,
+        presentCount,
+        absentCount,
+        reschedCount,
+      };
+    });
+  }, [
+    activeStudents,
+    activeLessons,
+    activeAttendance,
+    activeFees,
+    masterStudentFilter,
+    masterMonthFilter,
+    masterDateFilter,
+    subjectMap,
+  ]);
+
+  const exportMasterListPDF = async () => {
+    triggerHaptic(12);
+    const periodLabel = masterDateFilter
+      ? formatReadableLocalDate(masterDateFilter)
+      : masterMonthFilter === 'ALL'
+      ? 'All Time'
+      : masterMonthFilter;
+
+    const rowsHtml = masterListData
+      .map(
+        (row) => `
+        <tr>
+          <td><strong>${escapeHtml(row.student.name)}</strong><br/><span style="color:#666;font-size:11px;">${escapeHtml(row.subjectName)}</span></td>
+          <td>${row.stLessons.length} Classes<br/><span style="color:#555;font-size:11px;">${
+          row.stLessons[0]
+            ? `${escapeHtml(formatReadableLocalDate(row.stLessons[0].date))}: ${escapeHtml(
+                [row.stLessons[0].lesson, row.stLessons[0].technique, row.stLessons[0].repertoire]
+                  .filter(Boolean)
+                  .join(', ') || 'Logged'
+              )}`
+            : '—'
+        }</span></td>
+          <td>P: ${row.presentCount} | A: ${row.absentCount} | R: ${row.reschedCount}</td>
+          <td>Paid: ₹${row.totalPaid.toFixed(0)}<br/><span style="color:${
+          row.totalDue > 0 ? '#9E2A2B' : '#2D6A4F'
+        };font-size:11px;">Due: ₹${row.totalDue.toFixed(0)}</span></td>
+        </tr>`
+      )
+      .join('');
+
+    const html = `
+      <!DOCTYPE html><html><head><meta charset="utf-8" />
+      <style>
+        body { font-family: 'Georgia', serif; padding: 28px; color: #0C2D57; background: #FFFFFF; }
+        h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: 1px; }
+        .sub { color: #666; font-size: 12px; margin-bottom: 18px; }
+        table { width: 100%; border-collapse: collapse; font-family: sans-serif; font-size: 13px; }
+        th { background: #0C2D57; color: #D4B978; text-align: left; padding: 10px; font-size: 11px; letter-spacing: 1px; }
+        td { border-bottom: 1px solid #E6E1D6; padding: 10px; vertical-align: top; }
+      </style></head>
+      <body>
+        <h1>JSM MASTER STUDENT REPORT</h1>
+        <div class="sub">Period: ${escapeHtml(periodLabel)} • Generated ${escapeHtml(
+      formatReadableLocalDate(getTodayISO())
+    )}</div>
+        <table>
+          <thead>
+            <tr>
+              <th>STUDENT</th>
+              <th>CLASSES</th>
+              <th>ATTENDANCE</th>
+              <th>FEES</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </body></html>
+    `;
+    try {
+      const { uri } = await Print.printToFileAsync({ html });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'application/pdf',
+          dialogTitle: 'JSM Master Report',
+          UTI: 'com.adobe.pdf',
+        });
+      } else {
+        Alert.alert('PDF Created', `Saved to: ${uri}`);
+      }
+    } catch (e) {
+      Alert.alert('Export Error', 'Could not generate the Master List PDF.');
+    }
+  };
 
   const handleCheckOTA = async () => {
     try {
@@ -1223,7 +1318,7 @@ function JSMAppContent() {
 
   const openLongPressMenu = (entityType, item, title, reopenSubjectsModal = false, reopenTodayLogModal = false) => {
     Keyboard.dismiss();
-    triggerHaptic(18);
+    triggerHaptic(16);
     setContextMenu({
       visible: true,
       entityType,
@@ -1404,8 +1499,8 @@ function JSMAppContent() {
     };
     if (action === 'delete') {
       await handleSoftDelete(colMap[entityType], item, title);
-      if (reopenSubjectsModal) scheduleTimeout(() => setSubjectsModal(true), 250);
-      if (reopenTodayLogModal) scheduleTimeout(() => setTodayLogModal(true), 250);
+      if (reopenSubjectsModal) scheduleTimeout(() => setSubjectsModal(true), 220);
+      if (reopenTodayLogModal) scheduleTimeout(() => setTodayLogModal(true), 220);
       return;
     }
     if (action === 'edit') {
@@ -1461,7 +1556,7 @@ function JSMAppContent() {
           });
           setFeeModal(true);
         }
-      }, 250);
+      }, 220);
     }
   };
 
@@ -1564,7 +1659,7 @@ function JSMAppContent() {
     savingLockRef.current = true;
     try {
       triggerLayoutAnimation();
-      triggerHaptic(12);
+      triggerHaptic(14);
       const payload = {
         studentId: selectedStudentId,
         date: validDate,
@@ -1636,7 +1731,7 @@ function JSMAppContent() {
     savingLockRef.current = true;
     try {
       triggerLayoutAnimation();
-      triggerHaptic(12);
+      triggerHaptic(14);
       const statusVal = inlineAttendanceForm.status;
       const remarksVal = safeString(inlineAttendanceForm.remarks).trim();
       setInlineAttendanceForm({ date: getTodayISO(), status: 'Present', remarks: '' });
@@ -1726,12 +1821,14 @@ function JSMAppContent() {
     }
   };
 
+  // Frictionless instantaneous note saving (no blocking alert popup)
   const handleSaveStudentNotes = async () => {
     Keyboard.dismiss();
     if (!selectedStudentId || savingLockRef.current) return;
     savingLockRef.current = true;
     try {
-      triggerHaptic(12);
+      triggerLayoutAnimation();
+      triggerHaptic(14);
       await withWriteTimeout(
         updateDoc(doc(db, 'students', selectedStudentId), {
           notes: safeString(noteDraft),
@@ -1739,7 +1836,6 @@ function JSMAppContent() {
         })
       );
       await logActivity('Updated Student Notes', safeString(studentMap[selectedStudentId]?.name));
-      Alert.alert('Saved', 'Student notes updated.');
     } catch (e) {
       Alert.alert('Error', 'Could not update student notes.');
     } finally {
@@ -1870,7 +1966,7 @@ function JSMAppContent() {
     triggerHaptic(18);
     Alert.alert(
       'Empty Trash Permanently?',
-      `This will permanently erase ${trashItems.length} item(s) and any linked records directly from the Firebase database.`,
+      `This will permanently erase ${trashItems.length} item(s) and any linked records from Firebase.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -2078,7 +2174,7 @@ function JSMAppContent() {
                 setCalendarPicker((prev) => ({ ...prev, visible: false }));
               }}
             >
-              Select Today
+              Today
             </PaperButton>
             <PaperButton
               mode="contained"
@@ -2095,7 +2191,7 @@ function JSMAppContent() {
   };
 
   // ==========================================
-  // 6. HOMEPAGE: COMPACT 4 CARDS + LIVE FIREBASE WIDGET
+  // 6. HOMEPAGE: COMPACT 4 CARDS & HORIZONTAL MATRIX LIVE WIDGET
   // ==========================================
   const renderHomeTab = () => {
     const todayISO = getTodayISO();
@@ -2105,14 +2201,14 @@ function JSMAppContent() {
       ? COLORS.syncAmber
       : COLORS.liveGreen;
     const liveStatusLabel = !isNetworkOnline
-      ? 'OFFLINE • LOCAL CACHE'
+      ? 'OFFLINE'
       : hasAnyPendingWrites
-      ? 'SYNCING TO FIREBASE...'
+      ? 'SYNCING'
       : 'LIVE';
 
     return (
       <View style={styles.homeNoScrollContainer}>
-        {/* 1. Compact Greeting & Stats Banner */}
+        {/* 1. Compact Greeting & Stats Banner (Zero Striping) */}
         <View style={styles.compactGreetingStrip}>
           <SmoothNavyGradient />
           <View style={{ flex: 1 }}>
@@ -2134,148 +2230,134 @@ function JSMAppContent() {
         {/* 2. Top Half: Slightly Larger Notice Board + 3 Smaller Action Cards */}
         <View style={styles.compactActionSection}>
           {/* Slightly Larger Full-Width Notice Board Card */}
-          <TouchableOpacity
-            activeOpacity={0.86}
-            style={styles.compactNoticeCard}
+          <ScalePressable
             onPress={() => {
               triggerHaptic(10);
               setNoticeInput(noticeText);
               setNoticeEditModal(true);
             }}
           >
-            <MaterialCommunityIcons
-              name="music-clef-treble"
-              size={52}
-              color="rgba(12, 45, 87, 0.05)"
-              style={styles.noticeWatermark}
-            />
-            <View style={styles.compactNoticeHeaderRow}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <View style={styles.compactNoticeIconWrap}>
-                  <Ionicons name="megaphone-outline" size={15} color={COLORS.navy} />
+            <View style={styles.compactNoticeCard}>
+              <MaterialCommunityIcons
+                name="music-clef-treble"
+                size={50}
+                color="rgba(12, 45, 87, 0.045)"
+                style={styles.noticeWatermark}
+              />
+              <View style={styles.compactNoticeHeaderRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+                  <View style={styles.compactNoticeIconWrap}>
+                    <Ionicons name="megaphone-outline" size={14} color={COLORS.navy} />
+                  </View>
+                  <Text style={styles.compactNoticeTitle}>Notice Board</Text>
                 </View>
-                <Text style={styles.compactNoticeTitle}>Notice Board</Text>
                 {noticeUpdatedAt ? (
-                  <Text style={styles.compactNoticeDate}>• {formatReadableLocalDate(noticeUpdatedAt)}</Text>
+                  <Text style={styles.compactNoticeDate}>{formatReadableLocalDate(noticeUpdatedAt)}</Text>
                 ) : null}
               </View>
-              <Text style={styles.squareHintTag}>TAP TO EDIT</Text>
+              <Text
+                style={[
+                  styles.compactNoticeBody,
+                  !noticeText && { color: COLORS.silver, fontStyle: 'italic' },
+                ]}
+                numberOfLines={2}
+              >
+                {noticeText ? noticeText : 'No active announcements.'}
+              </Text>
             </View>
-            <Text
-              style={[
-                styles.compactNoticeBody,
-                !noticeText && { color: COLORS.silver, fontStyle: 'italic' },
-              ]}
-              numberOfLines={2}
-            >
-              {noticeText ? noticeText : 'No active announcements posted. Tap to write a notice.'}
-            </Text>
-          </TouchableOpacity>
+          </ScalePressable>
 
-          {/* 3 Compact Square/Rectangular Action Cards in 1 Row */}
+          {/* 3 Compact Equal-Width Cards in 1 Row */}
           <View style={styles.threeSmallCardsRow}>
-            {/* Small Card 1: Add Student */}
-            <TouchableOpacity
-              activeOpacity={0.86}
-              style={[styles.smallActionCard, styles.smallActionCardNavy]}
-              onPress={() => {
-                triggerHaptic(10);
-                if (activeSubjects.length === 0)
-                  return Alert.alert(
-                    'Create Subject First',
-                    'Please add at least one subject in Add Subjects before registering a student.'
-                  );
-                setStudentForm({
-                  id: null,
-                  name: '',
-                  subjectId: activeSubjects[0]?.id || '',
-                  phone: '',
-                  guardian: '',
-                  joinedDate: getTodayISO(),
-                });
-                setStudentModal(true);
-              }}
-            >
-              <SmoothNavyGradient />
-              <View style={styles.smallCardTopRow}>
-                <View style={styles.smallIconCircleGold}>
-                  <Ionicons name="person-add-outline" size={17} color={COLORS.gold} />
+            <View style={{ flex: 1 }}>
+              <ScalePressable
+                onPress={() => {
+                  triggerHaptic(10);
+                  if (activeSubjects.length === 0)
+                    return Alert.alert(
+                      'Create Subject First',
+                      'Please add at least one instrument in Add Subjects first.'
+                    );
+                  setStudentForm({
+                    id: null,
+                    name: '',
+                    subjectId: activeSubjects[0]?.id || '',
+                    phone: '',
+                    guardian: '',
+                    joinedDate: getTodayISO(),
+                  });
+                  setStudentModal(true);
+                }}
+              >
+                <View style={[styles.smallActionCard, styles.smallActionCardNavy]}>
+                  <SmoothNavyGradient />
+                  <View style={styles.smallCardTopRow}>
+                    <View style={styles.smallIconCircleGold}>
+                      <Ionicons name="person-add-outline" size={16} color={COLORS.gold} />
+                    </View>
+                  </View>
+                  <Text style={styles.smallCardTitleGold} numberOfLines={1}>
+                    Add Student
+                  </Text>
                 </View>
-                <Ionicons name="add-circle-outline" size={15} color={COLORS.gold} />
-              </View>
-              <View>
-                <Text style={styles.smallCardTitleGold} numberOfLines={1}>
-                  Add Student
-                </Text>
-                <Text style={styles.smallCardSubCream} numberOfLines={1}>
-                  New Entry
-                </Text>
-              </View>
-            </TouchableOpacity>
+              </ScalePressable>
+            </View>
 
-            {/* Small Card 2: Add Subjects */}
-            <TouchableOpacity
-              activeOpacity={0.86}
-              style={[styles.smallActionCard, styles.smallActionCardCream]}
-              onPress={() => {
-                triggerHaptic(10);
-                setSubjectForm({ id: null, name: '' });
-                setSubjectsModal(true);
-              }}
-            >
-              <View style={styles.smallCardTopRow}>
-                <View style={styles.smallIconCircleNavy}>
-                  <Ionicons name="musical-notes-outline" size={17} color={COLORS.navy} />
+            <View style={{ flex: 1 }}>
+              <ScalePressable
+                onPress={() => {
+                  triggerHaptic(10);
+                  setSubjectForm({ id: null, name: '' });
+                  setSubjectsModal(true);
+                }}
+              >
+                <View style={[styles.smallActionCard, styles.smallActionCardCream]}>
+                  <View style={styles.smallCardTopRow}>
+                    <View style={styles.smallIconCircleNavy}>
+                      <Ionicons name="musical-notes-outline" size={16} color={COLORS.navy} />
+                    </View>
+                    <View style={styles.smallCountBadge}>
+                      <Text style={styles.smallCountBadgeText}>{activeSubjects.length}</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.smallCardTitleNavy} numberOfLines={1}>
+                    Add Subjects
+                  </Text>
                 </View>
-                <View style={styles.smallCountBadge}>
-                  <Text style={styles.smallCountBadgeText}>{activeSubjects.length}</Text>
-                </View>
-              </View>
-              <View>
-                <Text style={styles.smallCardTitleNavy} numberOfLines={1}>
-                  Add Subjects
-                </Text>
-                <Text style={styles.smallCardSubSilver} numberOfLines={1}>
-                  {activeSubjects.length} Active
-                </Text>
-              </View>
-            </TouchableOpacity>
+              </ScalePressable>
+            </View>
 
-            {/* Small Card 3: Recent Activity */}
-            <TouchableOpacity
-              activeOpacity={0.86}
-              style={[styles.smallActionCard, styles.smallActionCardWhite]}
-              onPress={() => {
-                triggerHaptic(10);
-                setActivityFilterTodayOnly(false);
-                setTodayLogModal(true);
-              }}
-            >
-              <View style={styles.smallCardTopRow}>
-                <View style={styles.smallIconCircleNavy}>
-                  <Ionicons name="pulse-outline" size={17} color={COLORS.navy} />
+            <View style={{ flex: 1 }}>
+              <ScalePressable
+                onPress={() => {
+                  triggerHaptic(10);
+                  setActivityFilterTodayOnly(false);
+                  setTodayLogModal(true);
+                }}
+              >
+                <View style={[styles.smallActionCard, styles.smallActionCardWhite]}>
+                  <View style={styles.smallCardTopRow}>
+                    <View style={styles.smallIconCircleNavy}>
+                      <Ionicons name="pulse-outline" size={16} color={COLORS.navy} />
+                    </View>
+                    <View style={styles.smallCountBadge}>
+                      <Text style={styles.smallCountBadgeText}>{activeActivities.length}</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.smallCardTitleNavy} numberOfLines={1}>
+                    Activity Log
+                  </Text>
                 </View>
-                <View style={styles.smallCountBadge}>
-                  <Text style={styles.smallCountBadgeText}>{activeActivities.length}</Text>
-                </View>
-              </View>
-              <View>
-                <Text style={styles.smallCardTitleNavy} numberOfLines={1}>
-                  Activity Log
-                </Text>
-                <Text style={styles.smallCardSubSilver} numberOfLines={1}>
-                  Tap to view
-                </Text>
-              </View>
-            </TouchableOpacity>
+              </ScalePressable>
+            </View>
           </View>
         </View>
 
-        {/* 3. Bottom Half: View-Only Scrollable Live Firebase Database Widget */}
+        {/* 3. Bottom Half: Horizontal Matrix Live Firebase Widget */}
         <Surface style={styles.liveFirebaseWidget} elevation={3}>
-          {/* Widget Header with Live Green/Red Dot & Full Sheet Expander */}
+          {/* Status Header + Master List Button */}
           <View style={styles.liveWidgetHeader}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Animated.View
                 style={[
                   styles.liveStatusDot,
@@ -2285,130 +2367,250 @@ function JSMAppContent() {
                   },
                 ]}
               />
-              <View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Text style={styles.liveWidgetTitle}>LIVE FIREBASE FEED</Text>
-                  <View
-                    style={[
-                      styles.liveStatusPill,
-                      {
-                        backgroundColor: !isNetworkOnline
-                          ? COLORS.dangerBg
-                          : hasAnyPendingWrites
-                          ? COLORS.warningBg
-                          : COLORS.successBg,
-                      },
-                    ]}
-                  >
-                    <Text style={[styles.liveStatusPillText, { color: liveStatusColor }]}>
-                      {liveStatusLabel}
-                    </Text>
-                  </View>
-                </View>
-                <Text style={styles.liveWidgetSub}>
-                  View-only newest entries • Slide to inspect
+              <Text style={styles.liveWidgetTitle}>FIREBASE LIVE MATRIX</Text>
+              <View
+                style={[
+                  styles.liveStatusPill,
+                  {
+                    backgroundColor: !isNetworkOnline
+                      ? COLORS.dangerBg
+                      : hasAnyPendingWrites
+                      ? COLORS.warningBg
+                      : COLORS.successBg,
+                  },
+                ]}
+              >
+                <Text style={[styles.liveStatusPillText, { color: liveStatusColor }]}>
+                  {liveStatusLabel}
                 </Text>
               </View>
             </View>
 
             <TouchableOpacity
-              style={styles.expandSheetBtn}
+              style={styles.masterListBtn}
               onPress={() => {
                 triggerHaptic(10);
-                setLiveSheetModal(true);
+                setMasterListModal(true);
               }}
             >
-              <Ionicons name="expand-outline" size={13} color={COLORS.gold} />
-              <Text style={styles.expandSheetBtnText}>Full Sheet</Text>
+              <Ionicons name="grid-outline" size={13} color={COLORS.gold} />
+              <Text style={styles.masterListBtnText}>Master List</Text>
             </TouchableOpacity>
           </View>
 
-          {/* Category Filter Chips inside Live Widget */}
-          <View style={styles.liveFilterChipBar}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              <View style={{ flexDirection: 'row', gap: 6 }}>
-                {LIVE_FEED_FILTERS.map((cat) => {
-                  const active = liveFeedFilter === cat;
-                  return (
-                    <TouchableOpacity
-                      key={cat}
-                      style={[styles.liveFilterChip, active && styles.liveFilterChipActive]}
-                      onPress={() => {
-                        triggerHaptic(6);
-                        setLiveFeedFilter(cat);
-                      }}
-                    >
-                      <Text style={[styles.liveFilterChipText, active && styles.liveFilterChipTextActive]}>
-                        {cat}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
+          {/* Horizontal Matrix Content */}
+          {activeStudents.length === 0 ? (
+            <View style={{ flex: 1, justifyContent: 'center' }}>
+              <EmptyStateWatermark compact message="No students enrolled yet." />
+            </View>
+          ) : (
+            <ScrollView
+              style={{ flex: 1 }}
+              showsVerticalScrollIndicator={true}
+              nestedScrollEnabled={true}
+            >
+              <View style={styles.matrixWrapper}>
+                {/* Sticky Left Column: Student Names */}
+                <View style={styles.matrixStickyLeftCol}>
+                  <View style={[styles.matrixHeaderCell, styles.matrixStickyHeaderCell]}>
+                    <Text style={styles.matrixHeaderText}>STUDENT</Text>
+                  </View>
+                  {activeStudents.map((st, idx) => {
+                    const m = getStudentMetrics(st.id);
+                    const hasCachedWrite =
+                      st._pendingSync ||
+                      m.stLessons[0]?._pendingSync ||
+                      m.stAttendance[0]?._pendingSync ||
+                      m.stFees[0]?._pendingSync;
+                    return (
+                      <TouchableOpacity
+                        key={st.id}
+                        activeOpacity={0.75}
+                        style={[
+                          styles.matrixRowCell,
+                          styles.matrixStickyCell,
+                          idx % 2 === 1 && styles.matrixRowAlt,
+                        ]}
+                        onPress={() => {
+                          triggerHaptic(8);
+                          setNavDirection(1);
+                          setSelectedStudentId(st.id);
+                          setProfileTab('Classes');
+                          setActiveTab('Students');
+                        }}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <Text style={styles.matrixStudentName} numberOfLines={1}>
+                            {st.name}
+                          </Text>
+                          {hasCachedWrite ? (
+                            <View style={styles.cachedTag}>
+                              <Text style={styles.cachedTagText}>CACHED</Text>
+                            </View>
+                          ) : null}
+                        </View>
+                        <Text style={styles.matrixStudentSub} numberOfLines={1}>
+                          {safeString(subjectMap[st.subjectId]?.name, 'Music')}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {/* Horizontally Scrollable Right Columns: Attendance, Latest Class, Fees */}
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={true}
+                  nestedScrollEnabled={true}
+                >
+                  <View>
+                    {/* Header Row */}
+                    <View style={styles.matrixScrollHeaderRow}>
+                      <View style={[styles.matrixHeaderCell, { width: 148 }]}>
+                        <Text style={styles.matrixHeaderText}>ATTENDANCE</Text>
+                      </View>
+                      <View style={[styles.matrixHeaderCell, { width: 175 }]}>
+                        <Text style={styles.matrixHeaderText}>LATEST CLASS</Text>
+                      </View>
+                      <View style={[styles.matrixHeaderCell, { width: 155 }]}>
+                        <Text style={styles.matrixHeaderText}>FEES</Text>
+                      </View>
+                    </View>
+
+                    {/* Data Rows */}
+                    {activeStudents.map((st, idx) => {
+                      const m = getStudentMetrics(st.id);
+                      const latestLesson = m.stLessons[0];
+                      const latestAtt = m.stAttendance[0];
+                      const latestFee = m.stFees[0];
+
+                      const attBg = !latestAtt
+                        ? COLORS.inputTint
+                        : latestAtt.status === 'Present'
+                        ? COLORS.successBg
+                        : latestAtt.status === 'Absent'
+                        ? COLORS.dangerBg
+                        : COLORS.warningBg;
+
+                      const attColor = !latestAtt
+                        ? COLORS.silver
+                        : latestAtt.status === 'Present'
+                        ? COLORS.success
+                        : latestAtt.status === 'Absent'
+                        ? COLORS.danger
+                        : COLORS.warning;
+
+                      const feeBg =
+                        m.feeStatus === 'Paid'
+                          ? COLORS.successBg
+                          : m.feeStatus === 'Due / Unpaid'
+                          ? COLORS.dangerBg
+                          : COLORS.inputTint;
+
+                      const feeColor =
+                        m.feeStatus === 'Paid'
+                          ? COLORS.success
+                          : m.feeStatus === 'Due / Unpaid'
+                          ? COLORS.danger
+                          : COLORS.silver;
+
+                      return (
+                        <View
+                          key={st.id}
+                          style={[styles.matrixScrollDataRow, idx % 2 === 1 && styles.matrixRowAlt]}
+                        >
+                          {/* Attendance Cell (Fixed-width status badge prevents shifting) */}
+                          <TouchableOpacity
+                            activeOpacity={0.75}
+                            style={[styles.matrixRowCell, { width: 148 }]}
+                            onPress={() => {
+                              triggerHaptic(8);
+                              setNavDirection(1);
+                              setSelectedStudentId(st.id);
+                              setProfileTab('Attendance');
+                              setActiveTab('Students');
+                            }}
+                          >
+                            <View style={[styles.matrixStatusBadge, { backgroundColor: attBg }]}>
+                              <Text
+                                style={[styles.matrixStatusBadgeText, { color: attColor }]}
+                                numberOfLines={1}
+                              >
+                                {latestAtt ? latestAtt.status.toUpperCase() : 'NO RECORD'}
+                              </Text>
+                            </View>
+                            <Text style={styles.matrixCellMeta} numberOfLines={1}>
+                              {latestAtt ? `${formatReadableLocalDate(latestAtt.date)} (${m.attendancePct})` : '—'}
+                            </Text>
+                          </TouchableOpacity>
+
+                          {/* Latest Class Cell */}
+                          <TouchableOpacity
+                            activeOpacity={0.75}
+                            style={[styles.matrixRowCell, { width: 175 }]}
+                            onPress={() => {
+                              triggerHaptic(8);
+                              setNavDirection(1);
+                              setSelectedStudentId(st.id);
+                              setProfileTab('Classes');
+                              setActiveTab('Students');
+                            }}
+                          >
+                            <Text style={styles.matrixCellPrimary} numberOfLines={1}>
+                              {latestLesson
+                                ? [
+                                    latestLesson.lesson,
+                                    latestLesson.technique,
+                                    latestLesson.repertoire,
+                                    latestLesson.assignment,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(' • ') || 'Lesson Logged'
+                                : 'No classes'}
+                            </Text>
+                            <Text style={styles.matrixCellMeta} numberOfLines={1}>
+                              {latestLesson
+                                ? `${formatReadableLocalDate(latestLesson.date)} • ${m.classesTaken} total`
+                                : '—'}
+                            </Text>
+                          </TouchableOpacity>
+
+                          {/* Fees Cell */}
+                          <TouchableOpacity
+                            activeOpacity={0.75}
+                            style={[styles.matrixRowCell, { width: 155 }]}
+                            onPress={() => {
+                              triggerHaptic(8);
+                              setNavDirection(1);
+                              setSelectedStudentId(st.id);
+                              setProfileTab('Fees');
+                              setActiveTab('Students');
+                            }}
+                          >
+                            <View style={[styles.matrixStatusBadge, { backgroundColor: feeBg }]}>
+                              <Text
+                                style={[styles.matrixStatusBadgeText, { color: feeColor }]}
+                                numberOfLines={1}
+                              >
+                                {latestFee ? `₹${latestFee.amountPaid} • ${latestFee.status.toUpperCase()}` : 'NO RECORDS'}
+                              </Text>
+                            </View>
+                            <Text style={styles.matrixCellMeta} numberOfLines={1}>
+                              {latestFee
+                                ? m.totalDue > 0
+                                  ? `Due: ₹${m.totalDue}`
+                                  : formatReadableLocalDate(latestFee.date)
+                                : '—'}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      );
+                    })}
+                  </View>
+                </ScrollView>
               </View>
             </ScrollView>
-          </View>
-
-          {/* Scrollable Read-Only Feed of Newest Entries */}
-          <ScrollView
-            style={styles.liveWidgetScrollArea}
-            contentContainerStyle={{ paddingBottom: 8 }}
-            showsVerticalScrollIndicator={true}
-            nestedScrollEnabled={true}
-          >
-            {filteredLiveFeed.length === 0 ? (
-              <EmptyStateWatermark compact message="No recent Firebase entries in this category." />
-            ) : (
-              filteredLiveFeed.map((entry) => (
-                <TouchableOpacity
-                  key={entry.id}
-                  activeOpacity={0.78}
-                  style={styles.liveFeedRow}
-                  onPress={() => {
-                    if (entry.studentId && studentMap[entry.studentId]) {
-                      triggerHaptic(8);
-                      setNavDirection(1);
-                      setSelectedStudentId(entry.studentId);
-                      setProfileTab(
-                        entry.category === 'Classes'
-                          ? 'Classes'
-                          : entry.category === 'Attendance'
-                          ? 'Attendance'
-                          : entry.category === 'Fees'
-                          ? 'Fees'
-                          : 'Classes'
-                      );
-                      setActiveTab('Students');
-                    } else {
-                      triggerHaptic(8);
-                      setLiveSheetModal(true);
-                    }
-                  }}
-                >
-                  <View style={[styles.liveFeedBadge, { backgroundColor: entry.badgeBg }]}>
-                    <Text style={[styles.liveFeedBadgeText, { color: entry.badgeColor }]}>
-                      {entry.badge}
-                    </Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      <Text style={styles.liveFeedPrimary} numberOfLines={1}>
-                        {entry.primary}
-                      </Text>
-                      {entry.pendingSync ? (
-                        <View style={styles.cachedTag}>
-                          <Text style={styles.cachedTagText}>CACHED</Text>
-                        </View>
-                      ) : null}
-                    </View>
-                    <Text style={styles.liveFeedSecondary} numberOfLines={1}>
-                      {entry.secondary}
-                    </Text>
-                  </View>
-                  <Text style={styles.liveFeedDate}>{formatReadableLocalDate(entry.dateISO)}</Text>
-                </TouchableOpacity>
-              ))
-            )}
-          </ScrollView>
+          )}
         </Surface>
       </View>
     );
@@ -2417,18 +2619,17 @@ function JSMAppContent() {
   const renderStudentCard = (st) => {
     const metrics = getStudentMetrics(st.id);
     return (
-      <Pressable
+      <ScalePressable
         key={st.id}
-        style={({ pressed }) => pressed && styles.cardPressed}
         onPress={() => {
           Keyboard.dismiss();
+          triggerHaptic(8);
           setNavDirection(1);
           setSubTabDirection(1);
           setSelectedStudentId(st.id);
           setProfileTab('Classes');
         }}
         onLongPress={() => openLongPressMenu('student', st, st.name)}
-        delayLongPress={280}
       >
         <Surface style={styles.cleanRecordCard} elevation={2}>
           <View style={{ flex: 1 }}>
@@ -2439,9 +2640,14 @@ function JSMAppContent() {
                   <Text style={styles.priorityBadgeText}>☆ NOTE</Text>
                 </View>
               ) : null}
+              {st._pendingSync ? (
+                <View style={styles.cachedTag}>
+                  <Text style={styles.cachedTagText}>CACHED</Text>
+                </View>
+              ) : null}
             </View>
             <Text style={styles.recordSecondarySub}>
-              Joined {formatReadableLocalDate(st.joinedDate)} • Attendance: {metrics.attendancePct}
+              Joined {formatReadableLocalDate(st.joinedDate)} • Attendance {metrics.attendancePct}
             </Text>
           </View>
           <View
@@ -2457,7 +2663,7 @@ function JSMAppContent() {
             <Text style={styles.feeBadgeText}>{metrics.feeStatus}</Text>
           </View>
         </Surface>
-      </Pressable>
+      </ScalePressable>
     );
   };
 
@@ -2486,39 +2692,60 @@ function JSMAppContent() {
         keyboardDismissMode="on-drag"
       >
         <View style={styles.tabTopBar}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.pageHeading}>Student Directory</Text>
-            <Text style={styles.silverMeta}>Tap to open profile • Hold card to edit/delete</Text>
-          </View>
+          <Text style={styles.pageHeading}>Students</Text>
+          <TouchableOpacity
+            style={[
+              styles.floatingSearchToggleBtn,
+              (searchBarVisible || studentSearch.length > 0) && styles.floatingSearchToggleBtnActive,
+            ]}
+            onPress={() => {
+              triggerHaptic(8);
+              triggerLayoutAnimation();
+              if (searchBarVisible && studentSearch) {
+                setStudentSearch('');
+              }
+              setSearchBarVisible(!searchBarVisible);
+            }}
+          >
+            <Ionicons
+              name={searchBarVisible ? 'close-outline' : 'search-outline'}
+              size={20}
+              color={searchBarVisible || studentSearch.length > 0 ? COLORS.gold : COLORS.navy}
+            />
+          </TouchableOpacity>
         </View>
 
-        <PaperInput
-          mode="outlined"
-          placeholder="Search student, instrument, or phone..."
-          value={studentSearch}
-          onChangeText={setStudentSearch}
-          left={<PaperInput.Icon icon="magnify" />}
-          right={
-            studentSearch.length > 0 ? (
-              <PaperInput.Icon icon="close-circle-outline" onPress={() => setStudentSearch('')} />
-            ) : null
-          }
-          outlineColor={COLORS.border}
-          activeOutlineColor={COLORS.navy}
-          style={[styles.tintedInput, { marginBottom: 12 }]}
-        />
+        {searchBarVisible && (
+          <PaperInput
+            mode="outlined"
+            placeholder="Search name, instrument, phone..."
+            value={studentSearch}
+            onChangeText={setStudentSearch}
+            autoFocus
+            left={<PaperInput.Icon icon="magnify" />}
+            right={
+              studentSearch.length > 0 ? (
+                <PaperInput.Icon icon="close-circle-outline" onPress={() => setStudentSearch('')} />
+              ) : null
+            }
+            outlineColor={COLORS.border}
+            activeOutlineColor={COLORS.navy}
+            style={[styles.tintedInput, { marginBottom: 14 }]}
+          />
+        )}
 
-        <View style={[styles.chipRow, { marginBottom: 12 }]}>
+        <View style={[styles.chipRow, { marginBottom: 16 }]}>
           {[
             { key: 'All', label: `All (${activeStudents.length})` },
             { key: 'Due', label: 'Due / Unpaid' },
-            { key: 'Priority', label: '☆ Priority Notes' },
+            { key: 'Priority', label: '☆ Notes' },
           ].map((f) => (
             <TouchableOpacity
               key={f.key}
               style={[styles.choiceChip, studentFilter === f.key && styles.choiceChipSelected]}
               onPress={() => {
                 Keyboard.dismiss();
+                triggerHaptic(6);
                 setStudentFilter(f.key);
               }}
             >
@@ -2531,7 +2758,14 @@ function JSMAppContent() {
 
         {activeSubjects.length === 0 && unassignedStudents.length === 0 ? (
           <Surface style={styles.whiteCard} elevation={2}>
-            <EmptyStateWatermark message='No subjects configured. Open "Add Subjects" on the Home screen to add instruments.' />
+            <EmptyStateWatermark
+              message="No subjects configured yet."
+              actionLabel="Add Subjects"
+              onAction={() => {
+                setSubjectForm({ id: null, name: '' });
+                setSubjectsModal(true);
+              }}
+            />
           </Surface>
         ) : (
           <>
@@ -2547,7 +2781,7 @@ function JSMAppContent() {
                     <Text style={styles.groupHeaderCount}>{subjStudents.length}</Text>
                   </View>
                   {subjStudents.length === 0 ? (
-                    <EmptyStateWatermark compact message={`No students enrolled in ${subj.name}`} />
+                    <EmptyStateWatermark compact message={`No students in ${subj.name}`} />
                   ) : (
                     subjStudents.map(renderStudentCard)
                   )}
@@ -2557,7 +2791,7 @@ function JSMAppContent() {
             {unassignedStudents.length > 0 && (
               <View style={styles.groupBlock}>
                 <View style={styles.groupHeaderBar}>
-                  <Text style={styles.groupHeaderTitle}>UNASSIGNED / OTHER</Text>
+                  <Text style={styles.groupHeaderTitle}>UNASSIGNED</Text>
                   <Text style={styles.groupHeaderCount}>{unassignedStudents.length}</Text>
                 </View>
                 {unassignedStudents.map(renderStudentCard)}
@@ -2578,37 +2812,37 @@ function JSMAppContent() {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
       >
-        <View style={styles.cardHeaderRow}>
+        <View style={[styles.cardHeaderRow, { marginBottom: 14 }]}>
           <TouchableOpacity
             style={styles.backButtonRow}
             onPress={() => {
               Keyboard.dismiss();
+              triggerHaptic(8);
               setNavDirection(-1);
               setSelectedStudentId(null);
             }}
           >
             <Ionicons name="arrow-back-outline" size={18} color={COLORS.navy} />
-            <Text style={styles.backButtonText}>Back to Directory</Text>
+            <Text style={styles.backButtonText}>Students</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.secondaryButtonSmall}
             onPress={() => openLongPressMenu('student', student, student.name)}
           >
-            <Ionicons name="create-outline" size={15} color={COLORS.navy} />
-            <Text style={styles.secondaryButtonSmallText}>Edit Student</Text>
+            <Ionicons name="ellipsis-horizontal" size={16} color={COLORS.navy} />
           </TouchableOpacity>
         </View>
 
         <Surface style={styles.heroCard} elevation={3}>
-          <SmoothNavyGradient style={{ borderRadius: 16 }} />
+          <SmoothNavyGradient style={{ borderRadius: 18 }} />
           <View style={styles.cardHeaderRow}>
             <View style={{ flex: 1 }}>
               <Text style={styles.crestBadgeText}>
-                {safeString(subjectMap[student.subjectId]?.name, 'Unassigned').toUpperCase()} DEPARTMENT
+                {safeString(subjectMap[student.subjectId]?.name, 'Unassigned').toUpperCase()}
               </Text>
               <Text style={styles.heroGreeting}>{safeString(student.name, 'Student')}</Text>
               {student.guardian ? <Text style={styles.heroDate}>Guardian: {student.guardian}</Text> : null}
-              {student.phone ? <Text style={styles.heroDate}>Contact: {student.phone}</Text> : null}
+              {student.phone ? <Text style={styles.heroDate}>{student.phone}</Text> : null}
             </View>
             {student.priorityNote ? (
               <View style={styles.priorityBadge}>
@@ -2637,11 +2871,11 @@ function JSMAppContent() {
               <Text style={styles.profileStatVal}>{metrics.attendancePct}</Text>
             </View>
             <View style={styles.profileStatBox}>
-              <Text style={styles.profileStatLabel}>CLASSES TAKEN</Text>
+              <Text style={styles.profileStatLabel}>CLASSES</Text>
               <Text style={styles.profileStatVal}>{metrics.classesTaken}</Text>
             </View>
             <View style={styles.profileStatBox}>
-              <Text style={styles.profileStatLabel}>FEE STATUS</Text>
+              <Text style={styles.profileStatLabel}>FEES</Text>
               <Text
                 style={[
                   styles.profileStatVal,
@@ -2662,6 +2896,7 @@ function JSMAppContent() {
               onPress={() => {
                 if (tab === profileTab) return;
                 Keyboard.dismiss();
+                triggerHaptic(6);
                 const newIdx = PROFILE_TABS.indexOf(tab);
                 const oldIdx = PROFILE_TABS.indexOf(profileTab);
                 setSubTabDirection(newIdx > oldIdx ? 1 : -1);
@@ -2682,8 +2917,7 @@ function JSMAppContent() {
           {profileTab === 'Classes' && (
             <View>
               <Surface style={styles.whiteCard} elevation={2}>
-                <Text style={styles.sectionTitle}>LOG NEW LESSON</Text>
-                <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+                <Text style={styles.sectionTitle}>LOG LESSON</Text>
                 <QuickDateRow
                   currentDate={inlineLessonForm.date}
                   onSelectDate={(d) => setInlineLessonForm({ ...inlineLessonForm, date: d })}
@@ -2708,42 +2942,38 @@ function JSMAppContent() {
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
                 />
-                <Text style={styles.inputLabel}>Technique</Text>
                 <PaperInput
                   mode="outlined"
                   value={inlineLessonForm.technique}
                   onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, technique: t })}
-                  placeholder="Scales, arpeggios, posture..."
+                  placeholder="Technique (Scales, posture...)"
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
                 />
-                <Text style={styles.inputLabel}>Lesson</Text>
                 <PaperInput
                   mode="outlined"
                   value={inlineLessonForm.lesson}
                   onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, lesson: t })}
-                  placeholder="Main lesson topic..."
+                  placeholder="Lesson topic..."
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
                 />
-                <Text style={styles.inputLabel}>Repertoire</Text>
                 <PaperInput
                   mode="outlined"
                   value={inlineLessonForm.repertoire}
                   onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, repertoire: t })}
-                  placeholder="Sonatina in C, Etude Op. 10..."
+                  placeholder="Repertoire..."
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
                 />
-                <Text style={styles.inputLabel}>Assignment</Text>
                 <PaperInput
                   mode="outlined"
                   value={inlineLessonForm.assignment}
                   onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, assignment: t })}
-                  placeholder="Practice measures 16-32 at 80 BPM"
+                  placeholder="Assignment..."
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
@@ -2753,31 +2983,35 @@ function JSMAppContent() {
                   buttonColor={COLORS.navy}
                   textColor={COLORS.gold}
                   onPress={handleSaveInlineLesson}
-                  style={{ marginTop: 10, borderRadius: 8 }}
+                  style={{ marginTop: 8, borderRadius: 10 }}
                 >
-                  Save Lesson Entry
+                  Save Lesson
                 </PaperButton>
               </Surface>
-              <Text style={[styles.sectionTitle, { marginVertical: 8 }]}>
-                LESSON HISTORY (HOLD CARD TO EDIT/DELETE)
-              </Text>
+
+              <Text style={[styles.sectionTitle, { marginVertical: 10 }]}>LESSON HISTORY</Text>
               {metrics.stLessons.length === 0 ? (
                 <Surface style={styles.whiteCard} elevation={2}>
-                  <EmptyStateWatermark message="No lessons logged for this student yet." />
+                  <EmptyStateWatermark message="No lessons logged yet." />
                 </Surface>
               ) : (
                 metrics.stLessons.map((les) => (
-                  <Pressable
+                  <ScalePressable
                     key={les.id}
-                    style={({ pressed }) => pressed && styles.cardPressed}
                     onLongPress={() =>
                       openLongPressMenu('lesson', les, `Lesson on ${formatReadableLocalDate(les.date)}`)
                     }
-                    delayLongPress={280}
                   >
                     <Surface style={styles.cleanRecordCard} elevation={2}>
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(les.date)}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(les.date)}</Text>
+                          {les._pendingSync ? (
+                            <View style={styles.cachedTag}>
+                              <Text style={styles.cachedTagText}>CACHED</Text>
+                            </View>
+                          ) : null}
+                        </View>
                         {les.technique ? (
                           <Text style={styles.recordDetailLine}>
                             <Text style={styles.boldLabel}>Technique: </Text>
@@ -2804,7 +3038,7 @@ function JSMAppContent() {
                         ) : null}
                       </View>
                     </Surface>
-                  </Pressable>
+                  </ScalePressable>
                 ))
               )}
             </View>
@@ -2813,8 +3047,7 @@ function JSMAppContent() {
           {profileTab === 'Attendance' && (
             <View>
               <Surface style={styles.whiteCard} elevation={2}>
-                <Text style={styles.sectionTitle}>MARK STUDENT ATTENDANCE</Text>
-                <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+                <Text style={styles.sectionTitle}>MARK ATTENDANCE</Text>
                 <QuickDateRow
                   currentDate={inlineAttendanceForm.date}
                   onSelectDate={(d) => setInlineAttendanceForm({ ...inlineAttendanceForm, date: d })}
@@ -2838,7 +3071,6 @@ function JSMAppContent() {
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
                 />
-                <Text style={styles.inputLabel}>Status</Text>
                 <View style={styles.chipRow}>
                   {ATTENDANCE_STATUSES.map((st) => (
                     <TouchableOpacity
@@ -2849,6 +3081,7 @@ function JSMAppContent() {
                       ]}
                       onPress={() => {
                         Keyboard.dismiss();
+                        triggerHaptic(6);
                         setInlineAttendanceForm({ ...inlineAttendanceForm, status: st });
                       }}
                     >
@@ -2863,12 +3096,11 @@ function JSMAppContent() {
                     </TouchableOpacity>
                   ))}
                 </View>
-                <Text style={styles.inputLabel}>Remarks</Text>
                 <PaperInput
                   mode="outlined"
                   value={inlineAttendanceForm.remarks}
                   onChangeText={(t) => setInlineAttendanceForm({ ...inlineAttendanceForm, remarks: t })}
-                  placeholder="Optional attendance notes"
+                  placeholder="Optional remarks..."
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
@@ -2878,38 +3110,42 @@ function JSMAppContent() {
                   buttonColor={COLORS.navy}
                   textColor={COLORS.gold}
                   onPress={handleSaveInlineAttendance}
-                  style={{ marginTop: 10, borderRadius: 8 }}
+                  style={{ marginTop: 8, borderRadius: 10 }}
                 >
-                  Record Attendance
+                  Save Attendance
                 </PaperButton>
               </Surface>
-              <Text style={[styles.sectionTitle, { marginVertical: 8 }]}>
-                ATTENDANCE LOG (HOLD CARD TO EDIT/DELETE)
-              </Text>
+
+              <Text style={[styles.sectionTitle, { marginVertical: 10 }]}>ATTENDANCE LOG</Text>
               {metrics.stAttendance.length === 0 ? (
                 <Surface style={styles.whiteCard} elevation={2}>
                   <EmptyStateWatermark message="No attendance records found." />
                 </Surface>
               ) : (
                 metrics.stAttendance.map((att) => (
-                  <Pressable
+                  <ScalePressable
                     key={att.id}
-                    style={({ pressed }) => pressed && styles.cardPressed}
                     onLongPress={() =>
                       openLongPressMenu('attendance', att, `${att.status} (${formatReadableLocalDate(att.date)})`)
                     }
-                    delayLongPress={280}
                   >
                     <Surface style={styles.cleanRecordCard} elevation={2}>
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(att.date)}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(att.date)}</Text>
+                          {att._pendingSync ? (
+                            <View style={styles.cachedTag}>
+                              <Text style={styles.cachedTagText}>CACHED</Text>
+                            </View>
+                          ) : null}
+                        </View>
                         {att.remarks ? <Text style={styles.recordSecondarySub}>{att.remarks}</Text> : null}
                       </View>
                       <View style={styles.statusPill}>
                         <Text style={styles.statusPillText}>{att.status}</Text>
                       </View>
                     </Surface>
-                  </Pressable>
+                  </ScalePressable>
                 ))
               )}
             </View>
@@ -2917,12 +3153,9 @@ function JSMAppContent() {
 
           {profileTab === 'Notes' && (
             <Surface style={styles.whiteCard} elevation={2}>
-              <Text style={styles.sectionTitle}>FACULTY STUDENT NOTES</Text>
+              <Text style={styles.sectionTitle}>FACULTY NOTES</Text>
               <View style={styles.prioritySwitchRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.recordPrimaryTitle}>Priority "☆ NOTE" Indicator</Text>
-                  <Text style={styles.silverMeta}>Highlights student card in the main Student Directory</Text>
-                </View>
+                <Text style={styles.recordPrimaryTitle}>Priority "☆ NOTE" Badge</Text>
                 <Switch
                   value={priorityDraft}
                   onValueChange={setPriorityDraft}
@@ -2936,7 +3169,7 @@ function JSMAppContent() {
                 numberOfLines={5}
                 value={noteDraft}
                 onChangeText={setNoteDraft}
-                placeholder="Enter examination goals, recital readiness, or parent communication notes..."
+                placeholder="Examination goals, recital readiness, or faculty notes..."
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={[styles.tintedInput, { marginTop: 12 }]}
@@ -2946,7 +3179,7 @@ function JSMAppContent() {
                 buttonColor={COLORS.navy}
                 textColor={COLORS.gold}
                 onPress={handleSaveStudentNotes}
-                style={{ marginTop: 12, borderRadius: 8 }}
+                style={{ marginTop: 10, borderRadius: 10 }}
               >
                 Save Notes
               </PaperButton>
@@ -2955,19 +3188,15 @@ function JSMAppContent() {
 
           {profileTab === 'Fees' && (
             <View>
-              <View style={styles.cardHeaderRow}>
-                <Text style={styles.sectionTitle}>LOCALIZED FEE LEDGER</Text>
-                <Text style={styles.silverMeta}>Use bottom-right + button to record</Text>
-              </View>
+              <Text style={[styles.sectionTitle, { marginBottom: 10 }]}>FEE LEDGER</Text>
               {metrics.stFees.length === 0 ? (
                 <Surface style={styles.whiteCard} elevation={2}>
                   <EmptyStateWatermark message="No fee records logged for this student." />
                 </Surface>
               ) : (
                 metrics.stFees.map((fee) => (
-                  <Pressable
+                  <ScalePressable
                     key={fee.id}
-                    style={({ pressed }) => pressed && styles.cardPressed}
                     onLongPress={() =>
                       openLongPressMenu(
                         'fee',
@@ -2975,21 +3204,27 @@ function JSMAppContent() {
                         `${fee.feeType} - ₹${fee.amountPaid} (${formatReadableLocalDate(fee.date)})`
                       )
                     }
-                    delayLongPress={280}
                   >
                     <Surface style={styles.cleanRecordCard} elevation={2}>
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.recordPrimaryTitle}>
-                          {fee.feeType}{' '}
-                          {fee.feeType === 'Monthly Fee' && fee.monthPaidFor ? `• ${fee.monthPaidFor}` : ''}
-                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={styles.recordPrimaryTitle}>
+                            {fee.feeType}{' '}
+                            {fee.feeType === 'Monthly Fee' && fee.monthPaidFor ? `• ${fee.monthPaidFor}` : ''}
+                          </Text>
+                          {fee._pendingSync ? (
+                            <View style={styles.cachedTag}>
+                              <Text style={styles.cachedTagText}>CACHED</Text>
+                            </View>
+                          ) : null}
+                        </View>
                         <Text style={styles.recordSecondarySub}>
-                          {formatReadableLocalDate(fee.date)} • {fee.mode} • Status: {fee.status}
+                          {formatReadableLocalDate(fee.date)} • {fee.mode} • {fee.status}
                         </Text>
                         <Text style={styles.recordDetailLine}>
-                          Paid: ₹{fee.amountPaid} | Balance Due: ₹{fee.balanceDue}
+                          Paid: ₹{fee.amountPaid} | Balance: ₹{fee.balanceDue}
                         </Text>
-                        {fee.remarks ? <Text style={styles.silverMeta}>Note: {fee.remarks}</Text> : null}
+                        {fee.remarks ? <Text style={styles.silverMeta}>{fee.remarks}</Text> : null}
                       </View>
                       <TouchableOpacity
                         style={styles.pdfExportTouchBtn}
@@ -3000,7 +3235,7 @@ function JSMAppContent() {
                         <Text style={styles.pdfExportTouchBtnText}>Receipt</Text>
                       </TouchableOpacity>
                     </Surface>
-                  </Pressable>
+                  </ScalePressable>
                 ))
               )}
             </View>
@@ -3023,13 +3258,7 @@ function JSMAppContent() {
         keyboardDismissMode="on-drag"
       >
         <View style={styles.tabTopBar}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.pageHeading}>Attendance Register</Text>
-            <Text style={styles.silverMeta}>
-              {attendanceFilterAllMonths ? 'Showing complete history' : 'Showing last 2 months'} • Hold card to
-              edit/delete
-            </Text>
-          </View>
+          <Text style={styles.pageHeading}>Attendance</Text>
           <PaperButton
             mode="outlined"
             textColor={COLORS.navy}
@@ -3056,14 +3285,13 @@ function JSMAppContent() {
                 </Text>
               </View>
               {group.months.map((mGroup) => (
-                <View key={mGroup.monthName} style={{ marginTop: 6 }}>
+                <View key={mGroup.monthName} style={{ marginTop: 8 }}>
                   <Text style={styles.monthSubHeader}>{mGroup.monthName}</Text>
                   {mGroup.items.map((att) => {
                     const st = studentMap[att.studentId];
                     return (
-                      <Pressable
+                      <ScalePressable
                         key={att.id}
-                        style={({ pressed }) => pressed && styles.cardPressed}
                         onLongPress={() =>
                           openLongPressMenu(
                             'attendance',
@@ -3073,11 +3301,17 @@ function JSMAppContent() {
                             )})`
                           )
                         }
-                        delayLongPress={280}
                       >
                         <Surface style={styles.cleanRecordCard} elevation={2}>
                           <View style={{ flex: 1 }}>
-                            <Text style={styles.recordPrimaryTitle}>{safeString(st?.name, 'Unknown')}</Text>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                              <Text style={styles.recordPrimaryTitle}>{safeString(st?.name, 'Unknown')}</Text>
+                              {att._pendingSync ? (
+                                <View style={styles.cachedTag}>
+                                  <Text style={styles.cachedTagText}>CACHED</Text>
+                                </View>
+                              ) : null}
+                            </View>
                             <Text style={styles.recordSecondarySub}>
                               {formatReadableLocalDate(att.date)}
                               {att.remarks ? ` • ${att.remarks}` : ''}
@@ -3087,7 +3321,7 @@ function JSMAppContent() {
                             <Text style={styles.statusPillText}>{att.status}</Text>
                           </View>
                         </Surface>
-                      </Pressable>
+                      </ScalePressable>
                     );
                   })}
                 </View>
@@ -3109,10 +3343,7 @@ function JSMAppContent() {
         keyboardDismissMode="on-drag"
       >
         <View style={styles.tabTopBar}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.pageHeading}>Global Fee Ledger</Text>
-            <Text style={styles.silverMeta}>Grouped by Subject & Month • Hold card to edit/delete</Text>
-          </View>
+          <Text style={styles.pageHeading}>Fee Ledger</Text>
         </View>
 
         <View style={styles.ledgerSummaryRow}>
@@ -3147,29 +3378,34 @@ function JSMAppContent() {
                 </Text>
               </View>
               {group.months.map((mGroup) => (
-                <View key={mGroup.monthName} style={{ marginTop: 6 }}>
+                <View key={mGroup.monthName} style={{ marginTop: 8 }}>
                   <Text style={styles.monthSubHeader}>{mGroup.monthName}</Text>
                   {mGroup.items.map((fee) => {
                     const st = studentMap[fee.studentId];
                     const isFullyPaid = fee.status === 'Paid' && safeNumber(fee.balanceDue, 0) === 0;
                     return (
-                      <Pressable
+                      <ScalePressable
                         key={fee.id}
-                        style={({ pressed }) => pressed && styles.cardPressed}
                         onLongPress={() =>
                           openLongPressMenu('fee', fee, `${safeString(st?.name, 'Student')} - ₹${fee.amountPaid}`)
                         }
-                        delayLongPress={280}
                       >
                         <Surface style={styles.cleanRecordCard} elevation={2}>
                           <View style={{ flex: 1 }}>
-                            <Text style={styles.recordPrimaryTitle}>
-                              {safeString(st?.name, 'Unknown')} • {fee.feeType}
-                            </Text>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                              <Text style={styles.recordPrimaryTitle}>
+                                {safeString(st?.name, 'Unknown')} • {fee.feeType}
+                              </Text>
+                              {fee._pendingSync ? (
+                                <View style={styles.cachedTag}>
+                                  <Text style={styles.cachedTagText}>CACHED</Text>
+                                </View>
+                              ) : null}
+                            </View>
                             <Text style={styles.recordSecondarySub}>
                               {formatReadableLocalDate(fee.date)} • {fee.mode}
                               {fee.feeType === 'Monthly Fee' && fee.monthPaidFor
-                                ? ` • For ${fee.monthPaidFor}`
+                                ? ` • ${fee.monthPaidFor}`
                                 : ''}
                             </Text>
                             <Text style={styles.recordDetailLine}>
@@ -3190,7 +3426,7 @@ function JSMAppContent() {
                             </TouchableOpacity>
                           </View>
                         </Surface>
-                      </Pressable>
+                      </ScalePressable>
                     );
                   })}
                 </View>
@@ -3211,12 +3447,7 @@ function JSMAppContent() {
         keyboardDismissMode="on-drag"
       >
         <View style={styles.tabTopBar}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.pageHeading}>Trash Archive</Text>
-            <Text style={styles.silverMeta}>
-              Items are auto-purged after 30 days. Tap any item to Restore or Delete Permanently from Firebase.
-            </Text>
-          </View>
+          <Text style={styles.pageHeading}>Trash Archive</Text>
           {trashItems.length > 0 && (
             <PaperButton mode="contained" buttonColor={COLORS.danger} textColor={COLORS.white} onPress={handleEmptyTrash}>
               Empty Trash
@@ -3226,17 +3457,17 @@ function JSMAppContent() {
 
         {trashItems.length === 0 ? (
           <Surface style={styles.whiteCard} elevation={2}>
-            <EmptyStateWatermark message="Trash archive is completely clean." />
+            <EmptyStateWatermark message="Trash archive is clean." />
           </Surface>
         ) : (
           trashItems.map((item) => {
             const daysLeft = getDaysRemainingInTrash(item.deletedAt);
             return (
-              <TouchableOpacity
+              <ScalePressable
                 key={`${item._col}-${item.id}`}
                 onPress={() => {
                   triggerHaptic(10);
-                  Alert.alert(item._label, `${daysLeft} days remaining before permanent purge from Firebase.`, [
+                  Alert.alert(item._label, `${daysLeft} days remaining before permanent purge.`, [
                     { text: 'Cancel', style: 'cancel' },
                     { text: 'Restore', onPress: () => handleRestoreTrashItem(item) },
                     {
@@ -3251,14 +3482,14 @@ function JSMAppContent() {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.recordPrimaryTitle}>{item._label}</Text>
                     <Text style={styles.recordSecondarySub}>
-                      Collection: {safeString(item._col).toUpperCase()}
+                      {safeString(item._col).toUpperCase()}
                     </Text>
                   </View>
                   <View style={styles.daysRemainingBadge}>
                     <Text style={styles.daysRemainingText}>{daysLeft}d left</Text>
                   </View>
                 </Surface>
-              </TouchableOpacity>
+              </ScalePressable>
             );
           })
         )}
@@ -3267,12 +3498,12 @@ function JSMAppContent() {
   };
 
   // ==========================================
-  // 7. FLOATING ACTION BUTTON (FAB) CONFIG
+  // 7. CLEAN FLOATING ACTION BUTTON (FAB) CONFIG
   // ==========================================
   const getActiveFABConfig = () => {
     if (activeTab === 'Students' && !selectedStudent) {
       return {
-        label: '+ Student',
+        label: 'New Student',
         icon: 'person-add-outline',
         onPress: () => {
           Keyboard.dismiss();
@@ -3293,7 +3524,7 @@ function JSMAppContent() {
     }
     if (activeTab === 'Students' && selectedStudent && profileTab === 'Fees') {
       return {
-        label: '+ Record Fee',
+        label: 'Record Fee',
         icon: 'card-outline',
         onPress: () => {
           Keyboard.dismiss();
@@ -3316,8 +3547,8 @@ function JSMAppContent() {
     }
     if (activeTab === 'Attendance') {
       return {
-        label: '+ Mark',
-        icon: 'calendar-outline',
+        label: 'Mark Attendance',
+        icon: 'checkmark-done-outline',
         onPress: () => {
           Keyboard.dismiss();
           triggerHaptic(12);
@@ -3336,7 +3567,7 @@ function JSMAppContent() {
     }
     if (activeTab === 'Fees') {
       return {
-        label: '+ Record Fee',
+        label: 'Record Fee',
         icon: 'card-outline',
         onPress: () => {
           Keyboard.dismiss();
@@ -3371,9 +3602,9 @@ function JSMAppContent() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-      <StatusBar barStyle="light-content" backgroundColor={COLORS.midnight} />
+      <StatusBar barStyle="light-content" backgroundColor={COLORS.navy} />
 
-      {/* Top Navigation Bar with Smooth Band-Free Navy Gradient */}
+      {/* Top Navigation Bar */}
       <View style={styles.gradientHeaderWrapper}>
         <SmoothNavyGradient />
         <Appbar.Header style={{ backgroundColor: 'transparent', elevation: 0 }}>
@@ -3390,7 +3621,7 @@ function JSMAppContent() {
       </View>
 
       <View style={{ flex: 1 }}>
-        {/* Strict Very-Edge Swipe Strip (16px wide at left: 0) */}
+        {/* Edge Swipe Strip */}
         <PanGestureHandler
           activeOffsetX={10}
           failOffsetY={[-18, 18]}
@@ -3414,23 +3645,21 @@ function JSMAppContent() {
           {activeTab === 'Trash' && renderTrashTab()}
         </AnimatedScreen>
 
-        {/* Bottom-Right Floating Action Button (FAB) */}
+        {/* Clean Bottom-Right Floating Action Button (FAB) */}
         {fabConfig && (
-          <TouchableOpacity
-            activeOpacity={0.88}
-            style={styles.fabButton}
-            onPress={fabConfig.onPress}
-          >
-            <SmoothNavyGradient style={{ borderRadius: 28 }} />
-            <Ionicons name={fabConfig.icon} size={18} color={COLORS.gold} />
-            <Text style={styles.fabButtonText}>{fabConfig.label}</Text>
-          </TouchableOpacity>
+          <ScalePressable style={styles.fabContainerPos} onPress={fabConfig.onPress}>
+            <View style={styles.fabButton}>
+              <SmoothNavyGradient />
+              <Ionicons name={fabConfig.icon} size={18} color={COLORS.gold} />
+              <Text style={styles.fabButtonText}>{fabConfig.label}</Text>
+            </View>
+          </ScalePressable>
         )}
 
-        {!anyFormModalOpen && renderCalendarOverlay()}
+        {!anyFormModalOpen && !masterListModal && renderCalendarOverlay()}
       </View>
 
-      {/* Bottom Tab Bar with Line-Art Icons */}
+      {/* Bottom Tab Bar */}
       <View style={styles.bottomTabBar}>
         {[
           { key: 'Home', icon: 'grid-outline', label: 'Home' },
@@ -3446,6 +3675,7 @@ function JSMAppContent() {
               style={styles.bottomTabItem}
               onPress={() => {
                 Keyboard.dismiss();
+                triggerHaptic(6);
                 if (tab.key === 'Students' && activeTab === 'Students' && selectedStudentId) {
                   setNavDirection(-1);
                   setSelectedStudentId(null);
@@ -3492,7 +3722,7 @@ function JSMAppContent() {
                   <Text style={styles.drawerTitle}>Music School Portal</Text>
                   <Text style={styles.drawerSub}>Est. 2022 • Official Edition</Text>
                 </View>
-                <ScrollView contentContainerStyle={{ padding: 16, gap: 10 }} keyboardShouldPersistTaps="handled">
+                <ScrollView contentContainerStyle={{ padding: 18, gap: 10 }} keyboardShouldPersistTaps="handled">
                   {[
                     { label: 'Global Attendance', tab: 'Attendance', icon: 'calendar-outline' },
                     { label: 'Global Fee Register', tab: 'Fees', icon: 'card-outline' },
@@ -3532,18 +3762,18 @@ function JSMAppContent() {
                     }}
                   >
                     <Ionicons name="musical-notes-outline" size={18} color={COLORS.navy} />
-                    <Text style={styles.drawerNavText}>Manage Subjects & Order</Text>
+                    <Text style={styles.drawerNavText}>Manage Subjects</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.drawerNavItem}
                     onPress={() => {
                       closeDrawer(() => {
-                        setLiveSheetModal(true);
+                        setMasterListModal(true);
                       });
                     }}
                   >
-                    <Ionicons name="layers-outline" size={18} color={COLORS.navy} />
-                    <Text style={styles.drawerNavText}>Full Live Database Sheet</Text>
+                    <Ionicons name="grid-outline" size={18} color={COLORS.navy} />
+                    <Text style={styles.drawerNavText}>Master List & Reports</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.drawerNavItem}
@@ -3555,7 +3785,7 @@ function JSMAppContent() {
                     }}
                   >
                     <Ionicons name="pulse-outline" size={18} color={COLORS.navy} />
-                    <Text style={styles.drawerNavText}>Recent Activity Log</Text>
+                    <Text style={styles.drawerNavText}>Activity Log</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.drawerNavItem} onPress={handleCheckOTA} disabled={checkingOTA}>
                     {checkingOTA ? (
@@ -3575,127 +3805,261 @@ function JSMAppContent() {
         </GestureHandlerRootView>
       </Modal>
 
-      {/* FULL-SCREEN VIEW-ONLY LIVE FIREBASE STUDENT SHEET MODAL */}
-      <Modal visible={liveSheetModal} animationType="slide" onRequestClose={() => setLiveSheetModal(false)}>
+      {/* MASTER LIST & REPORT GENERATOR MODAL (FILTER BY STUDENT & DATE/MONTH) */}
+      <Modal visible={masterListModal} animationType="slide" onRequestClose={() => setMasterListModal(false)}>
         <SafeAreaView style={styles.fullScreenModalSafe}>
           <View style={styles.fullScreenModalHeader}>
             <SmoothNavyGradient />
             <View style={{ flex: 1 }}>
-              <Text style={styles.fullScreenModalTitle}>Live Firebase Data Sheet</Text>
-              <Text style={styles.fullScreenModalSub}>
-                Strictly Read-Only • Tap any student card to open their profile
-              </Text>
+              <Text style={styles.fullScreenModalTitle}>Master Student List</Text>
             </View>
-            <TouchableOpacity
-              style={styles.fullScreenCloseBtn}
-              onPress={() => setLiveSheetModal(false)}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <TouchableOpacity style={styles.pdfExportTouchBtn} onPress={exportMasterListPDF}>
+                <Ionicons name="print-outline" size={15} color={COLORS.gold} />
+                <Text style={styles.pdfExportTouchBtnText}>Export PDF</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.fullScreenCloseBtn}
+                onPress={() => setMasterListModal(false)}
+              >
+                <Ionicons name="close-outline" size={26} color={COLORS.gold} />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Filter Bar: Student & Month/Date Selectors */}
+          <View style={styles.masterFilterSection}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <View style={{ flexDirection: 'row', gap: 6 }}>
+                <TouchableOpacity
+                  style={[styles.choiceChip, masterStudentFilter === 'ALL' && styles.choiceChipSelected]}
+                  onPress={() => {
+                    triggerHaptic(6);
+                    setMasterStudentFilter('ALL');
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.choiceChipText,
+                      masterStudentFilter === 'ALL' && styles.choiceChipTextSelected,
+                    ]}
+                  >
+                    All Students ({activeStudents.length})
+                  </Text>
+                </TouchableOpacity>
+                {activeStudents.map((st) => (
+                  <TouchableOpacity
+                    key={st.id}
+                    style={[styles.choiceChip, masterStudentFilter === st.id && styles.choiceChipSelected]}
+                    onPress={() => {
+                      triggerHaptic(6);
+                      setMasterStudentFilter(st.id);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.choiceChipText,
+                        masterStudentFilter === st.id && styles.choiceChipTextSelected,
+                      ]}
+                    >
+                      {st.name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              style={{ marginTop: 8 }}
             >
-              <Ionicons name="close-outline" size={26} color={COLORS.gold} />
-            </TouchableOpacity>
+              <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                <TouchableOpacity
+                  style={[
+                    styles.choiceChip,
+                    masterMonthFilter === 'ALL' && !masterDateFilter && styles.choiceChipSelected,
+                  ]}
+                  onPress={() => {
+                    triggerHaptic(6);
+                    setMasterDateFilter('');
+                    setMasterMonthFilter('ALL');
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.choiceChipText,
+                      masterMonthFilter === 'ALL' && !masterDateFilter && styles.choiceChipTextSelected,
+                    ]}
+                  >
+                    All Time
+                  </Text>
+                </TouchableOpacity>
+                {availableMasterMonths.map((mLabel) => (
+                  <TouchableOpacity
+                    key={mLabel}
+                    style={[
+                      styles.choiceChip,
+                      masterMonthFilter === mLabel && !masterDateFilter && styles.choiceChipSelected,
+                    ]}
+                    onPress={() => {
+                      triggerHaptic(6);
+                      setMasterDateFilter('');
+                      setMasterMonthFilter(mLabel);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.choiceChipText,
+                        masterMonthFilter === mLabel && !masterDateFilter && styles.choiceChipTextSelected,
+                      ]}
+                    >
+                      {mLabel}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+                <TouchableOpacity
+                  style={[styles.quickDateChipCalendar, masterDateFilter && { backgroundColor: COLORS.gold }]}
+                  onPress={() =>
+                    openCalendarPicker(masterDateFilter || getTodayISO(), (picked) => {
+                      setMasterDateFilter(picked);
+                    })
+                  }
+                >
+                  <Ionicons
+                    name="calendar-outline"
+                    size={13}
+                    color={masterDateFilter ? COLORS.navy : COLORS.gold}
+                  />
+                  <Text
+                    style={[
+                      styles.quickDateChipCalendarText,
+                      masterDateFilter && { color: COLORS.navy },
+                    ]}
+                  >
+                    {masterDateFilter ? formatReadableLocalDate(masterDateFilter) : 'Exact Date'}
+                  </Text>
+                </TouchableOpacity>
+                {masterDateFilter ? (
+                  <TouchableOpacity
+                    style={styles.iconActionBtn}
+                    onPress={() => setMasterDateFilter('')}
+                  >
+                    <Ionicons name="close-outline" size={16} color={COLORS.danger} />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            </ScrollView>
           </View>
 
           <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-            {activeStudents.length === 0 ? (
+            {masterListData.length === 0 ? (
               <Surface style={styles.whiteCard} elevation={2}>
-                <EmptyStateWatermark message="No active students found in Firebase." />
+                <EmptyStateWatermark message="No records found for this selection." />
               </Surface>
             ) : (
-              activeStudents.map((st) => {
-                const m = getStudentMetrics(st.id);
-                const latestLesson = m.stLessons[0];
-                const latestAtt = m.stAttendance[0];
-                const latestFee = m.stFees[0];
-                return (
-                  <TouchableOpacity
-                    key={st.id}
-                    activeOpacity={0.85}
-                    onPress={() => {
-                      setLiveSheetModal(false);
-                      setNavDirection(1);
-                      setSelectedStudentId(st.id);
-                      setProfileTab('Classes');
-                      setActiveTab('Students');
-                    }}
-                  >
-                    <Surface style={[styles.whiteCard, { marginBottom: 10, padding: 13 }]} elevation={2}>
-                      <View style={styles.cardHeaderRow}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.recordPrimaryTitle}>
-                            {st.name} • {safeString(subjectMap[st.subjectId]?.name, 'Unassigned')}
-                          </Text>
-                          <Text style={styles.recordSecondarySub}>
-                            Joined {formatReadableLocalDate(st.joinedDate)} • Attendance: {m.attendancePct} • Classes: {m.classesTaken}
-                          </Text>
-                        </View>
-                        <View
-                          style={[
-                            styles.feeBadge,
-                            m.feeStatus === 'Paid'
-                              ? styles.feeBadgePaid
-                              : m.feeStatus === 'Due / Unpaid'
-                              ? styles.feeBadgeDue
-                              : styles.feeBadgeNeutral,
-                          ]}
-                        >
-                          <Text style={styles.feeBadgeText}>{m.feeStatus}</Text>
-                        </View>
+              masterListData.map((row) => (
+                <ScalePressable
+                  key={row.student.id}
+                  onPress={() => {
+                    setMasterListModal(false);
+                    setNavDirection(1);
+                    setSelectedStudentId(row.student.id);
+                    setProfileTab('Classes');
+                    setActiveTab('Students');
+                  }}
+                >
+                  <Surface style={[styles.whiteCard, { marginBottom: 12, padding: 16 }]} elevation={2}>
+                    <View style={styles.cardHeaderRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.recordPrimaryTitle}>
+                          {row.student.name} • {row.subjectName}
+                        </Text>
+                        <Text style={styles.recordSecondarySub}>
+                          Classes: {row.stLessons.length} • Present: {row.presentCount} • Absent: {row.absentCount} • Rescheduled: {row.reschedCount}
+                        </Text>
                       </View>
-                      <View style={styles.sheetDivider} />
-                      <Text style={styles.recordDetailLine} numberOfLines={1}>
-                        <Text style={styles.boldLabel}>Latest Class: </Text>
-                        {latestLesson
-                          ? `${formatReadableLocalDate(latestLesson.date)} — ${
-                              [latestLesson.lesson, latestLesson.technique, latestLesson.repertoire]
-                                .filter(Boolean)
-                                .join(', ') || 'Recorded'
-                            }`
-                          : 'No lessons logged'}
-                      </Text>
-                      <Text style={styles.recordDetailLine} numberOfLines={1}>
-                        <Text style={styles.boldLabel}>Latest Attendance: </Text>
-                        {latestAtt
-                          ? `${formatReadableLocalDate(latestAtt.date)} — ${latestAtt.status}`
-                          : 'No attendance logged'}
-                      </Text>
-                      <Text style={styles.recordDetailLine} numberOfLines={1}>
-                        <Text style={styles.boldLabel}>Latest Fee: </Text>
-                        {latestFee
-                          ? `${formatReadableLocalDate(latestFee.date)} — ₹${latestFee.amountPaid} (${latestFee.status})`
-                          : 'No fee records'}
-                      </Text>
-                    </Surface>
-                  </TouchableOpacity>
-                );
-              })
+                      <View
+                        style={[
+                          styles.feeBadge,
+                          row.totalDue > 0 ? styles.feeBadgeDue : styles.feeBadgePaid,
+                        ]}
+                      >
+                        <Text style={styles.feeBadgeText}>
+                          {row.totalDue > 0 ? `Due ₹${row.totalDue}` : `Paid ₹${row.totalPaid}`}
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={styles.sheetDivider} />
+                    <Text style={styles.recordDetailLine} numberOfLines={2}>
+                      <Text style={styles.boldLabel}>Classes: </Text>
+                      {row.stLessons.length > 0
+                        ? row.stLessons
+                            .slice(0, 3)
+                            .map(
+                              (l) =>
+                                `${formatReadableLocalDate(l.date)} (${
+                                  [l.lesson, l.technique, l.repertoire].filter(Boolean).join(', ') || 'Logged'
+                                })`
+                            )
+                            .join('  •  ')
+                        : 'None in period'}
+                    </Text>
+                    <Text style={styles.recordDetailLine} numberOfLines={2}>
+                      <Text style={styles.boldLabel}>Attendance: </Text>
+                      {row.stAtt.length > 0
+                        ? row.stAtt
+                            .slice(0, 4)
+                            .map((a) => `${formatReadableLocalDate(a.date)}: ${a.status}`)
+                            .join('  •  ')
+                        : 'None in period'}
+                    </Text>
+                    <Text style={styles.recordDetailLine} numberOfLines={2}>
+                      <Text style={styles.boldLabel}>Fees: </Text>
+                      {row.stFees.length > 0
+                        ? row.stFees
+                            .slice(0, 3)
+                            .map((f) => `${formatReadableLocalDate(f.date)}: ₹${f.amountPaid} (${f.status})`)
+                            .join('  •  ')
+                        : 'None in period'}
+                    </Text>
+                  </Surface>
+                </ScalePressable>
+              ))
             )}
           </ScrollView>
+          {renderCalendarOverlay()}
         </SafeAreaView>
       </Modal>
 
-      {/* LONG-PRESS CONTEXT MENU */}
-      <Modal visible={contextMenu.visible} transparent animationType="fade" onRequestClose={closeContextMenu}>
-        <Pressable style={styles.modalBackdrop} onPress={closeContextMenu}>
-          <Pressable style={styles.contextSheet} onPress={(e) => e.stopPropagation()}>
+      {/* BOTTOM-SLIDING CONTEXTUAL ACTION SHEET */}
+      <Modal visible={contextMenu.visible} transparent animationType="slide" onRequestClose={closeContextMenu}>
+        <Pressable style={styles.bottomSheetBackdrop} onPress={closeContextMenu}>
+          <Pressable style={styles.bottomContextSheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.bottomSheetPill} />
             <Text style={styles.contextSheetHeader}>{contextMenu.title}</Text>
             <View style={styles.contextDivider} />
             {contextMenu.entityType !== 'activity' && (
               <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('edit')}>
-                <Text style={styles.contextOptionText}>Edit Record</Text>
+                <Ionicons name="create-outline" size={18} color={COLORS.navy} />
+                <Text style={styles.contextOptionText}>Edit</Text>
               </TouchableOpacity>
             )}
             <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('delete')}>
-              <Text style={[styles.contextOptionText, { color: COLORS.danger }]}>Delete (Move to Trash)</Text>
+              <Ionicons name="trash-outline" size={18} color={COLORS.danger} />
+              <Text style={[styles.contextOptionText, { color: COLORS.danger }]}>Move to Trash</Text>
             </TouchableOpacity>
             <PaperButton
               mode="outlined"
               textColor={COLORS.navy}
-              style={{ marginTop: 10, width: '100%', borderColor: COLORS.silver }}
+              style={{ marginTop: 14, width: '100%', borderColor: COLORS.border, borderRadius: 12 }}
               onPress={() => {
                 const shouldReopenSubj = contextMenu.reopenSubjectsModal;
                 const shouldReopenLog = contextMenu.reopenTodayLogModal;
                 closeContextMenu();
-                if (shouldReopenSubj) scheduleTimeout(() => setSubjectsModal(true), 250);
-                if (shouldReopenLog) scheduleTimeout(() => setTodayLogModal(true), 250);
+                if (shouldReopenSubj) scheduleTimeout(() => setSubjectsModal(true), 220);
+                if (shouldReopenLog) scheduleTimeout(() => setTodayLogModal(true), 220);
               }}
             >
               Cancel
@@ -3704,14 +4068,14 @@ function JSMAppContent() {
         </Pressable>
       </Modal>
 
-      {/* NOTICE BOARD MODAL (EDIT OR REMOVE NOTICE) */}
+      {/* NOTICE BOARD MODAL */}
       <Modal visible={noticeEditModal} transparent animationType="fade" onRequestClose={() => setNoticeEditModal(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
             <View style={styles.cardHeaderRow}>
-              <Text style={styles.sectionTitle}>JSM NOTICE BOARD</Text>
+              <Text style={styles.sectionTitle}>NOTICE BOARD</Text>
               {noticeUpdatedAt ? (
-                <Text style={styles.silverMeta}>Posted {formatReadableLocalDate(noticeUpdatedAt)}</Text>
+                <Text style={styles.silverMeta}>{formatReadableLocalDate(noticeUpdatedAt)}</Text>
               ) : null}
             </View>
             <PaperInput
@@ -3720,7 +4084,7 @@ function JSMAppContent() {
               numberOfLines={5}
               value={noticeInput}
               onChangeText={setNoticeInput}
-              placeholder="Type new JSM announcement..."
+              placeholder="Write announcement..."
               outlineColor={COLORS.border}
               activeOutlineColor={COLORS.navy}
               style={[styles.tintedInput, { marginTop: 10, marginBottom: 14 }]}
@@ -3732,7 +4096,7 @@ function JSMAppContent() {
                   onPress={() => handleUpdateNotice('')}
                 >
                   <Ionicons name="trash-outline" size={14} color={COLORS.danger} />
-                  <Text style={styles.dangerOutlineBtnSmallText}>Remove Notice</Text>
+                  <Text style={styles.dangerOutlineBtnSmallText}>Clear</Text>
                 </TouchableOpacity>
               ) : (
                 <View />
@@ -3754,7 +4118,7 @@ function JSMAppContent() {
                   textColor={COLORS.gold}
                   onPress={() => handleUpdateNotice(null)}
                 >
-                  Save Notice
+                  Save
                 </PaperButton>
               </View>
             </View>
@@ -3762,15 +4126,12 @@ function JSMAppContent() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* FULL-SCREEN RECENT ACTIVITY AUDIT MODAL */}
+      {/* FULL-SCREEN ACTIVITY LOG MODAL */}
       <Modal visible={todayLogModal} animationType="slide" onRequestClose={() => setTodayLogModal(false)}>
         <SafeAreaView style={styles.fullScreenModalSafe}>
           <View style={styles.fullScreenModalHeader}>
             <SmoothNavyGradient />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.fullScreenModalTitle}>Recent Activity Audit</Text>
-              <Text style={styles.fullScreenModalSub}>Hold any activity card to move it to Trash</Text>
-            </View>
+            <Text style={styles.fullScreenModalTitle}>Activity Log</Text>
             <TouchableOpacity
               style={styles.fullScreenCloseBtn}
               onPress={() => setTodayLogModal(false)}
@@ -3794,7 +4155,7 @@ function JSMAppContent() {
                 onPress={() => setActivityFilterTodayOnly(true)}
               >
                 <Text style={[styles.choiceChipText, activityFilterTodayOnly && styles.choiceChipTextSelected]}>
-                  Today's Log
+                  Today
                 </Text>
               </TouchableOpacity>
             </View>
@@ -3804,7 +4165,7 @@ function JSMAppContent() {
                 onPress={() => handleClearAllActivities(activityFilterTodayOnly)}
               >
                 <Ionicons name="trash-outline" size={13} color={COLORS.danger} />
-                <Text style={styles.dangerOutlineBtnSmallText}>Delete All</Text>
+                <Text style={styles.dangerOutlineBtnSmallText}>Clear All</Text>
               </TouchableOpacity>
             ) : null}
           </View>
@@ -3813,16 +4174,13 @@ function JSMAppContent() {
             {displayedActivities.length === 0 ? (
               <Surface style={styles.whiteCard} elevation={2}>
                 <EmptyStateWatermark
-                  message={
-                    activityFilterTodayOnly ? 'No actions logged today.' : 'No recent actions recorded yet.'
-                  }
+                  message={activityFilterTodayOnly ? 'No activity today.' : 'No recent activity.'}
                 />
               </Surface>
             ) : (
               displayedActivities.map((act) => (
-                <Pressable
+                <ScalePressable
                   key={act.id}
-                  style={({ pressed }) => [pressed && styles.cardPressed]}
                   onLongPress={() => {
                     setTodayLogModal(false);
                     scheduleTimeout(
@@ -3834,10 +4192,9 @@ function JSMAppContent() {
                           false,
                           true
                         ),
-                      250
+                      220
                     );
                   }}
-                  delayLongPress={280}
                 >
                   <Surface style={styles.cleanRecordCard} elevation={2}>
                     <View style={styles.activityDot} />
@@ -3847,31 +4204,28 @@ function JSMAppContent() {
                     </View>
                     <Text style={styles.silverMeta}>{formatReadableLocalDate(act.dateISO)}</Text>
                   </Surface>
-                </Pressable>
+                </ScalePressable>
               ))
             )}
           </ScrollView>
         </SafeAreaView>
       </Modal>
 
-      {/* MANAGE SUBJECTS MODAL (WITH 6-DOT DRAG HANDLE REORDERING) */}
+      {/* MANAGE SUBJECTS MODAL (DECLUTTERED: LONG-PRESS TO EDIT/DELETE, 6-DOT HANDLE TO REORDER) */}
       <Modal visible={subjectsModal} transparent animationType="fade" onRequestClose={() => setSubjectsModal(false)}>
         <GestureHandlerRootView style={{ flex: 1 }}>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
             <Surface style={styles.modalCard} elevation={5}>
-              <Text style={styles.sectionTitle}>ADD & MANAGE SUBJECTS</Text>
-              <Text style={styles.silverMeta}>
-                Touch & slide the 6-dot handle to reorder, or use edit/delete.
-              </Text>
+              <Text style={styles.sectionTitle}>SUBJECTS</Text>
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, alignItems: 'center' }}>
                 <PaperInput
                   mode="outlined"
                   value={subjectForm.name}
                   onChangeText={(t) => setSubjectForm({ ...subjectForm, name: t })}
-                  placeholder="e.g., Piano, Violin, Guitar"
+                  placeholder="Instrument name..."
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
-                  style={[styles.tintedInput, { flex: 1, height: 50, marginBottom: 0 }]}
+                  style={[styles.tintedInput, { flex: 1, height: 48, marginBottom: 0 }]}
                 />
                 <PaperButton
                   mode="contained"
@@ -3879,7 +4233,7 @@ function JSMAppContent() {
                   textColor={COLORS.gold}
                   onPress={handleSaveSubject}
                 >
-                  {subjectForm.id ? 'Update' : 'Add'}
+                  {subjectForm.id ? 'Save' : 'Add'}
                 </PaperButton>
               </View>
               <ScrollView
@@ -3907,7 +4261,7 @@ function JSMAppContent() {
                         <Surface
                           style={[
                             styles.cleanRecordCard,
-                            { minHeight: 50, paddingVertical: 6, paddingHorizontal: 10 },
+                            { minHeight: 50, paddingVertical: 8, paddingHorizontal: 12 },
                             isDragging && styles.draggingSubjectCard,
                           ]}
                           elevation={isDragging ? 5 : 2}
@@ -3929,7 +4283,7 @@ function JSMAppContent() {
                             >
                               <MaterialCommunityIcons
                                 name="drag-vertical"
-                                size={24}
+                                size={22}
                                 color={isDragging ? COLORS.navy : COLORS.silver}
                               />
                             </View>
@@ -3942,32 +4296,15 @@ function JSMAppContent() {
                               setSubjectsModal(false);
                               scheduleTimeout(
                                 () => openLongPressMenu('subject', subj, subj.name, true),
-                                250
+                                220
                               );
                             }}
-                            delayLongPress={320}
+                            delayLongPress={260}
                           >
                             <Text style={styles.recordPrimaryTitle}>
                               {idx + 1}. {subj.name}
                             </Text>
                           </Pressable>
-
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                            <TouchableOpacity
-                              style={styles.iconActionBtn}
-                              onPress={() => setSubjectForm({ id: subj.id, name: subj.name })}
-                            >
-                              <Ionicons name="create-outline" size={15} color={COLORS.navy} />
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={styles.iconActionBtn}
-                              onPress={() =>
-                                handleSoftDelete('subjects', subj, `Subject: ${subj.name}`)
-                              }
-                            >
-                              <Ionicons name="trash-outline" size={15} color={COLORS.danger} />
-                            </TouchableOpacity>
-                          </View>
                         </Surface>
                       </Animated.View>
                     );
@@ -3996,20 +4333,18 @@ function JSMAppContent() {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
             <Text style={styles.sectionTitle}>
-              {studentForm.id ? 'EDIT STUDENT DETAILS' : 'REGISTER NEW STUDENT'}
+              {studentForm.id ? 'EDIT STUDENT' : 'NEW STUDENT'}
             </Text>
-            <ScrollView style={{ maxHeight: 380 }} keyboardShouldPersistTaps="handled">
-              <Text style={styles.inputLabel}>Full Name *</Text>
+            <ScrollView style={{ maxHeight: 380, marginTop: 8 }} keyboardShouldPersistTaps="handled">
               <PaperInput
                 mode="outlined"
                 value={studentForm.name}
                 onChangeText={(t) => setStudentForm({ ...studentForm, name: t })}
-                placeholder="Student Full Name"
+                placeholder="Full Name *"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
-              <Text style={styles.inputLabel}>Select Subject / Instrument *</Text>
               <View style={styles.chipRow}>
                 {activeSubjects.map((s) => (
                   <TouchableOpacity
@@ -4031,28 +4366,25 @@ function JSMAppContent() {
                   </TouchableOpacity>
                 ))}
               </View>
-              <Text style={styles.inputLabel}>Phone / WhatsApp</Text>
               <PaperInput
                 mode="outlined"
                 value={studentForm.phone}
                 onChangeText={(t) => setStudentForm({ ...studentForm, phone: t })}
                 keyboardType="phone-pad"
-                placeholder="+91 98765 43210"
+                placeholder="Phone / WhatsApp"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
-              <Text style={styles.inputLabel}>Parent / Guardian Name</Text>
               <PaperInput
                 mode="outlined"
                 value={studentForm.guardian}
                 onChangeText={(t) => setStudentForm({ ...studentForm, guardian: t })}
-                placeholder="Optional"
+                placeholder="Parent / Guardian"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
-              <Text style={styles.inputLabel}>Enrollment Date (YYYY-MM-DD)</Text>
               <QuickDateRow
                 currentDate={studentForm.joinedDate}
                 onSelectDate={(d) => setStudentForm({ ...studentForm, joinedDate: d })}
@@ -4094,7 +4426,7 @@ function JSMAppContent() {
                 textColor={COLORS.gold}
                 onPress={handleSaveStudent}
               >
-                Save Student
+                Save
               </PaperButton>
             </View>
           </Surface>
@@ -4111,9 +4443,8 @@ function JSMAppContent() {
       >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
-            <Text style={styles.sectionTitle}>EDIT LESSON RECORD</Text>
-            <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
-              <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
+            <Text style={styles.sectionTitle}>EDIT LESSON</Text>
+            <ScrollView style={{ maxHeight: 360, marginTop: 8 }} keyboardShouldPersistTaps="handled">
               <QuickDateRow
                 currentDate={lessonEditForm.date}
                 onSelectDate={(d) => setLessonEditForm({ ...lessonEditForm, date: d })}
@@ -4137,38 +4468,38 @@ function JSMAppContent() {
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
-              <Text style={styles.inputLabel}>Technique</Text>
               <PaperInput
                 mode="outlined"
                 value={lessonEditForm.technique}
                 onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, technique: t })}
+                placeholder="Technique"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
-              <Text style={styles.inputLabel}>Lesson</Text>
               <PaperInput
                 mode="outlined"
                 value={lessonEditForm.lesson}
                 onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, lesson: t })}
+                placeholder="Lesson"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
-              <Text style={styles.inputLabel}>Repertoire</Text>
               <PaperInput
                 mode="outlined"
                 value={lessonEditForm.repertoire}
                 onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, repertoire: t })}
+                placeholder="Repertoire"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
-              <Text style={styles.inputLabel}>Assignment</Text>
               <PaperInput
                 mode="outlined"
                 value={lessonEditForm.assignment}
                 onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, assignment: t })}
+                placeholder="Assignment"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
@@ -4209,14 +4540,13 @@ function JSMAppContent() {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
             <Text style={styles.sectionTitle}>
-              {attendanceModalForm.id ? 'EDIT ATTENDANCE' : 'MARK GLOBAL ATTENDANCE'}
+              {attendanceModalForm.id ? 'EDIT ATTENDANCE' : 'MARK ATTENDANCE'}
             </Text>
-            <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
-              <Text style={styles.inputLabel}>Select Student *</Text>
+            <ScrollView style={{ maxHeight: 360, marginTop: 8 }} keyboardShouldPersistTaps="handled">
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
-                style={{ marginBottom: 8 }}
+                style={{ marginBottom: 10 }}
                 keyboardShouldPersistTaps="handled"
               >
                 <View style={{ flexDirection: 'row', gap: 6 }}>
@@ -4244,7 +4574,6 @@ function JSMAppContent() {
                   ))}
                 </View>
               </ScrollView>
-              <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
               <QuickDateRow
                 currentDate={attendanceModalForm.date}
                 onSelectDate={(d) => setAttendanceModalForm({ ...attendanceModalForm, date: d })}
@@ -4268,7 +4597,6 @@ function JSMAppContent() {
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
-              <Text style={styles.inputLabel}>Attendance Status</Text>
               <View style={styles.chipRow}>
                 {ATTENDANCE_STATUSES.map((st) => (
                   <TouchableOpacity
@@ -4293,7 +4621,6 @@ function JSMAppContent() {
                   </TouchableOpacity>
                 ))}
               </View>
-              <Text style={styles.inputLabel}>Remarks</Text>
               <PaperInput
                 mode="outlined"
                 value={attendanceModalForm.remarks}
@@ -4333,9 +4660,8 @@ function JSMAppContent() {
       <Modal visible={feeModal} transparent animationType="fade" onRequestClose={() => setFeeModal(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
-            <Text style={styles.sectionTitle}>{feeForm.id ? 'EDIT FEE TRANSACTION' : 'RECORD FEE'}</Text>
-            <ScrollView style={{ maxHeight: 420 }} keyboardShouldPersistTaps="handled">
-              <Text style={styles.inputLabel}>Select Student *</Text>
+            <Text style={styles.sectionTitle}>{feeForm.id ? 'EDIT FEE' : 'RECORD FEE'}</Text>
+            <ScrollView style={{ maxHeight: 420, marginTop: 8 }} keyboardShouldPersistTaps="handled">
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
@@ -4364,7 +4690,6 @@ function JSMAppContent() {
                   ))}
                 </View>
               </ScrollView>
-              <Text style={styles.inputLabel}>Fee Type</Text>
               <View style={styles.chipRow}>
                 {FEE_TYPES.map((ft) => (
                   <TouchableOpacity
@@ -4384,20 +4709,16 @@ function JSMAppContent() {
                 ))}
               </View>
               {feeForm.feeType === 'Monthly Fee' && (
-                <>
-                  <Text style={styles.inputLabel}>Month Paid For * (Required for Monthly Fee)</Text>
-                  <PaperInput
-                    mode="outlined"
-                    value={feeForm.monthPaidFor}
-                    onChangeText={(t) => setFeeForm({ ...feeForm, monthPaidFor: t })}
-                    placeholder="e.g., October 2026"
-                    outlineColor={COLORS.border}
-                    activeOutlineColor={COLORS.navy}
-                    style={styles.tintedInput}
-                  />
-                </>
+                <PaperInput
+                  mode="outlined"
+                  value={feeForm.monthPaidFor}
+                  onChangeText={(t) => setFeeForm({ ...feeForm, monthPaidFor: t })}
+                  placeholder="Month Paid For * (e.g., November 2026)"
+                  outlineColor={COLORS.border}
+                  activeOutlineColor={COLORS.navy}
+                  style={styles.tintedInput}
+                />
               )}
-              <Text style={styles.inputLabel}>Date (YYYY-MM-DD)</Text>
               <QuickDateRow
                 currentDate={feeForm.date}
                 onSelectDate={(d) => setFeeForm({ ...feeForm, date: d })}
@@ -4419,7 +4740,6 @@ function JSMAppContent() {
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
-              <Text style={styles.inputLabel}>Payment Mode</Text>
               <View style={styles.chipRow}>
                 {PAYMENT_MODES.map((m) => (
                   <TouchableOpacity
@@ -4436,7 +4756,6 @@ function JSMAppContent() {
                   </TouchableOpacity>
                 ))}
               </View>
-              <Text style={styles.inputLabel}>Fee Status</Text>
               <View style={styles.chipRow}>
                 {FEE_STATUSES.map((st) => (
                   <TouchableOpacity
@@ -4455,9 +4774,7 @@ function JSMAppContent() {
                   </TouchableOpacity>
                 ))}
               </View>
-              <Text style={styles.inputLabel}>
-                Amount Paid (₹) {feeForm.status === 'Unpaid' ? '(Auto-locked to 0)' : '*'}
-              </Text>
+              <Text style={styles.inputLabel}>Amount Paid (₹)</Text>
               <PaperInput
                 mode="outlined"
                 editable={feeForm.status !== 'Unpaid'}
@@ -4472,9 +4789,7 @@ function JSMAppContent() {
                   feeForm.status === 'Unpaid' && { backgroundColor: '#E5E5E5' },
                 ]}
               />
-              <Text style={styles.inputLabel}>
-                Balance Due (₹) {feeForm.status === 'Paid' ? '(Auto-locked to 0)' : '*'}
-              </Text>
+              <Text style={styles.inputLabel}>Balance Due (₹)</Text>
               <PaperInput
                 mode="outlined"
                 editable={feeForm.status !== 'Paid'}
@@ -4489,7 +4804,6 @@ function JSMAppContent() {
                   feeForm.status === 'Paid' && { backgroundColor: '#E5E5E5' },
                 ]}
               />
-              <Text style={styles.inputLabel}>Remarks</Text>
               <PaperInput
                 mode="outlined"
                 value={feeForm.remarks}
@@ -4553,7 +4867,8 @@ export default function App() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: COLORS.ivory },
   gradientHeaderWrapper: {
-    borderBottomWidth: 2,
+    backgroundColor: COLORS.navy,
+    borderBottomWidth: 1.5,
     borderBottomColor: COLORS.gold,
     overflow: 'hidden',
   },
@@ -4588,34 +4903,35 @@ const styles = StyleSheet.create({
   },
   errorBoundaryBtnText: { color: COLORS.navy, fontSize: 14, fontWeight: '800' },
   leftEdgeSwipeZone: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 16, zIndex: 50 },
-  scrollContent: { padding: 14, paddingBottom: 32 },
-  scrollContentWithFab: { padding: 14, paddingBottom: 92 },
+  scrollContent: { padding: 18, paddingBottom: 36 },
+  scrollContentWithFab: { padding: 18, paddingBottom: 98 },
 
-  // --- HOMEPAGE: COMPACT 4 CARDS + LIVE FIREBASE WIDGET ---
+  // --- HOMEPAGE: GENEROUS NEGATIVE SPACE + COMPACT 4 CARDS + HORIZONTAL MATRIX ---
   homeNoScrollContainer: {
     flex: 1,
-    paddingHorizontal: 14,
-    paddingTop: 10,
-    paddingBottom: 10,
-    gap: 10,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 12,
+    gap: 12,
   },
   compactGreetingStrip: {
-    borderRadius: 14,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
+    backgroundColor: COLORS.navy,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     overflow: 'hidden',
     shadowColor: COLORS.midnight,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.14,
-    shadowRadius: 8,
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
     elevation: 3,
   },
   compactGreetingTitle: {
     color: COLORS.white,
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '700',
     fontFamily: SERIF_FONT,
   },
@@ -4623,21 +4939,21 @@ const styles = StyleSheet.create({
     color: COLORS.gold,
     fontSize: 11,
     fontWeight: '600',
-    marginTop: 1,
+    marginTop: 2,
   },
   compactMetricsRow: {
     flexDirection: 'row',
     gap: 8,
   },
   compactMetricPill: {
-    backgroundColor: 'rgba(255,255,255,0.09)',
+    backgroundColor: 'rgba(255,255,255,0.08)',
     borderRadius: 10,
-    paddingVertical: 5,
-    paddingHorizontal: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 11,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: 'rgba(212, 185, 120, 0.35)',
-    minWidth: 62,
+    minWidth: 64,
   },
   compactMetricValue: {
     color: COLORS.gold,
@@ -4651,25 +4967,25 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
   },
   compactActionSection: {
-    gap: 9,
+    gap: 10,
   },
   compactNoticeCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 14,
-    paddingVertical: 10,
-    paddingHorizontal: 13,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 15,
     overflow: 'hidden',
     borderLeftWidth: 4,
     borderLeftColor: COLORS.gold,
     shadowColor: COLORS.midnight,
     shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.06,
     shadowRadius: 8,
     elevation: 2,
   },
   noticeWatermark: {
     position: 'absolute',
-    right: 4,
+    right: 6,
     bottom: -6,
   },
   compactNoticeHeaderRow: {
@@ -4682,42 +4998,42 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
     borderRadius: 12,
-    backgroundColor: 'rgba(12, 45, 87, 0.08)',
+    backgroundColor: 'rgba(12, 45, 87, 0.07)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   compactNoticeTitle: {
     color: COLORS.navy,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '700',
     fontFamily: SERIF_FONT,
   },
   compactNoticeDate: {
     color: COLORS.silver,
     fontSize: 10,
+    fontWeight: '600',
   },
   compactNoticeBody: {
     color: COLORS.charcoal,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 13,
+    lineHeight: 18,
   },
   threeSmallCardsRow: {
     flexDirection: 'row',
-    gap: 9,
+    gap: 10,
   },
   smallActionCard: {
-    flex: 1,
-    borderRadius: 14,
-    paddingVertical: 10,
-    paddingHorizontal: 11,
-    height: 84,
+    borderRadius: 16,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    height: 76,
     justifyContent: 'space-between',
     overflow: 'hidden',
     shadowColor: COLORS.midnight,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.09,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
     shadowRadius: 8,
-    elevation: 3,
+    elevation: 2,
   },
   smallActionCardNavy: {
     backgroundColor: COLORS.navy,
@@ -4734,9 +5050,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   smallIconCircleGold: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     backgroundColor: 'rgba(212, 185, 120, 0.16)',
     alignItems: 'center',
     justifyContent: 'center',
@@ -4744,9 +5060,9 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(212, 185, 120, 0.4)',
   },
   smallIconCircleNavy: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     backgroundColor: 'rgba(12, 45, 87, 0.08)',
     alignItems: 'center',
     justifyContent: 'center',
@@ -4768,35 +5084,21 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontFamily: SERIF_FONT,
   },
-  smallCardSubCream: {
-    color: COLORS.cream,
-    fontSize: 10,
-  },
   smallCardTitleNavy: {
     color: COLORS.navy,
     fontSize: 12,
     fontWeight: '700',
     fontFamily: SERIF_FONT,
   },
-  smallCardSubSilver: {
-    color: COLORS.silver,
-    fontSize: 10,
-  },
-  squareHintTag: {
-    color: COLORS.silver,
-    fontSize: 9,
-    fontWeight: '800',
-    letterSpacing: 0.8,
-  },
 
-  // --- LIVE FIREBASE VIEW-ONLY WIDGET STYLES ---
+  // --- HORIZONTAL LIVE FIREBASE MATRIX WIDGET ---
   liveFirebaseWidget: {
     flex: 1,
     backgroundColor: COLORS.white,
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingTop: 11,
-    paddingBottom: 6,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 8,
     borderWidth: 1,
     borderColor: COLORS.border,
     overflow: 'hidden',
@@ -4805,12 +5107,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   liveStatusDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
   },
   liveWidgetTitle: {
     color: COLORS.navy,
@@ -4820,7 +5122,7 @@ const styles = StyleSheet.create({
   },
   liveStatusPill: {
     paddingHorizontal: 6,
-    paddingVertical: 1.5,
+    paddingVertical: 2,
     borderRadius: 6,
   },
   liveStatusPillText: {
@@ -4828,117 +5130,148 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.6,
   },
-  liveWidgetSub: {
-    color: COLORS.silver,
-    fontSize: 10,
-    marginTop: 1,
-  },
-  expandSheetBtn: {
+  masterListBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 5,
     backgroundColor: COLORS.navy,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 8,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: COLORS.gold,
   },
-  expandSheetBtnText: {
+  masterListBtnText: {
     color: COLORS.gold,
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '700',
   },
-  liveFilterChipBar: {
-    marginBottom: 6,
-    paddingBottom: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F0ECE1',
-  },
-  liveFilterChip: {
-    backgroundColor: COLORS.inputTint,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  liveFilterChipActive: {
-    backgroundColor: COLORS.navy,
-  },
-  liveFilterChipText: {
-    color: COLORS.navy,
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  liveFilterChipTextActive: {
-    color: COLORS.gold,
-  },
-  liveWidgetScrollArea: {
-    flex: 1,
-  },
-  liveFeedRow: {
+  matrixWrapper: {
     flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 7,
-    paddingHorizontal: 4,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F4F1EA',
-    gap: 8,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
   },
-  liveFeedBadge: {
-    minWidth: 58,
-    paddingHorizontal: 6,
+  matrixStickyLeftCol: {
+    width: 126,
+    borderRightWidth: 1,
+    borderRightColor: COLORS.border,
+    backgroundColor: COLORS.white,
+    zIndex: 10,
+  },
+  matrixHeaderCell: {
+    height: 34,
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    backgroundColor: COLORS.ivory,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  matrixStickyHeaderCell: {
+    backgroundColor: COLORS.cream,
+  },
+  matrixHeaderText: {
+    color: COLORS.navy,
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.9,
+  },
+  matrixScrollHeaderRow: {
+    flexDirection: 'row',
+  },
+  matrixScrollDataRow: {
+    flexDirection: 'row',
+  },
+  matrixRowCell: {
+    height: 54,
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F2EFE9',
+  },
+  matrixStickyCell: {
+    backgroundColor: COLORS.white,
+  },
+  matrixRowAlt: {
+    backgroundColor: '#FCFBF8',
+  },
+  matrixStudentName: {
+    color: COLORS.navy,
+    fontSize: 12,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  matrixStudentSub: {
+    color: COLORS.silver,
+    fontSize: 10,
+    marginTop: 2,
+  },
+  matrixStatusBadge: {
+    minWidth: 96,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
   },
-  liveFeedBadgeText: {
+  matrixStatusBadgeText: {
     fontSize: 9,
     fontWeight: '800',
-    letterSpacing: 0.4,
+    letterSpacing: 0.5,
+    textAlign: 'center',
   },
-  liveFeedPrimary: {
+  matrixCellPrimary: {
     color: COLORS.navy,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  liveFeedSecondary: {
-    color: COLORS.charcoal,
     fontSize: 11,
-    marginTop: 1,
+    fontWeight: '600',
   },
-  liveFeedDate: {
+  matrixCellMeta: {
     color: COLORS.silver,
     fontSize: 10,
-    fontWeight: '600',
+    marginTop: 2,
   },
   cachedTag: {
     backgroundColor: COLORS.warningBg,
-    paddingHorizontal: 5,
+    paddingHorizontal: 4,
     paddingVertical: 1,
     borderRadius: 4,
+    flexShrink: 0,
   },
   cachedTagText: {
     color: COLORS.warning,
-    fontSize: 8,
+    fontSize: 7,
     fontWeight: '800',
   },
   sheetDivider: {
     height: 1,
     backgroundColor: '#F0ECE1',
-    marginVertical: 6,
+    marginVertical: 8,
   },
 
-  // --- ELEVATED CARDS, SERIF HEADINGS & TINTED INPUTS ---
+  // --- DIRECTORY & LEDGER STYLES WITH GENEROUS NEGATIVE SPACE ---
+  floatingSearchToggleBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.cream,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+  },
+  floatingSearchToggleBtnActive: {
+    backgroundColor: COLORS.navy,
+  },
   heroCard: {
     backgroundColor: COLORS.navy,
-    borderRadius: 16,
-    padding: 18,
-    marginBottom: 14,
+    borderRadius: 18,
+    padding: 20,
+    marginBottom: 16,
     overflow: 'hidden',
     shadowColor: COLORS.midnight,
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.18,
+    shadowOpacity: 0.14,
     shadowRadius: 12,
     elevation: 4,
   },
@@ -4951,7 +5284,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   heroDate: { color: COLORS.cream, fontSize: 12, marginTop: 3 },
-  contactActionRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
+  contactActionRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
   contactActionBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -4966,12 +5299,12 @@ const styles = StyleSheet.create({
   contactActionText: { color: COLORS.gold, fontSize: 12, fontWeight: '700' },
   whiteCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 16,
-    padding: 15,
-    marginBottom: 14,
+    borderRadius: 18,
+    padding: 18,
+    marginBottom: 16,
     shadowColor: COLORS.midnight,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.07,
+    shadowOpacity: 0.06,
     shadowRadius: 10,
     elevation: 2,
   },
@@ -4985,11 +5318,11 @@ const styles = StyleSheet.create({
   silverMeta: { color: COLORS.silver, fontSize: 12 },
   tintedInput: {
     backgroundColor: COLORS.inputTint,
-    marginBottom: 8,
+    marginBottom: 10,
   },
   activityDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.gold },
   activityTitle: { color: COLORS.navy, fontSize: 14, fontWeight: '600' },
-  activitySub: { color: COLORS.silver, fontSize: 12 },
+  activitySub: { color: COLORS.silver, fontSize: 12, marginTop: 2 },
   dangerOutlineBtnSmall: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -5006,20 +5339,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 16,
     gap: 10,
   },
   pageHeading: {
     color: COLORS.navy,
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: '700',
     fontFamily: SERIF_FONT,
   },
-  ledgerSummaryRow: { flexDirection: 'row', gap: 10, marginBottom: 14 },
+  ledgerSummaryRow: { flexDirection: 'row', gap: 12, marginBottom: 18 },
   ledgerSummaryBox: {
     flex: 1,
-    borderRadius: 14,
-    padding: 13,
+    borderRadius: 16,
+    padding: 15,
     shadowColor: COLORS.midnight,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.08,
@@ -5027,59 +5360,59 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   ledgerSummaryLabel: { color: COLORS.cream, fontSize: 10, fontWeight: '700', letterSpacing: 1 },
-  ledgerSummaryValGold: { color: COLORS.gold, fontSize: 18, fontWeight: '800', marginTop: 4 },
-  groupBlock: { marginBottom: 14 },
+  ledgerSummaryValGold: { color: COLORS.gold, fontSize: 19, fontWeight: '800', marginTop: 4 },
+  groupBlock: { marginBottom: 20 },
   groupHeaderBar: {
     backgroundColor: COLORS.navy,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     borderLeftWidth: 4,
     borderLeftColor: COLORS.gold,
+    marginBottom: 4,
   },
   groupHeaderTitle: { color: COLORS.gold, fontSize: 11, fontWeight: '800', letterSpacing: 1.2 },
   groupHeaderCount: { color: COLORS.cream, fontSize: 12, fontWeight: '700' },
   monthSubHeader: {
     color: COLORS.navy,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '700',
     fontFamily: SERIF_FONT,
-    marginVertical: 4,
+    marginVertical: 6,
     paddingLeft: 4,
   },
   cleanRecordCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 14,
-    paddingVertical: 9,
-    paddingHorizontal: 13,
-    marginTop: 6,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 15,
+    marginTop: 8,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
     shadowColor: COLORS.midnight,
     shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.07,
+    shadowOpacity: 0.05,
     shadowRadius: 8,
     elevation: 2,
   },
   draggingSubjectCard: { backgroundColor: COLORS.cream, borderColor: COLORS.gold, borderWidth: 1.5 },
   dragHandleBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-    marginRight: 2,
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+    marginRight: 4,
     justifyContent: 'center',
     alignItems: 'center',
     borderRadius: 6,
     backgroundColor: COLORS.ivory,
   },
-  cardPressed: { opacity: 0.75 },
-  recordPrimaryTitle: { color: COLORS.navy, fontSize: 14, fontWeight: '700' },
-  recordSecondarySub: { color: COLORS.silver, fontSize: 11, marginTop: 2 },
-  recordDetailLine: { color: COLORS.charcoal, fontSize: 12, marginTop: 3 },
+  recordPrimaryTitle: { color: COLORS.navy, fontSize: 15, fontWeight: '700' },
+  recordSecondarySub: { color: COLORS.silver, fontSize: 12, marginTop: 3 },
+  recordDetailLine: { color: COLORS.charcoal, fontSize: 12, marginTop: 4 },
   boldLabel: { fontWeight: '700', color: COLORS.navy },
   priorityBadge: {
     backgroundColor: COLORS.navy,
@@ -5090,7 +5423,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   priorityBadgeText: { color: COLORS.gold, fontSize: 9, fontWeight: '800' },
-  feeBadge: { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 8 },
+  feeBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
   feeBadgePaid: { backgroundColor: COLORS.successBg },
   feeBadgeDue: { backgroundColor: COLORS.dangerBg },
   feeBadgeNeutral: { backgroundColor: COLORS.cream },
@@ -5099,9 +5432,11 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.cream,
     borderColor: COLORS.gold,
     borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingHorizontal: 11,
+    paddingVertical: 5,
     borderRadius: 8,
+    minWidth: 86,
+    alignItems: 'center',
   },
   statusPillText: { color: COLORS.navy, fontSize: 11, fontWeight: '700' },
   backButtonRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
@@ -5109,23 +5444,22 @@ const styles = StyleSheet.create({
   secondaryButtonSmall: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    justifyContent: 'center',
     backgroundColor: COLORS.cream,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: COLORS.gold,
   },
-  secondaryButtonSmallText: { color: COLORS.navy, fontSize: 12, fontWeight: '700' },
-  profileStatsGrid: { flexDirection: 'row', gap: 8, marginTop: 14 },
+  profileStatsGrid: { flexDirection: 'row', gap: 10, marginTop: 16 },
   profileStatBox: {
     flex: 1,
     backgroundColor: 'rgba(255,255,255,0.08)',
-    borderRadius: 10,
-    padding: 9,
+    borderRadius: 12,
+    padding: 10,
     borderWidth: 1,
-    borderColor: 'rgba(212, 185, 120, 0.4)',
+    borderColor: 'rgba(212, 185, 120, 0.35)',
     alignItems: 'center',
   },
   profileStatLabel: { color: COLORS.cream, fontSize: 9, fontWeight: '700', letterSpacing: 0.8 },
@@ -5133,21 +5467,21 @@ const styles = StyleSheet.create({
   pillNavContainer: {
     flexDirection: 'row',
     backgroundColor: COLORS.cream,
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 4,
-    marginBottom: 14,
+    marginBottom: 16,
   },
-  pillNavItem: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 9 },
+  pillNavItem: { flex: 1, paddingVertical: 9, alignItems: 'center', borderRadius: 10 },
   pillNavItemActive: { backgroundColor: COLORS.navy },
   pillNavText: { color: COLORS.navy, fontSize: 12, fontWeight: '700' },
   pillNavTextActive: { color: COLORS.gold },
   inputLabel: { color: COLORS.navy, fontSize: 12, fontWeight: '700', marginTop: 6, marginBottom: 4 },
-  quickDateRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
+  quickDateRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 8 },
   quickDateChip: {
     backgroundColor: COLORS.cream,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: '#D8D2C5',
   },
@@ -5157,21 +5491,21 @@ const styles = StyleSheet.create({
   quickDateChipCalendar: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 5,
     backgroundColor: COLORS.navy,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: COLORS.gold,
   },
   quickDateChipCalendarText: { fontSize: 11, fontWeight: '700', color: COLORS.gold },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 6 },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 8 },
   choiceChip: {
     backgroundColor: COLORS.cream,
-    paddingHorizontal: 12,
+    paddingHorizontal: 13,
     paddingVertical: 7,
-    borderRadius: 8,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: '#D8D2C5',
   },
@@ -5193,15 +5527,14 @@ const styles = StyleSheet.create({
     borderColor: COLORS.gold,
     borderWidth: 1,
     paddingHorizontal: 14,
-    paddingVertical: 9,
-    minHeight: 38,
-    minWidth: 78,
+    paddingVertical: 8,
+    minHeight: 36,
     borderRadius: 10,
   },
-  pdfExportTouchBtnText: { color: COLORS.gold, fontSize: 12, fontWeight: '800' },
+  pdfExportTouchBtnText: { color: COLORS.gold, fontSize: 11, fontWeight: '800' },
   iconActionBtn: {
     padding: 6,
-    borderRadius: 6,
+    borderRadius: 8,
     backgroundColor: COLORS.ivory,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -5216,23 +5549,41 @@ const styles = StyleSheet.create({
   },
   daysRemainingText: { color: COLORS.navy, fontSize: 11, fontWeight: '700' },
 
-  // --- WATERMARK EMPTY STATE ---
+  // --- SMART EMPTY STATE ---
   emptyWatermarkContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 22,
+    paddingVertical: 26,
     position: 'relative',
   },
   watermarkIcon: {
     position: 'absolute',
   },
-  emptyText: { color: COLORS.silver, fontSize: 13, textAlign: 'center', paddingVertical: 8 },
+  emptyText: { color: COLORS.silver, fontSize: 13, textAlign: 'center', paddingVertical: 6 },
+  emptyStateActionBtn: {
+    marginTop: 8,
+    backgroundColor: COLORS.navy,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+  },
+  emptyStateActionText: {
+    color: COLORS.gold,
+    fontSize: 11,
+    fontWeight: '700',
+  },
 
-  // --- FLOATING ACTION BUTTON (FAB) ---
-  fabButton: {
+  // --- CLEAN FLOATING ACTION BUTTON (FAB) ---
+  fabContainerPos: {
     position: 'absolute',
     right: 18,
     bottom: 18,
+    zIndex: 40,
+  },
+  fabButton: {
+    backgroundColor: COLORS.navy,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -5244,23 +5595,22 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     shadowColor: COLORS.midnight,
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.28,
+    shadowOpacity: 0.25,
     shadowRadius: 12,
-    elevation: 7,
-    zIndex: 40,
+    elevation: 6,
   },
   fabButtonText: {
     color: COLORS.gold,
     fontSize: 13,
     fontWeight: '800',
-    letterSpacing: 0.5,
+    letterSpacing: 0.4,
   },
 
   // --- BOTTOM NAVIGATION & DRAWER ---
   bottomTabBar: {
     flexDirection: 'row',
     backgroundColor: COLORS.navy,
-    borderTopWidth: 2,
+    borderTopWidth: 1.5,
     borderTopColor: COLORS.gold,
     paddingVertical: 8,
   },
@@ -5291,7 +5641,7 @@ const styles = StyleSheet.create({
   drawerHeader: {
     backgroundColor: COLORS.navy,
     padding: 22,
-    borderBottomWidth: 2,
+    borderBottomWidth: 1.5,
     borderBottomColor: COLORS.gold,
     overflow: 'hidden',
   },
@@ -5308,8 +5658,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
     paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
     backgroundColor: COLORS.cream,
   },
   drawerNavItemActive: { backgroundColor: COLORS.navy, borderWidth: 1, borderColor: COLORS.gold },
@@ -5317,18 +5667,19 @@ const styles = StyleSheet.create({
   drawerNavTextActive: { color: COLORS.gold },
   drawerDivider: { height: 1, backgroundColor: '#D8D2C5', marginVertical: 8 },
 
-  // --- FULL-SCREEN MODALS ---
+  // --- FULL-SCREEN MODALS & MASTER FILTER BAR ---
   fullScreenModalSafe: {
     flex: 1,
     backgroundColor: COLORS.ivory,
   },
   fullScreenModalHeader: {
+    backgroundColor: COLORS.navy,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 18,
-    paddingVertical: 16,
-    borderBottomWidth: 2,
+    paddingVertical: 14,
+    borderBottomWidth: 1.5,
     borderBottomColor: COLORS.gold,
     overflow: 'hidden',
   },
@@ -5338,13 +5689,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontFamily: SERIF_FONT,
   },
-  fullScreenModalSub: {
-    color: COLORS.cream,
-    fontSize: 11,
-    marginTop: 2,
-  },
   fullScreenCloseBtn: {
-    padding: 6,
+    padding: 5,
     borderRadius: 20,
     backgroundColor: 'rgba(255,255,255,0.1)',
   },
@@ -5352,13 +5698,43 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingTop: 12,
+    paddingHorizontal: 18,
+    paddingTop: 14,
     paddingBottom: 4,
   },
+  masterFilterSection: {
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
 
-  // --- MODALS & CALENDAR ---
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(5, 19, 41, 0.62)', justifyContent: 'center', padding: 18 },
+  // --- MODALS, BOTTOM ACTION SHEET & CALENDAR ---
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(5, 19, 41, 0.6)', justifyContent: 'center', padding: 18 },
+  bottomSheetBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(5, 19, 41, 0.55)',
+    justifyContent: 'flex-end',
+  },
+  bottomContextSheet: {
+    backgroundColor: COLORS.white,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 22,
+    paddingTop: 12,
+    paddingBottom: 28,
+    borderTopWidth: 2,
+    borderTopColor: COLORS.gold,
+    alignItems: 'center',
+  },
+  bottomSheetPill: {
+    width: 42,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: COLORS.border,
+    marginBottom: 12,
+  },
   calendarPortalOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(5, 19, 41, 0.65)',
@@ -5369,7 +5745,7 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 18,
+    borderRadius: 20,
     padding: 20,
     borderWidth: 1.5,
     borderColor: COLORS.gold,
@@ -5380,15 +5756,6 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   modalBtnRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 14 },
-  contextSheet: {
-    backgroundColor: COLORS.white,
-    borderRadius: 18,
-    padding: 20,
-    borderWidth: 1.5,
-    borderColor: COLORS.gold,
-    alignItems: 'center',
-    width: '100%',
-  },
   contextSheetHeader: {
     color: COLORS.navy,
     fontSize: 16,
@@ -5399,8 +5766,11 @@ const styles = StyleSheet.create({
   contextDivider: { height: 1, backgroundColor: COLORS.cream, width: '100%', marginVertical: 12 },
   contextOptionBtn: {
     width: '100%',
-    paddingVertical: 12,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: '#F2EFE9',
   },
