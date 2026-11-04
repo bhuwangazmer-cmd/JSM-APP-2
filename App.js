@@ -85,8 +85,8 @@ const db = getFirestore(app);
 const SERIF_FONT = Platform.select({ ios: 'Georgia', android: 'serif', default: 'serif' });
 
 const COLORS = {
-  midnight: '#051329',
-  navyDark: '#081F3F',
+  midnight: '#071B36',
+  navyDark: '#092244',
   navy: '#0C2D57',
   navyLight: '#163E73',
   gold: '#D4B978',
@@ -100,11 +100,23 @@ const COLORS = {
   dangerBg: '#FDE8E8',
   success: '#2D6A4F',
   successBg: '#E6F4EA',
+  liveGreen: '#22C55E',
+  offlineRed: '#EF4444',
+  syncAmber: '#F59E0B',
   warning: '#B45309',
   warningBg: '#FEF3C7',
   charcoal: '#1D242B',
   border: '#E6E1D6',
 };
+
+// Precomputed 28-step 1-RGB-unit smooth interpolation between #071B36 and #0C2D57 (zero banding)
+const SMOOTH_NAVY_STEPS = Array.from({ length: 28 }, (_, i) => {
+  const t = i / 27;
+  const r = Math.round(7 + t * (12 - 7));
+  const g = Math.round(27 + t * (45 - 27));
+  const b = Math.round(54 + t * (87 - 54));
+  return `rgb(${r},${g},${b})`;
+});
 
 const jsmTheme = {
   ...MD3LightTheme,
@@ -132,6 +144,7 @@ const FEE_STATUSES = ['Paid', 'Partial', 'Unpaid'];
 
 const MAIN_TABS = ['Home', 'Students', 'Attendance', 'Fees', 'Trash'];
 const PROFILE_TABS = ['Classes', 'Attendance', 'Notes', 'Fees'];
+const LIVE_FEED_FILTERS = ['All', 'Classes', 'Attendance', 'Fees', 'Subjects'];
 const SUBJECT_ROW_HEIGHT = 60;
 
 // ==========================================
@@ -143,7 +156,7 @@ const safeNumber = (val, fallback = 0) => {
   return Number.isFinite(n) ? n : fallback;
 };
 
-const sanitizeDocRecord = (id, raw = {}) => {
+const sanitizeDocRecord = (id, raw = {}, hasPendingWrites = false) => {
   const data = raw && typeof raw === 'object' ? raw : {};
   return {
     ...data,
@@ -175,10 +188,12 @@ const sanitizeDocRecord = (id, raw = {}) => {
     deletedAt: data.deletedAt ? safeNumber(data.deletedAt, Date.now()) : null,
     isDeleted: Boolean(data.isDeleted),
     priorityNote: Boolean(data.priorityNote),
+    _pendingSync: Boolean(hasPendingWrites),
   };
 };
 
-const withWriteTimeout = (promise, ms = 3500) => {
+// Allows instant local offline caching in Firestore without blocking UI when offline
+const withWriteTimeout = (promise, ms = 2500) => {
   let timerId;
   const timeoutPromise = new Promise((resolve) => {
     timerId = setTimeout(() => resolve({ timedOutOffline: true }), ms);
@@ -304,12 +319,11 @@ const commitBatchSoftDeletes = async (entries) => {
 // ==========================================
 // 4. REUSABLE AESTHETIC & UI COMPONENTS
 // ==========================================
-const NavyMidnightGradient = ({ style }) => (
+const SmoothNavyGradient = ({ style }) => (
   <View style={[StyleSheet.absoluteFill, { overflow: 'hidden' }, style]} pointerEvents="none">
-    <View style={{ flex: 1, backgroundColor: '#051329' }} />
-    <View style={{ flex: 1, backgroundColor: '#071A36' }} />
-    <View style={{ flex: 1, backgroundColor: '#092347' }} />
-    <View style={{ flex: 1, backgroundColor: '#0C2D57' }} />
+    {SMOOTH_NAVY_STEPS.map((color, idx) => (
+      <View key={idx} style={{ flex: 1, backgroundColor: color }} />
+    ))}
   </View>
 );
 
@@ -317,7 +331,7 @@ const EmptyStateWatermark = ({ message, compact = false }) => (
   <View style={[styles.emptyWatermarkContainer, compact && { paddingVertical: 10 }]}>
     <MaterialCommunityIcons
       name="music-clef-treble"
-      size={compact ? 42 : 68}
+      size={compact ? 40 : 64}
       color="rgba(12, 45, 87, 0.06)"
       style={styles.watermarkIcon}
     />
@@ -516,9 +530,16 @@ function JSMAppContent() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerSlideAnim = useRef(new Animated.Value(-290)).current;
   const drawerBackdropAnim = useRef(new Animated.Value(0)).current;
+  const liveDotPulseAnim = useRef(new Animated.Value(1)).current;
   const savingLockRef = useRef(false);
   const isMountedRef = useRef(true);
   const pendingTimeoutsRef = useRef([]);
+
+  // Network & Offline Sync States
+  const [isNetworkOnline, setIsNetworkOnline] = useState(true);
+  const [pendingSyncByCol, setPendingSyncByCol] = useState({});
+  const [liveFeedFilter, setLiveFeedFilter] = useState('All');
+  const [liveSheetModal, setLiveSheetModal] = useState(false);
 
   const scheduleTimeout = useCallback((fn, delayMs) => {
     const id = setTimeout(() => {
@@ -535,6 +556,44 @@ function JSMAppContent() {
       isMountedRef.current = false;
       pendingTimeoutsRef.current.forEach((id) => clearTimeout(id));
       pendingTimeoutsRef.current = [];
+    };
+  }, []);
+
+  // Subtle pulse animation for the live indicator dot
+  useEffect(() => {
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(liveDotPulseAnim, { toValue: 0.35, duration: 900, useNativeDriver: true }),
+        Animated.timing(liveDotPulseAnim, { toValue: 1, duration: 900, useNativeDriver: true }),
+      ])
+    );
+    pulse.start();
+    return () => pulse.stop();
+  }, [liveDotPulseAnim]);
+
+  // Lightweight Network Connectivity Monitor (detects offline vs online for the Live Feed dot)
+  useEffect(() => {
+    let active = true;
+    const verifyConnection = async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        await fetch('https://clients3.google.com/generate_204', {
+          method: 'HEAD',
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        if (active && isMountedRef.current) setIsNetworkOnline(true);
+      } catch (e) {
+        if (active && isMountedRef.current) setIsNetworkOnline(false);
+      }
+    };
+    verifyConnection();
+    const intervalId = setInterval(verifyConnection, 7000);
+    return () => {
+      active = false;
+      clearInterval(intervalId);
     };
   }, []);
 
@@ -710,6 +769,10 @@ function JSMAppContent() {
         setCalendarPicker((prev) => ({ ...prev, visible: false }));
         return true;
       }
+      if (liveSheetModal) {
+        setLiveSheetModal(false);
+        return true;
+      }
       if (drawerOpen) {
         closeDrawer();
         return true;
@@ -727,18 +790,25 @@ function JSMAppContent() {
       return false;
     });
     return () => sub.remove();
-  }, [activeTab, selectedStudentId, calendarPicker.visible, drawerOpen, closeDrawer]);
+  }, [activeTab, selectedStudentId, calendarPicker.visible, liveSheetModal, drawerOpen, closeDrawer]);
 
+  // Real-Time Firestore Listeners with Metadata Tracking for Offline Caching
   useEffect(() => {
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
     const timer = setTimeout(() => {
       initialLoadDone.current = true;
     }, 1200);
+
     const handleSnapshotWithAutoPurge = (colName, snapshot, setter) => {
       if (!isMountedRef.current) return;
       const records = [];
+      const hasPending = Boolean(snapshot.metadata?.hasPendingWrites);
+      setPendingSyncByCol((prev) =>
+        prev[colName] === hasPending ? prev : { ...prev, [colName]: hasPending }
+      );
+
       snapshot.forEach((docSnap) => {
-        const clean = sanitizeDocRecord(docSnap.id, docSnap.data());
+        const clean = sanitizeDocRecord(docSnap.id, docSnap.data(), docSnap.metadata?.hasPendingWrites);
         if (clean.isDeleted && clean.deletedAt && Date.now() - clean.deletedAt > THIRTY_DAYS_MS) {
           deleteDoc(doc(db, colName, clean.id)).catch(() => {});
         } else {
@@ -751,36 +821,42 @@ function JSMAppContent() {
 
     const unsubSubjects = onSnapshot(
       collection(db, 'subjects'),
+      { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('subjects', snap, setSubjects),
       () => {}
     );
     const unsubStudents = onSnapshot(
       collection(db, 'students'),
+      { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('students', snap, setStudents),
       () => {}
     );
     const unsubLessons = onSnapshot(
       collection(db, 'lessons'),
+      { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('lessons', snap, setLessons),
       () => {}
     );
     const unsubAttendance = onSnapshot(
       collection(db, 'attendance'),
+      { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('attendance', snap, setAttendance),
       () => {}
     );
     const unsubFees = onSnapshot(
       collection(db, 'fees'),
+      { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('fees', snap, setFees),
       () => {}
     );
     const unsubActivities = onSnapshot(
       collection(db, 'activities'),
+      { includeMetadataChanges: true },
       (snap) => {
         if (!isMountedRef.current) return;
         const list = [];
         snap.forEach((d) => {
-          const clean = sanitizeDocRecord(d.id, d.data());
+          const clean = sanitizeDocRecord(d.id, d.data(), d.metadata?.hasPendingWrites);
           if (clean.isDeleted && clean.deletedAt && Date.now() - clean.deletedAt > THIRTY_DAYS_MS) {
             deleteDoc(doc(db, 'activities', clean.id)).catch(() => {});
           } else if (!clean.isDeleted && clean.timestamp && Date.now() - clean.timestamp > THIRTY_DAYS_MS) {
@@ -797,6 +873,7 @@ function JSMAppContent() {
     );
     const unsubNotice = onSnapshot(
       doc(db, 'settings', 'noticeBoard'),
+      { includeMetadataChanges: true },
       (docSnap) => {
         if (!isMountedRef.current) return;
         if (docSnap.exists()) {
@@ -819,6 +896,11 @@ function JSMAppContent() {
       unsubNotice();
     };
   }, []);
+
+  const hasAnyPendingWrites = useMemo(
+    () => Object.values(pendingSyncByCol).some(Boolean),
+    [pendingSyncByCol]
+  );
 
   const logActivity = async (actionTitle, subtitle) => {
     try {
@@ -867,6 +949,96 @@ function JSMAppContent() {
     [fees, studentMap]
   );
   const activeActivities = useMemo(() => activities.filter((a) => !a.isDeleted), [activities]);
+
+  // Unified Live Firebase Feed (combines latest entries across Classes, Attendance, Fees, and Subjects)
+  const unifiedLiveFeed = useMemo(() => {
+    const items = [];
+
+    activeLessons.slice(0, 20).forEach((l) => {
+      const st = studentMap[l.studentId];
+      const subjName = safeString(subjectMap[st?.subjectId]?.name, 'Music');
+      const details = [l.lesson, l.technique, l.repertoire, l.assignment].filter(Boolean).join(' • ');
+      items.push({
+        id: `les-${l.id}`,
+        category: 'Classes',
+        badge: 'CLASS',
+        badgeBg: '#E0F2FE',
+        badgeColor: '#0369A1',
+        studentId: l.studentId,
+        primary: `${safeString(st?.name, 'Student')} (${subjName})`,
+        secondary: details || 'Lesson entry recorded',
+        dateISO: safeString(l.date),
+        pendingSync: l._pendingSync,
+      });
+    });
+
+    activeAttendance.slice(0, 20).forEach((a) => {
+      const st = studentMap[a.studentId];
+      const subjName = safeString(subjectMap[st?.subjectId]?.name, 'Music');
+      items.push({
+        id: `att-${a.id}`,
+        category: 'Attendance',
+        badge: a.status.toUpperCase(),
+        badgeBg:
+          a.status === 'Present'
+            ? COLORS.successBg
+            : a.status === 'Absent'
+            ? COLORS.dangerBg
+            : COLORS.warningBg,
+        badgeColor:
+          a.status === 'Present'
+            ? COLORS.success
+            : a.status === 'Absent'
+            ? COLORS.danger
+            : COLORS.warning,
+        studentId: a.studentId,
+        primary: `${safeString(st?.name, 'Student')} (${subjName})`,
+        secondary: a.remarks ? `Attendance: ${a.status} • ${a.remarks}` : `Marked ${a.status}`,
+        dateISO: safeString(a.date),
+        pendingSync: a._pendingSync,
+      });
+    });
+
+    activeFees.slice(0, 20).forEach((f) => {
+      const st = studentMap[f.studentId];
+      const subjName = safeString(subjectMap[st?.subjectId]?.name, 'Music');
+      items.push({
+        id: `fee-${f.id}`,
+        category: 'Fees',
+        badge: `₹${safeNumber(f.amountPaid, 0)}`,
+        badgeBg: f.status === 'Paid' ? COLORS.successBg : COLORS.dangerBg,
+        badgeColor: f.status === 'Paid' ? COLORS.success : COLORS.danger,
+        studentId: f.studentId,
+        primary: `${safeString(st?.name, 'Student')} (${subjName})`,
+        secondary: `${f.feeType}${f.monthPaidFor ? ` • ${f.monthPaidFor}` : ''} • ${f.mode} (${f.status})`,
+        dateISO: safeString(f.date),
+        pendingSync: f._pendingSync,
+      });
+    });
+
+    activeSubjects.forEach((subj) => {
+      const count = activeStudents.filter((st) => st.subjectId === subj.id).length;
+      items.push({
+        id: `subj-${subj.id}`,
+        category: 'Subjects',
+        badge: 'SUBJECT',
+        badgeBg: COLORS.cream,
+        badgeColor: COLORS.navy,
+        studentId: null,
+        primary: safeString(subj.name, 'Instrument'),
+        secondary: `${count} active student${count === 1 ? '' : 's'} enrolled`,
+        dateISO: getTodayISO(),
+        pendingSync: subj._pendingSync,
+      });
+    });
+
+    return items.sort((a, b) => safeString(b.dateISO).localeCompare(safeString(a.dateISO)));
+  }, [activeLessons, activeAttendance, activeFees, activeSubjects, activeStudents, studentMap, subjectMap]);
+
+  const filteredLiveFeed = useMemo(() => {
+    if (liveFeedFilter === 'All') return unifiedLiveFeed.slice(0, 35);
+    return unifiedLiveFeed.filter((item) => item.category === liveFeedFilter).slice(0, 35);
+  }, [unifiedLiveFeed, liveFeedFilter]);
 
   useEffect(() => {
     activeSubjectsRef.current = activeSubjects;
@@ -1923,17 +2095,26 @@ function JSMAppContent() {
   };
 
   // ==========================================
-  // 6. NON-SCROLLING 2x2 HOMEPAGE GRID
+  // 6. HOMEPAGE: COMPACT 4 CARDS + LIVE FIREBASE WIDGET
   // ==========================================
   const renderHomeTab = () => {
     const todayISO = getTodayISO();
-    const latestActivity = activeActivities[0] || null;
+    const liveStatusColor = !isNetworkOnline
+      ? COLORS.offlineRed
+      : hasAnyPendingWrites
+      ? COLORS.syncAmber
+      : COLORS.liveGreen;
+    const liveStatusLabel = !isNetworkOnline
+      ? 'OFFLINE • LOCAL CACHE'
+      : hasAnyPendingWrites
+      ? 'SYNCING TO FIREBASE...'
+      : 'LIVE';
 
     return (
       <View style={styles.homeNoScrollContainer}>
-        {/* Compact Relocated Greeting & Stats Strip */}
+        {/* 1. Compact Greeting & Stats Banner */}
         <View style={styles.compactGreetingStrip}>
-          <NavyMidnightGradient />
+          <SmoothNavyGradient />
           <View style={{ flex: 1 }}>
             <Text style={styles.compactGreetingTitle}>{getGreetingByLocalTime()}, Maestro</Text>
             <Text style={styles.compactGreetingDate}>{formatReadableLocalDate(todayISO)}</Text>
@@ -1950,13 +2131,53 @@ function JSMAppContent() {
           </View>
         </View>
 
-        {/* 2x2 Square Cards Grid (Fits Screen Without Scrolling) */}
-        <View style={styles.squareGridWrapper}>
-          <View style={styles.squareGridRow}>
-            {/* Square 1: Add Student */}
+        {/* 2. Top Half: Slightly Larger Notice Board + 3 Smaller Action Cards */}
+        <View style={styles.compactActionSection}>
+          {/* Slightly Larger Full-Width Notice Board Card */}
+          <TouchableOpacity
+            activeOpacity={0.86}
+            style={styles.compactNoticeCard}
+            onPress={() => {
+              triggerHaptic(10);
+              setNoticeInput(noticeText);
+              setNoticeEditModal(true);
+            }}
+          >
+            <MaterialCommunityIcons
+              name="music-clef-treble"
+              size={52}
+              color="rgba(12, 45, 87, 0.05)"
+              style={styles.noticeWatermark}
+            />
+            <View style={styles.compactNoticeHeaderRow}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <View style={styles.compactNoticeIconWrap}>
+                  <Ionicons name="megaphone-outline" size={15} color={COLORS.navy} />
+                </View>
+                <Text style={styles.compactNoticeTitle}>Notice Board</Text>
+                {noticeUpdatedAt ? (
+                  <Text style={styles.compactNoticeDate}>• {formatReadableLocalDate(noticeUpdatedAt)}</Text>
+                ) : null}
+              </View>
+              <Text style={styles.squareHintTag}>TAP TO EDIT</Text>
+            </View>
+            <Text
+              style={[
+                styles.compactNoticeBody,
+                !noticeText && { color: COLORS.silver, fontStyle: 'italic' },
+              ]}
+              numberOfLines={2}
+            >
+              {noticeText ? noticeText : 'No active announcements posted. Tap to write a notice.'}
+            </Text>
+          </TouchableOpacity>
+
+          {/* 3 Compact Square/Rectangular Action Cards in 1 Row */}
+          <View style={styles.threeSmallCardsRow}>
+            {/* Small Card 1: Add Student */}
             <TouchableOpacity
               activeOpacity={0.86}
-              style={[styles.squareGridCard, styles.squareGridCardNavy]}
+              style={[styles.smallActionCard, styles.smallActionCardNavy]}
               onPress={() => {
                 triggerHaptic(10);
                 if (activeSubjects.length === 0)
@@ -1975,135 +2196,220 @@ function JSMAppContent() {
                 setStudentModal(true);
               }}
             >
-              <NavyMidnightGradient />
-              <View style={styles.squareCardTopRow}>
-                <View style={styles.squareIconCircleGold}>
-                  <Ionicons name="person-add-outline" size={24} color={COLORS.gold} />
+              <SmoothNavyGradient />
+              <View style={styles.smallCardTopRow}>
+                <View style={styles.smallIconCircleGold}>
+                  <Ionicons name="person-add-outline" size={17} color={COLORS.gold} />
                 </View>
-                <Ionicons name="add-circle-outline" size={20} color={COLORS.gold} />
+                <Ionicons name="add-circle-outline" size={15} color={COLORS.gold} />
               </View>
               <View>
-                <Text style={styles.squareCardTitleGold}>Add Student</Text>
-                <Text style={styles.squareCardSubCream}>New Registration</Text>
+                <Text style={styles.smallCardTitleGold} numberOfLines={1}>
+                  Add Student
+                </Text>
+                <Text style={styles.smallCardSubCream} numberOfLines={1}>
+                  New Entry
+                </Text>
               </View>
             </TouchableOpacity>
 
-            {/* Square 2: Add Subjects */}
+            {/* Small Card 2: Add Subjects */}
             <TouchableOpacity
               activeOpacity={0.86}
-              style={[styles.squareGridCard, styles.squareGridCardCream]}
+              style={[styles.smallActionCard, styles.smallActionCardCream]}
               onPress={() => {
                 triggerHaptic(10);
                 setSubjectForm({ id: null, name: '' });
                 setSubjectsModal(true);
               }}
             >
-              <View style={styles.squareCardTopRow}>
-                <View style={styles.squareIconCircleNavy}>
-                  <Ionicons name="musical-notes-outline" size={24} color={COLORS.navy} />
+              <View style={styles.smallCardTopRow}>
+                <View style={styles.smallIconCircleNavy}>
+                  <Ionicons name="musical-notes-outline" size={17} color={COLORS.navy} />
                 </View>
-                <View style={styles.squareCountBadge}>
-                  <Text style={styles.squareCountBadgeText}>{activeSubjects.length}</Text>
+                <View style={styles.smallCountBadge}>
+                  <Text style={styles.smallCountBadgeText}>{activeSubjects.length}</Text>
                 </View>
               </View>
               <View>
-                <Text style={styles.squareCardTitleNavy}>Add Subjects</Text>
-                <Text style={styles.squareCardSubSilver}>{activeSubjects.length} Active</Text>
-              </View>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.squareGridRow}>
-            {/* Square 3: Notice Board (Inline Display, Tap to Edit or Remove) */}
-            <TouchableOpacity
-              activeOpacity={0.86}
-              style={[styles.squareGridCard, styles.squareGridCardWhite]}
-              onPress={() => {
-                triggerHaptic(10);
-                setNoticeInput(noticeText);
-                setNoticeEditModal(true);
-              }}
-            >
-              <MaterialCommunityIcons
-                name="music-clef-treble"
-                size={60}
-                color="rgba(12, 45, 87, 0.045)"
-                style={styles.cardCornerWatermark}
-              />
-              <View style={styles.squareCardTopRow}>
-                <View style={styles.squareIconCircleNavy}>
-                  <Ionicons name="megaphone-outline" size={22} color={COLORS.navy} />
-                </View>
-                <Text style={styles.squareHintTag}>TAP TO EDIT</Text>
-              </View>
-              <View style={{ flex: 1, justifyContent: 'center', marginVertical: 6 }}>
-                <Text
-                  style={[
-                    styles.squareNoticeInlineText,
-                    !noticeText && { color: COLORS.silver, fontStyle: 'italic' },
-                  ]}
-                  numberOfLines={4}
-                >
-                  {noticeText ? noticeText : 'No active notice posted. Tap to write an announcement.'}
+                <Text style={styles.smallCardTitleNavy} numberOfLines={1}>
+                  Add Subjects
                 </Text>
-              </View>
-              <View>
-                <Text style={styles.squareCardTitleNavy}>Notice Board</Text>
-                <Text style={styles.squareCardSubSilver}>
-                  {noticeUpdatedAt ? `Updated ${formatReadableLocalDate(noticeUpdatedAt)}` : 'Tap to edit / clear'}
+                <Text style={styles.smallCardSubSilver} numberOfLines={1}>
+                  {activeSubjects.length} Active
                 </Text>
               </View>
             </TouchableOpacity>
 
-            {/* Square 4: Recent Activity (Tap to Open Full-Screen Modal) */}
+            {/* Small Card 3: Recent Activity */}
             <TouchableOpacity
               activeOpacity={0.86}
-              style={[styles.squareGridCard, styles.squareGridCardWhite]}
+              style={[styles.smallActionCard, styles.smallActionCardWhite]}
               onPress={() => {
                 triggerHaptic(10);
                 setActivityFilterTodayOnly(false);
                 setTodayLogModal(true);
               }}
             >
-              <MaterialCommunityIcons
-                name="music-clef-treble"
-                size={60}
-                color="rgba(12, 45, 87, 0.045)"
-                style={styles.cardCornerWatermark}
-              />
-              <View style={styles.squareCardTopRow}>
-                <View style={styles.squareIconCircleNavy}>
-                  <Ionicons name="pulse-outline" size={22} color={COLORS.navy} />
+              <View style={styles.smallCardTopRow}>
+                <View style={styles.smallIconCircleNavy}>
+                  <Ionicons name="pulse-outline" size={17} color={COLORS.navy} />
                 </View>
-                <View style={styles.squareCountBadge}>
-                  <Text style={styles.squareCountBadgeText}>{activeActivities.length}</Text>
+                <View style={styles.smallCountBadge}>
+                  <Text style={styles.smallCountBadgeText}>{activeActivities.length}</Text>
                 </View>
-              </View>
-              <View style={{ flex: 1, justifyContent: 'center', marginVertical: 6 }}>
-                {latestActivity ? (
-                  <>
-                    <Text style={styles.squareActivityLatestTitle} numberOfLines={2}>
-                      {latestActivity.title}
-                    </Text>
-                    {latestActivity.subtitle ? (
-                      <Text style={styles.squareActivityLatestSub} numberOfLines={1}>
-                        {latestActivity.subtitle}
-                      </Text>
-                    ) : null}
-                  </>
-                ) : (
-                  <Text style={[styles.squareNoticeInlineText, { color: COLORS.silver, fontStyle: 'italic' }]}>
-                    No recent activity recorded yet.
-                  </Text>
-                )}
               </View>
               <View>
-                <Text style={styles.squareCardTitleNavy}>Recent Activity</Text>
-                <Text style={styles.squareCardSubSilver}>Tap to open full log</Text>
+                <Text style={styles.smallCardTitleNavy} numberOfLines={1}>
+                  Activity Log
+                </Text>
+                <Text style={styles.smallCardSubSilver} numberOfLines={1}>
+                  Tap to view
+                </Text>
               </View>
             </TouchableOpacity>
           </View>
         </View>
+
+        {/* 3. Bottom Half: View-Only Scrollable Live Firebase Database Widget */}
+        <Surface style={styles.liveFirebaseWidget} elevation={3}>
+          {/* Widget Header with Live Green/Red Dot & Full Sheet Expander */}
+          <View style={styles.liveWidgetHeader}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+              <Animated.View
+                style={[
+                  styles.liveStatusDot,
+                  {
+                    backgroundColor: liveStatusColor,
+                    opacity: isNetworkOnline ? liveDotPulseAnim : 1,
+                  },
+                ]}
+              />
+              <View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={styles.liveWidgetTitle}>LIVE FIREBASE FEED</Text>
+                  <View
+                    style={[
+                      styles.liveStatusPill,
+                      {
+                        backgroundColor: !isNetworkOnline
+                          ? COLORS.dangerBg
+                          : hasAnyPendingWrites
+                          ? COLORS.warningBg
+                          : COLORS.successBg,
+                      },
+                    ]}
+                  >
+                    <Text style={[styles.liveStatusPillText, { color: liveStatusColor }]}>
+                      {liveStatusLabel}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.liveWidgetSub}>
+                  View-only newest entries • Slide to inspect
+                </Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={styles.expandSheetBtn}
+              onPress={() => {
+                triggerHaptic(10);
+                setLiveSheetModal(true);
+              }}
+            >
+              <Ionicons name="expand-outline" size={13} color={COLORS.gold} />
+              <Text style={styles.expandSheetBtnText}>Full Sheet</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Category Filter Chips inside Live Widget */}
+          <View style={styles.liveFilterChipBar}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <View style={{ flexDirection: 'row', gap: 6 }}>
+                {LIVE_FEED_FILTERS.map((cat) => {
+                  const active = liveFeedFilter === cat;
+                  return (
+                    <TouchableOpacity
+                      key={cat}
+                      style={[styles.liveFilterChip, active && styles.liveFilterChipActive]}
+                      onPress={() => {
+                        triggerHaptic(6);
+                        setLiveFeedFilter(cat);
+                      }}
+                    >
+                      <Text style={[styles.liveFilterChipText, active && styles.liveFilterChipTextActive]}>
+                        {cat}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </ScrollView>
+          </View>
+
+          {/* Scrollable Read-Only Feed of Newest Entries */}
+          <ScrollView
+            style={styles.liveWidgetScrollArea}
+            contentContainerStyle={{ paddingBottom: 8 }}
+            showsVerticalScrollIndicator={true}
+            nestedScrollEnabled={true}
+          >
+            {filteredLiveFeed.length === 0 ? (
+              <EmptyStateWatermark compact message="No recent Firebase entries in this category." />
+            ) : (
+              filteredLiveFeed.map((entry) => (
+                <TouchableOpacity
+                  key={entry.id}
+                  activeOpacity={0.78}
+                  style={styles.liveFeedRow}
+                  onPress={() => {
+                    if (entry.studentId && studentMap[entry.studentId]) {
+                      triggerHaptic(8);
+                      setNavDirection(1);
+                      setSelectedStudentId(entry.studentId);
+                      setProfileTab(
+                        entry.category === 'Classes'
+                          ? 'Classes'
+                          : entry.category === 'Attendance'
+                          ? 'Attendance'
+                          : entry.category === 'Fees'
+                          ? 'Fees'
+                          : 'Classes'
+                      );
+                      setActiveTab('Students');
+                    } else {
+                      triggerHaptic(8);
+                      setLiveSheetModal(true);
+                    }
+                  }}
+                >
+                  <View style={[styles.liveFeedBadge, { backgroundColor: entry.badgeBg }]}>
+                    <Text style={[styles.liveFeedBadgeText, { color: entry.badgeColor }]}>
+                      {entry.badge}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={styles.liveFeedPrimary} numberOfLines={1}>
+                        {entry.primary}
+                      </Text>
+                      {entry.pendingSync ? (
+                        <View style={styles.cachedTag}>
+                          <Text style={styles.cachedTagText}>CACHED</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <Text style={styles.liveFeedSecondary} numberOfLines={1}>
+                      {entry.secondary}
+                    </Text>
+                  </View>
+                  <Text style={styles.liveFeedDate}>{formatReadableLocalDate(entry.dateISO)}</Text>
+                </TouchableOpacity>
+              ))
+            )}
+          </ScrollView>
+        </Surface>
       </View>
     );
   };
@@ -2294,7 +2600,7 @@ function JSMAppContent() {
         </View>
 
         <Surface style={styles.heroCard} elevation={3}>
-          <NavyMidnightGradient style={{ borderRadius: 16 }} />
+          <SmoothNavyGradient style={{ borderRadius: 16 }} />
           <View style={styles.cardHeaderRow}>
             <View style={{ flex: 1 }}>
               <Text style={styles.crestBadgeText}>
@@ -2811,7 +3117,7 @@ function JSMAppContent() {
 
         <View style={styles.ledgerSummaryRow}>
           <View style={[styles.ledgerSummaryBox, { backgroundColor: COLORS.navy, overflow: 'hidden' }]}>
-            <NavyMidnightGradient />
+            <SmoothNavyGradient />
             <Text style={styles.ledgerSummaryLabel}>TOTAL COLLECTED</Text>
             <Text style={styles.ledgerSummaryValGold}>₹{globalFeeTotals.collected.toFixed(0)}</Text>
           </View>
@@ -3067,9 +3373,9 @@ function JSMAppContent() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.midnight} />
 
-      {/* Top Navigation Bar with Navy-to-Midnight Gradient */}
+      {/* Top Navigation Bar with Smooth Band-Free Navy Gradient */}
       <View style={styles.gradientHeaderWrapper}>
-        <NavyMidnightGradient />
+        <SmoothNavyGradient />
         <Appbar.Header style={{ backgroundColor: 'transparent', elevation: 0 }}>
           <Appbar.Action icon="menu" color={COLORS.gold} onPress={openDrawer} />
           <Appbar.Content
@@ -3115,7 +3421,7 @@ function JSMAppContent() {
             style={styles.fabButton}
             onPress={fabConfig.onPress}
           >
-            <NavyMidnightGradient style={{ borderRadius: 28 }} />
+            <SmoothNavyGradient style={{ borderRadius: 28 }} />
             <Ionicons name={fabConfig.icon} size={18} color={COLORS.gold} />
             <Text style={styles.fabButtonText}>{fabConfig.label}</Text>
           </TouchableOpacity>
@@ -3169,7 +3475,7 @@ function JSMAppContent() {
         })}
       </View>
 
-      {/* ANIMATED SLIDE DRAWER (Redundant Home & Students links stripped) */}
+      {/* ANIMATED SLIDE DRAWER */}
       <Modal visible={drawerOpen} transparent animationType="none" onRequestClose={() => closeDrawer()}>
         <GestureHandlerRootView style={{ flex: 1 }}>
           <Animated.View style={[styles.drawerOverlay, { opacity: drawerBackdropAnim }]}>
@@ -3181,7 +3487,7 @@ function JSMAppContent() {
             >
               <Animated.View style={[styles.drawerContainer, { transform: [{ translateX: drawerSlideAnim }] }]}>
                 <View style={styles.drawerHeader}>
-                  <NavyMidnightGradient />
+                  <SmoothNavyGradient />
                   <Text style={styles.crestBadgeText}>★ JSM ★</Text>
                   <Text style={styles.drawerTitle}>Music School Portal</Text>
                   <Text style={styles.drawerSub}>Est. 2022 • Official Edition</Text>
@@ -3232,6 +3538,17 @@ function JSMAppContent() {
                     style={styles.drawerNavItem}
                     onPress={() => {
                       closeDrawer(() => {
+                        setLiveSheetModal(true);
+                      });
+                    }}
+                  >
+                    <Ionicons name="layers-outline" size={18} color={COLORS.navy} />
+                    <Text style={styles.drawerNavText}>Full Live Database Sheet</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.drawerNavItem}
+                    onPress={() => {
+                      closeDrawer(() => {
                         setActivityFilterTodayOnly(false);
                         setTodayLogModal(true);
                       });
@@ -3256,6 +3573,103 @@ function JSMAppContent() {
             <Pressable style={{ flex: 1 }} onPress={() => closeDrawer()} />
           </Animated.View>
         </GestureHandlerRootView>
+      </Modal>
+
+      {/* FULL-SCREEN VIEW-ONLY LIVE FIREBASE STUDENT SHEET MODAL */}
+      <Modal visible={liveSheetModal} animationType="slide" onRequestClose={() => setLiveSheetModal(false)}>
+        <SafeAreaView style={styles.fullScreenModalSafe}>
+          <View style={styles.fullScreenModalHeader}>
+            <SmoothNavyGradient />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.fullScreenModalTitle}>Live Firebase Data Sheet</Text>
+              <Text style={styles.fullScreenModalSub}>
+                Strictly Read-Only • Tap any student card to open their profile
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.fullScreenCloseBtn}
+              onPress={() => setLiveSheetModal(false)}
+            >
+              <Ionicons name="close-outline" size={26} color={COLORS.gold} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+            {activeStudents.length === 0 ? (
+              <Surface style={styles.whiteCard} elevation={2}>
+                <EmptyStateWatermark message="No active students found in Firebase." />
+              </Surface>
+            ) : (
+              activeStudents.map((st) => {
+                const m = getStudentMetrics(st.id);
+                const latestLesson = m.stLessons[0];
+                const latestAtt = m.stAttendance[0];
+                const latestFee = m.stFees[0];
+                return (
+                  <TouchableOpacity
+                    key={st.id}
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      setLiveSheetModal(false);
+                      setNavDirection(1);
+                      setSelectedStudentId(st.id);
+                      setProfileTab('Classes');
+                      setActiveTab('Students');
+                    }}
+                  >
+                    <Surface style={[styles.whiteCard, { marginBottom: 10, padding: 13 }]} elevation={2}>
+                      <View style={styles.cardHeaderRow}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.recordPrimaryTitle}>
+                            {st.name} • {safeString(subjectMap[st.subjectId]?.name, 'Unassigned')}
+                          </Text>
+                          <Text style={styles.recordSecondarySub}>
+                            Joined {formatReadableLocalDate(st.joinedDate)} • Attendance: {m.attendancePct} • Classes: {m.classesTaken}
+                          </Text>
+                        </View>
+                        <View
+                          style={[
+                            styles.feeBadge,
+                            m.feeStatus === 'Paid'
+                              ? styles.feeBadgePaid
+                              : m.feeStatus === 'Due / Unpaid'
+                              ? styles.feeBadgeDue
+                              : styles.feeBadgeNeutral,
+                          ]}
+                        >
+                          <Text style={styles.feeBadgeText}>{m.feeStatus}</Text>
+                        </View>
+                      </View>
+                      <View style={styles.sheetDivider} />
+                      <Text style={styles.recordDetailLine} numberOfLines={1}>
+                        <Text style={styles.boldLabel}>Latest Class: </Text>
+                        {latestLesson
+                          ? `${formatReadableLocalDate(latestLesson.date)} — ${
+                              [latestLesson.lesson, latestLesson.technique, latestLesson.repertoire]
+                                .filter(Boolean)
+                                .join(', ') || 'Recorded'
+                            }`
+                          : 'No lessons logged'}
+                      </Text>
+                      <Text style={styles.recordDetailLine} numberOfLines={1}>
+                        <Text style={styles.boldLabel}>Latest Attendance: </Text>
+                        {latestAtt
+                          ? `${formatReadableLocalDate(latestAtt.date)} — ${latestAtt.status}`
+                          : 'No attendance logged'}
+                      </Text>
+                      <Text style={styles.recordDetailLine} numberOfLines={1}>
+                        <Text style={styles.boldLabel}>Latest Fee: </Text>
+                        {latestFee
+                          ? `${formatReadableLocalDate(latestFee.date)} — ₹${latestFee.amountPaid} (${latestFee.status})`
+                          : 'No fee records'}
+                      </Text>
+                    </Surface>
+                  </TouchableOpacity>
+                );
+              })
+            )}
+          </ScrollView>
+        </SafeAreaView>
       </Modal>
 
       {/* LONG-PRESS CONTEXT MENU */}
@@ -3352,7 +3766,7 @@ function JSMAppContent() {
       <Modal visible={todayLogModal} animationType="slide" onRequestClose={() => setTodayLogModal(false)}>
         <SafeAreaView style={styles.fullScreenModalSafe}>
           <View style={styles.fullScreenModalHeader}>
-            <NavyMidnightGradient />
+            <SmoothNavyGradient />
             <View style={{ flex: 1 }}>
               <Text style={styles.fullScreenModalTitle}>Recent Activity Audit</Text>
               <Text style={styles.fullScreenModalSub}>Hold any activity card to move it to Trash</Text>
@@ -3408,7 +3822,7 @@ function JSMAppContent() {
               displayedActivities.map((act) => (
                 <Pressable
                   key={act.id}
-                  style={({ pressed }) => [ pressed && styles.cardPressed ]}
+                  style={({ pressed }) => [pressed && styles.cardPressed]}
                   onLongPress={() => {
                     setTodayLogModal(false);
                     scheduleTimeout(
@@ -4177,30 +4591,31 @@ const styles = StyleSheet.create({
   scrollContent: { padding: 14, paddingBottom: 32 },
   scrollContentWithFab: { padding: 14, paddingBottom: 92 },
 
-  // --- NON-SCROLLING 2x2 HOMEPAGE STYLES ---
+  // --- HOMEPAGE: COMPACT 4 CARDS + LIVE FIREBASE WIDGET ---
   homeNoScrollContainer: {
     flex: 1,
-    padding: 14,
-    justifyContent: 'space-between',
-    gap: 12,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 10,
+    gap: 10,
   },
   compactGreetingStrip: {
     borderRadius: 14,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     overflow: 'hidden',
     shadowColor: COLORS.midnight,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.16,
-    shadowRadius: 10,
-    elevation: 4,
+    shadowOpacity: 0.14,
+    shadowRadius: 8,
+    elevation: 3,
   },
   compactGreetingTitle: {
     color: COLORS.white,
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '700',
     fontFamily: SERIF_FONT,
   },
@@ -4208,7 +4623,7 @@ const styles = StyleSheet.create({
     color: COLORS.gold,
     fontSize: 11,
     fontWeight: '600',
-    marginTop: 2,
+    marginTop: 1,
   },
   compactMetricsRow: {
     flexDirection: 'row',
@@ -4217,16 +4632,16 @@ const styles = StyleSheet.create({
   compactMetricPill: {
     backgroundColor: 'rgba(255,255,255,0.09)',
     borderRadius: 10,
-    paddingVertical: 6,
+    paddingVertical: 5,
     paddingHorizontal: 10,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: 'rgba(212, 185, 120, 0.35)',
-    minWidth: 64,
+    minWidth: 62,
   },
   compactMetricValue: {
     color: COLORS.gold,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '800',
   },
   compactMetricLabel: {
@@ -4234,71 +4649,138 @@ const styles = StyleSheet.create({
     fontSize: 8,
     fontWeight: '700',
     letterSpacing: 0.8,
-    marginTop: 1,
   },
-  squareGridWrapper: {
-    flex: 1,
-    gap: 12,
+  compactActionSection: {
+    gap: 9,
   },
-  squareGridRow: {
-    flex: 1,
-    flexDirection: 'row',
-    gap: 12,
-  },
-  squareGridCard: {
-    flex: 1,
-    borderRadius: 18,
-    padding: 16,
-    justifyContent: 'space-between',
-    overflow: 'hidden',
-    shadowColor: COLORS.midnight,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.1,
-    shadowRadius: 14,
-    elevation: 4,
-  },
-  squareGridCardNavy: {
-    backgroundColor: COLORS.navy,
-  },
-  squareGridCardCream: {
-    backgroundColor: COLORS.cream,
-  },
-  squareGridCardWhite: {
+  compactNoticeCard: {
     backgroundColor: COLORS.white,
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 13,
+    overflow: 'hidden',
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.gold,
+    shadowColor: COLORS.midnight,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 2,
   },
-  squareCardTopRow: {
+  noticeWatermark: {
+    position: 'absolute',
+    right: 4,
+    bottom: -6,
+  },
+  compactNoticeHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginBottom: 4,
   },
-  squareIconCircleGold: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(212, 185, 120, 0.16)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(212, 185, 120, 0.45)',
-  },
-  squareIconCircleNavy: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+  compactNoticeIconWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     backgroundColor: 'rgba(12, 45, 87, 0.08)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  squareCountBadge: {
-    backgroundColor: COLORS.navy,
-    paddingHorizontal: 9,
-    paddingVertical: 3,
-    borderRadius: 12,
+  compactNoticeTitle: {
+    color: COLORS.navy,
+    fontSize: 13,
+    fontWeight: '700',
+    fontFamily: SERIF_FONT,
   },
-  squareCountBadgeText: {
+  compactNoticeDate: {
+    color: COLORS.silver,
+    fontSize: 10,
+  },
+  compactNoticeBody: {
+    color: COLORS.charcoal,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  threeSmallCardsRow: {
+    flexDirection: 'row',
+    gap: 9,
+  },
+  smallActionCard: {
+    flex: 1,
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 11,
+    height: 84,
+    justifyContent: 'space-between',
+    overflow: 'hidden',
+    shadowColor: COLORS.midnight,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.09,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  smallActionCardNavy: {
+    backgroundColor: COLORS.navy,
+  },
+  smallActionCardCream: {
+    backgroundColor: COLORS.cream,
+  },
+  smallActionCardWhite: {
+    backgroundColor: COLORS.white,
+  },
+  smallCardTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  smallIconCircleGold: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(212, 185, 120, 0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(212, 185, 120, 0.4)',
+  },
+  smallIconCircleNavy: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(12, 45, 87, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  smallCountBadge: {
+    backgroundColor: COLORS.navy,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  smallCountBadgeText: {
     color: COLORS.gold,
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '800',
+  },
+  smallCardTitleGold: {
+    color: COLORS.gold,
+    fontSize: 12,
+    fontWeight: '700',
+    fontFamily: SERIF_FONT,
+  },
+  smallCardSubCream: {
+    color: COLORS.cream,
+    fontSize: 10,
+  },
+  smallCardTitleNavy: {
+    color: COLORS.navy,
+    fontSize: 12,
+    fontWeight: '700',
+    fontFamily: SERIF_FONT,
+  },
+  smallCardSubSilver: {
+    color: COLORS.silver,
+    fontSize: 10,
   },
   squareHintTag: {
     color: COLORS.silver,
@@ -4306,47 +4788,145 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.8,
   },
-  squareCardTitleGold: {
+
+  // --- LIVE FIREBASE VIEW-ONLY WIDGET STYLES ---
+  liveFirebaseWidget: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingTop: 11,
+    paddingBottom: 6,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    overflow: 'hidden',
+  },
+  liveWidgetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  liveStatusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  liveWidgetTitle: {
+    color: COLORS.navy,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  liveStatusPill: {
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 6,
+  },
+  liveStatusPillText: {
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+  },
+  liveWidgetSub: {
+    color: COLORS.silver,
+    fontSize: 10,
+    marginTop: 1,
+  },
+  expandSheetBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.navy,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+  },
+  expandSheetBtnText: {
     color: COLORS.gold,
-    fontSize: 17,
+    fontSize: 10,
     fontWeight: '700',
-    fontFamily: SERIF_FONT,
   },
-  squareCardSubCream: {
-    color: COLORS.cream,
+  liveFilterChipBar: {
+    marginBottom: 6,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0ECE1',
+  },
+  liveFilterChip: {
+    backgroundColor: COLORS.inputTint,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  liveFilterChipActive: {
+    backgroundColor: COLORS.navy,
+  },
+  liveFilterChipText: {
+    color: COLORS.navy,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  liveFilterChipTextActive: {
+    color: COLORS.gold,
+  },
+  liveWidgetScrollArea: {
+    flex: 1,
+  },
+  liveFeedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 7,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F4F1EA',
+    gap: 8,
+  },
+  liveFeedBadge: {
+    minWidth: 58,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  liveFeedBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+  },
+  liveFeedPrimary: {
+    color: COLORS.navy,
     fontSize: 12,
-    marginTop: 2,
-  },
-  squareCardTitleNavy: {
-    color: COLORS.navy,
-    fontSize: 17,
     fontWeight: '700',
-    fontFamily: SERIF_FONT,
   },
-  squareCardSubSilver: {
-    color: COLORS.silver,
-    fontSize: 11,
-    marginTop: 2,
-  },
-  squareNoticeInlineText: {
+  liveFeedSecondary: {
     color: COLORS.charcoal,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  squareActivityLatestTitle: {
-    color: COLORS.navy,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  squareActivityLatestSub: {
-    color: COLORS.silver,
     fontSize: 11,
-    marginTop: 2,
+    marginTop: 1,
   },
-  cardCornerWatermark: {
-    position: 'absolute',
-    right: -6,
-    bottom: 28,
+  liveFeedDate: {
+    color: COLORS.silver,
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  cachedTag: {
+    backgroundColor: COLORS.warningBg,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  cachedTagText: {
+    color: COLORS.warning,
+    fontSize: 8,
+    fontWeight: '800',
+  },
+  sheetDivider: {
+    height: 1,
+    backgroundColor: '#F0ECE1',
+    marginVertical: 6,
   },
 
   // --- ELEVATED CARDS, SERIF HEADINGS & TINTED INPUTS ---
@@ -4470,7 +5050,6 @@ const styles = StyleSheet.create({
     marginVertical: 4,
     paddingLeft: 4,
   },
-  // Compacted vertical padding + soft floating drop shadows
   cleanRecordCard: {
     backgroundColor: COLORS.white,
     borderRadius: 14,
@@ -4605,7 +5184,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginTop: 8,
   },
-  // Enlarged PDF Export Touch Button
   pdfExportTouchBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -4739,7 +5317,7 @@ const styles = StyleSheet.create({
   drawerNavTextActive: { color: COLORS.gold },
   drawerDivider: { height: 1, backgroundColor: '#D8D2C5', marginVertical: 8 },
 
-  // --- FULL-SCREEN RECENT ACTIVITY MODAL ---
+  // --- FULL-SCREEN MODALS ---
   fullScreenModalSafe: {
     flex: 1,
     backgroundColor: COLORS.ivory,
