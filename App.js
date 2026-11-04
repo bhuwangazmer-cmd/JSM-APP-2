@@ -147,8 +147,9 @@ const safeNumber = (val, fallback = 0) => {
   return Number.isFinite(n) ? n : fallback;
 };
 
-const sanitizeDocRecord = (id, raw = {}, hasPendingWrites = false) => {
+const sanitizeDocRecord = (id, raw = {}, hasPendingWrites = false, colName = '') => {
   const data = raw && typeof raw === 'object' ? raw : {};
+  const defaultStatus = colName === 'fees' ? 'Paid' : 'Present';
   return {
     ...data,
     id: safeString(id),
@@ -166,7 +167,7 @@ const sanitizeDocRecord = (id, raw = {}, hasPendingWrites = false) => {
     lesson: safeString(data.lesson),
     repertoire: safeString(data.repertoire),
     assignment: safeString(data.assignment),
-    status: safeString(data.status, 'Present'),
+    status: safeString(data.status, defaultStatus),
     remarks: safeString(data.remarks),
     notes: safeString(data.notes),
     feeType: safeString(data.feeType, 'Monthly Fee'),
@@ -252,6 +253,15 @@ const getMonthYearFromISO = (isoDateStr) => {
     : `${MONTHS_FULL[monthIdx]} ${year}`;
 };
 
+const parseMonthYearSortKey = (label) => {
+  const parts = safeString(label).trim().split(' ');
+  if (parts.length !== 2) return 0;
+  const mIdx = MONTHS_FULL.indexOf(parts[0]);
+  const year = parseInt(parts[1], 10);
+  if (mIdx === -1 || isNaN(year)) return 0;
+  return year * 12 + mIdx;
+};
+
 const isWithinLastTwoLocalMonths = (isoDateStr) => {
   const safeStr = safeString(isoDateStr).trim();
   const normalized = normalizeISODate(safeStr) || safeStr;
@@ -263,7 +273,7 @@ const isWithinLastTwoLocalMonths = (isoDateStr) => {
   if (isNaN(year) || isNaN(monthIdx)) return false;
   const now = new Date();
   const diff = now.getFullYear() * 12 + now.getMonth() - (year * 12 + monthIdx);
-  return diff >= -1 && diff <= 1;
+  return diff >= 0 && diff <= 1;
 };
 
 const getDaysRemainingInTrash = (deletedAtMs) => {
@@ -309,7 +319,6 @@ const commitBatchSoftDeletes = async (entries) => {
 // ==========================================
 // 4. REUSABLE AESTHETIC & MICRO-INTERACTION COMPONENTS
 // ==========================================
-// Band-free, zero-stripe rich surface (eliminates Android sub-pixel flex slicing lines)
 const SmoothNavyGradient = ({ style }) => (
   <View
     style={[
@@ -321,7 +330,6 @@ const SmoothNavyGradient = ({ style }) => (
   />
 );
 
-// Subtle tactile scale-down micro-interaction wrapper (scale: 0.96)
 const ScalePressable = ({ children, onPress, onLongPress, delayLongPress = 280, style, disabled = false }) => {
   const scaleAnim = useRef(new Animated.Value(1)).current;
 
@@ -625,18 +633,20 @@ function JSMAppContent() {
   useEffect(() => {
     let active = true;
     const verifyConnection = async () => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000);
         await fetch('https://clients3.google.com/generate_204', {
           method: 'HEAD',
+          mode: 'no-cors',
           cache: 'no-store',
           signal: controller.signal,
         });
-        clearTimeout(timeoutId);
         if (active && isMountedRef.current) setIsNetworkOnline(true);
       } catch (e) {
         if (active && isMountedRef.current) setIsNetworkOnline(false);
+      } finally {
+        clearTimeout(timeoutId);
       }
     };
     verifyConnection();
@@ -792,6 +802,9 @@ function JSMAppContent() {
   const profileTabRef = useRef(profileTab);
   const orderedSubjectsRef = useRef(orderedSubjects);
   const activeSubjectsRef = useRef([]);
+  const lessonsRef = useRef(lessons);
+  const attendanceRef = useRef(attendance);
+  const feesRef = useRef(fees);
 
   useEffect(() => {
     activeTabRef.current = activeTab;
@@ -802,6 +815,19 @@ function JSMAppContent() {
   useEffect(() => {
     orderedSubjectsRef.current = orderedSubjects;
   }, [orderedSubjects]);
+  useEffect(() => {
+    lessonsRef.current = lessons;
+  }, [lessons]);
+  useEffect(() => {
+    attendanceRef.current = attendance;
+  }, [attendance]);
+  useEffect(() => {
+    feesRef.current = fees;
+  }, [fees]);
+
+  const closeCalendarPicker = useCallback(() => {
+    setCalendarPicker((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+  }, []);
 
   const openCalendarPicker = useCallback((currentDateStr, onSelectCallback) => {
     const norm = normalizeISODate(currentDateStr) || getTodayISO();
@@ -811,11 +837,71 @@ function JSMAppContent() {
     setCalendarPicker({ visible: true, selectedDate: norm, viewYear: y, viewMonth: m, onSelect: onSelectCallback });
   }, []);
 
+  const closeSubjectsModalClean = useCallback(() => {
+    Keyboard.dismiss();
+    dragInfoRef.current.active = false;
+    setSubjectScrollLocked(false);
+    setDraggingSubjectId(null);
+    setSubjectForm({ id: null, name: '' });
+    setSubjectsModal(false);
+  }, []);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu({
+      visible: false,
+      entityType: null,
+      item: null,
+      title: '',
+      reopenSubjectsModal: false,
+      reopenTodayLogModal: false,
+    });
+  }, []);
+
+  const dismissContextMenuWithReopen = useCallback(() => {
+    const shouldReopenSubj = contextMenu.reopenSubjectsModal;
+    const shouldReopenLog = contextMenu.reopenTodayLogModal;
+    closeContextMenu();
+    if (shouldReopenSubj) scheduleTimeout(() => setSubjectsModal(true), 220);
+    if (shouldReopenLog) scheduleTimeout(() => setTodayLogModal(true), 220);
+  }, [contextMenu.reopenSubjectsModal, contextMenu.reopenTodayLogModal, closeContextMenu, scheduleTimeout]);
+
   // Android Hardware Back Button Handler
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (calendarPicker.visible) {
-        setCalendarPicker((prev) => ({ ...prev, visible: false }));
+        closeCalendarPicker();
+        return true;
+      }
+      if (contextMenu.visible) {
+        dismissContextMenuWithReopen();
+        return true;
+      }
+      if (studentModal) {
+        setStudentModal(false);
+        return true;
+      }
+      if (lessonEditModal) {
+        setLessonEditModal(false);
+        return true;
+      }
+      if (attendanceModal) {
+        setAttendanceModal(false);
+        return true;
+      }
+      if (feeModal) {
+        setFeeModal(false);
+        return true;
+      }
+      if (subjectsModal) {
+        closeSubjectsModalClean();
+        return true;
+      }
+      if (noticeEditModal) {
+        setNoticeEditModal(false);
+        return true;
+      }
+      if (todayLogModal) {
+        setTodayLogModal(false);
         return true;
       }
       if (masterListModal) {
@@ -839,7 +925,25 @@ function JSMAppContent() {
       return false;
     });
     return () => sub.remove();
-  }, [activeTab, selectedStudentId, calendarPicker.visible, masterListModal, drawerOpen, closeDrawer]);
+  }, [
+    activeTab,
+    selectedStudentId,
+    calendarPicker.visible,
+    contextMenu.visible,
+    studentModal,
+    lessonEditModal,
+    attendanceModal,
+    feeModal,
+    subjectsModal,
+    noticeEditModal,
+    todayLogModal,
+    masterListModal,
+    drawerOpen,
+    closeCalendarPicker,
+    dismissContextMenuWithReopen,
+    closeSubjectsModalClean,
+    closeDrawer,
+  ]);
 
   // Real-Time Firestore Listeners with Metadata Tracking for Offline Caching
   useEffect(() => {
@@ -857,9 +961,20 @@ function JSMAppContent() {
       );
 
       snapshot.forEach((docSnap) => {
-        const clean = sanitizeDocRecord(docSnap.id, docSnap.data(), docSnap.metadata?.hasPendingWrites);
+        const clean = sanitizeDocRecord(docSnap.id, docSnap.data(), docSnap.metadata?.hasPendingWrites, colName);
         if (clean.isDeleted && clean.deletedAt && Date.now() - clean.deletedAt > THIRTY_DAYS_MS) {
           deleteDoc(doc(db, colName, clean.id)).catch(() => {});
+          if (colName === 'students') {
+            lessonsRef.current
+              .filter((l) => l.studentId === clean.id)
+              .forEach((l) => deleteDoc(doc(db, 'lessons', l.id)).catch(() => {}));
+            attendanceRef.current
+              .filter((a) => a.studentId === clean.id)
+              .forEach((a) => deleteDoc(doc(db, 'attendance', a.id)).catch(() => {}));
+            feesRef.current
+              .filter((f) => f.studentId === clean.id)
+              .forEach((f) => deleteDoc(doc(db, 'fees', f.id)).catch(() => {}));
+          }
         } else {
           records.push(clean);
         }
@@ -904,8 +1019,12 @@ function JSMAppContent() {
       (snap) => {
         if (!isMountedRef.current) return;
         const list = [];
+        const hasPending = Boolean(snap.metadata?.hasPendingWrites);
+        setPendingSyncByCol((prev) =>
+          prev.activities === hasPending ? prev : { ...prev, activities: hasPending }
+        );
         snap.forEach((d) => {
-          const clean = sanitizeDocRecord(d.id, d.data(), d.metadata?.hasPendingWrites);
+          const clean = sanitizeDocRecord(d.id, d.data(), d.metadata?.hasPendingWrites, 'activities');
           if (clean.isDeleted && clean.deletedAt && Date.now() - clean.deletedAt > THIRTY_DAYS_MS) {
             deleteDoc(doc(db, 'activities', clean.id)).catch(() => {});
           } else if (!clean.isDeleted && clean.timestamp && Date.now() - clean.timestamp > THIRTY_DAYS_MS) {
@@ -980,21 +1099,36 @@ function JSMAppContent() {
     () =>
       lessons
         .filter((l) => !l.isDeleted && studentMap[l.studentId] && !studentMap[l.studentId].isDeleted)
-        .sort((a, b) => safeString(b.date).localeCompare(safeString(a.date))),
+        .sort(
+          (a, b) =>
+            safeString(b.date).localeCompare(safeString(a.date)) ||
+            (b.timestamp || 0) - (a.timestamp || 0) ||
+            safeString(b.id).localeCompare(safeString(a.id))
+        ),
     [lessons, studentMap]
   );
   const activeAttendance = useMemo(
     () =>
       attendance
         .filter((a) => !a.isDeleted && studentMap[a.studentId] && !studentMap[a.studentId].isDeleted)
-        .sort((a, b) => safeString(b.date).localeCompare(safeString(a.date))),
+        .sort(
+          (a, b) =>
+            safeString(b.date).localeCompare(safeString(a.date)) ||
+            (b.timestamp || 0) - (a.timestamp || 0) ||
+            safeString(b.id).localeCompare(safeString(a.id))
+        ),
     [attendance, studentMap]
   );
   const activeFees = useMemo(
     () =>
       fees
         .filter((f) => !f.isDeleted && studentMap[f.studentId] && !studentMap[f.studentId].isDeleted)
-        .sort((a, b) => safeString(b.date).localeCompare(safeString(a.date))),
+        .sort(
+          (a, b) =>
+            safeString(b.date).localeCompare(safeString(a.date)) ||
+            (b.timestamp || 0) - (a.timestamp || 0) ||
+            safeString(b.id).localeCompare(safeString(a.id))
+        ),
     [fees, studentMap]
   );
   const activeActivities = useMemo(() => activities.filter((a) => !a.isDeleted), [activities]);
@@ -1016,7 +1150,7 @@ function JSMAppContent() {
     return { collected, pending };
   }, [activeFees]);
 
-  // Distinct available months across all records for the Master List Filter
+  // Distinct available months across all records for the Master List Filter (sorted newest first)
   const availableMasterMonths = useMemo(() => {
     const monthSet = new Set([getLocalCurrentMonthLabel()]);
     activeLessons.forEach((l) => {
@@ -1028,7 +1162,9 @@ function JSMAppContent() {
     activeFees.forEach((f) => {
       if (f.date) monthSet.add(getMonthYearFromISO(f.date));
     });
-    return Array.from(monthSet).filter((m) => m && m !== 'Unknown Month');
+    return Array.from(monthSet)
+      .filter((m) => m && m !== 'Unknown Month')
+      .sort((a, b) => parseMonthYearSortKey(b) - parseMonthYearSortKey(a));
   }, [activeLessons, activeAttendance, activeFees]);
 
   const trashItems = useMemo(
@@ -1328,15 +1464,6 @@ function JSMAppContent() {
       reopenTodayLogModal,
     });
   };
-  const closeContextMenu = () =>
-    setContextMenu({
-      visible: false,
-      entityType: null,
-      item: null,
-      title: '',
-      reopenSubjectsModal: false,
-      reopenTodayLogModal: false,
-    });
 
   const handleSoftDelete = async (collectionName, item, label) => {
     if (!item?.id) return;
@@ -1345,6 +1472,7 @@ function JSMAppContent() {
       triggerHaptic(15);
       if (collectionName === 'students' && selectedStudentId === item.id) setSelectedStudentId(null);
       if (collectionName === 'subjects' && subjectForm.id === item.id) setSubjectForm({ id: null, name: '' });
+      if (collectionName === 'students' && masterStudentFilter === item.id) setMasterStudentFilter('ALL');
       await withWriteTimeout(
         updateDoc(doc(db, collectionName, item.id), { isDeleted: true, deletedAt: Date.now() })
       );
@@ -1579,6 +1707,7 @@ function JSMAppContent() {
           addDoc(collection(db, 'subjects'), {
             name: trimmed,
             order: activeSubjects.length,
+            timestamp: Date.now(),
             isDeleted: false,
             deletedAt: null,
           })
@@ -1612,6 +1741,7 @@ function JSMAppContent() {
         joinedDate: validDate,
       };
       const editingId = studentForm.id;
+      closeCalendarPicker();
       setStudentModal(false);
       setStudentForm({
         id: null,
@@ -1630,6 +1760,7 @@ function JSMAppContent() {
             ...payload,
             notes: '',
             priorityNote: false,
+            timestamp: Date.now(),
             isDeleted: false,
             deletedAt: null,
           })
@@ -1667,6 +1798,7 @@ function JSMAppContent() {
         technique: safeString(inlineLessonForm.technique).trim(),
         repertoire: safeString(inlineLessonForm.repertoire).trim(),
         assignment: safeString(inlineLessonForm.assignment).trim(),
+        timestamp: Date.now(),
         isDeleted: false,
         deletedAt: null,
       };
@@ -1709,6 +1841,7 @@ function JSMAppContent() {
         repertoire: safeString(lessonEditForm.repertoire).trim(),
         assignment: safeString(lessonEditForm.assignment).trim(),
       };
+      closeCalendarPicker();
       setLessonEditModal(false);
       await withWriteTimeout(updateDoc(doc(db, 'lessons', editingId), payload));
       await logActivity(
@@ -1753,6 +1886,7 @@ function JSMAppContent() {
             date: validDate,
             status: statusVal,
             remarks: remarksVal,
+            timestamp: Date.now(),
             isDeleted: false,
             deletedAt: null,
           })
@@ -1792,6 +1926,7 @@ function JSMAppContent() {
       triggerLayoutAnimation();
       triggerHaptic(12);
       const editingId = attendanceModalForm.id;
+      closeCalendarPicker();
       setAttendanceModal(false);
       if (editingId) {
         await withWriteTimeout(updateDoc(doc(db, 'attendance', editingId), payload));
@@ -1807,7 +1942,12 @@ function JSMAppContent() {
         );
       } else {
         await withWriteTimeout(
-          addDoc(collection(db, 'attendance'), { ...payload, isDeleted: false, deletedAt: null })
+          addDoc(collection(db, 'attendance'), {
+            ...payload,
+            timestamp: Date.now(),
+            isDeleted: false,
+            deletedAt: null,
+          })
         );
         await logActivity(
           'Marked Attendance',
@@ -1821,7 +1961,6 @@ function JSMAppContent() {
     }
   };
 
-  // Frictionless instantaneous note saving (no blocking alert popup)
   const handleSaveStudentNotes = async () => {
     Keyboard.dismiss();
     if (!selectedStudentId || savingLockRef.current) return;
@@ -1876,6 +2015,7 @@ function JSMAppContent() {
         balanceDue: numericBalance,
         remarks: safeString(feeForm.remarks).trim(),
       };
+      closeCalendarPicker();
       setFeeModal(false);
       if (editingId) {
         await withWriteTimeout(updateDoc(doc(db, 'fees', editingId), payload));
@@ -1885,7 +2025,12 @@ function JSMAppContent() {
         );
       } else {
         await withWriteTimeout(
-          addDoc(collection(db, 'fees'), { ...payload, isDeleted: false, deletedAt: null })
+          addDoc(collection(db, 'fees'), {
+            ...payload,
+            timestamp: Date.now(),
+            isDeleted: false,
+            deletedAt: null,
+          })
         );
         await logActivity(
           'Recorded Fee',
@@ -1931,6 +2076,16 @@ function JSMAppContent() {
       triggerLayoutAnimation();
       triggerHaptic(12);
       await withWriteTimeout(updateDoc(doc(db, item._col, item.id), { isDeleted: false, deletedAt: null }));
+      // If restoring a child record whose parent student is also in Trash, restore the parent student so the record is visible
+      if (
+        ['lessons', 'attendance', 'fees'].includes(item._col) &&
+        item.studentId &&
+        studentMap[item.studentId]?.isDeleted
+      ) {
+        await withWriteTimeout(
+          updateDoc(doc(db, 'students', item.studentId), { isDeleted: false, deletedAt: null })
+        );
+      }
       if (item._col !== 'activities') {
         await logActivity('Restored from Trash', item._label);
       }
@@ -2102,7 +2257,7 @@ function JSMAppContent() {
               onPress={() => {
                 triggerHaptic(10);
                 if (typeof onSelect === 'function') onSelect(isoStr);
-                setCalendarPicker((prev) => ({ ...prev, visible: false }));
+                closeCalendarPicker();
               }}
             >
               <Text
@@ -2126,7 +2281,7 @@ function JSMAppContent() {
     return (
       <Pressable
         style={styles.calendarPortalOverlay}
-        onPress={() => setCalendarPicker((prev) => ({ ...prev, visible: false }))}
+        onPress={closeCalendarPicker}
       >
         <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
           <View style={styles.calendarHeaderRow}>
@@ -2171,7 +2326,7 @@ function JSMAppContent() {
               onPress={() => {
                 const today = getTodayISO();
                 if (typeof calendarPicker.onSelect === 'function') calendarPicker.onSelect(today);
-                setCalendarPicker((prev) => ({ ...prev, visible: false }));
+                closeCalendarPicker();
               }}
             >
               Today
@@ -2180,7 +2335,7 @@ function JSMAppContent() {
               mode="contained"
               buttonColor={COLORS.navy}
               textColor={COLORS.gold}
-              onPress={() => setCalendarPicker((prev) => ({ ...prev, visible: false }))}
+              onPress={closeCalendarPicker}
             >
               Close
             </PaperButton>
@@ -2208,7 +2363,7 @@ function JSMAppContent() {
 
     return (
       <View style={styles.homeNoScrollContainer}>
-        {/* 1. Compact Greeting & Stats Banner (Zero Striping) */}
+        {/* 1. Compact Greeting & Stats Banner */}
         <View style={styles.compactGreetingStrip}>
           <SmoothNavyGradient />
           <View style={{ flex: 1 }}>
@@ -2227,9 +2382,8 @@ function JSMAppContent() {
           </View>
         </View>
 
-        {/* 2. Top Half: Slightly Larger Notice Board + 3 Smaller Action Cards */}
+        {/* 2. Top Half: Notice Board + 3 Smaller Action Cards */}
         <View style={styles.compactActionSection}>
-          {/* Slightly Larger Full-Width Notice Board Card */}
           <ScalePressable
             onPress={() => {
               triggerHaptic(10);
@@ -2355,7 +2509,6 @@ function JSMAppContent() {
 
         {/* 3. Bottom Half: Horizontal Matrix Live Firebase Widget */}
         <Surface style={styles.liveFirebaseWidget} elevation={3}>
-          {/* Status Header + Master List Button */}
           <View style={styles.liveWidgetHeader}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Animated.View
@@ -2398,7 +2551,6 @@ function JSMAppContent() {
             </TouchableOpacity>
           </View>
 
-          {/* Horizontal Matrix Content */}
           {activeStudents.length === 0 ? (
             <View style={{ flex: 1, justifyContent: 'center' }}>
               <EmptyStateWatermark compact message="No students enrolled yet." />
@@ -2464,7 +2616,6 @@ function JSMAppContent() {
                   nestedScrollEnabled={true}
                 >
                   <View>
-                    {/* Header Row */}
                     <View style={styles.matrixScrollHeaderRow}>
                       <View style={[styles.matrixHeaderCell, { width: 148 }]}>
                         <Text style={styles.matrixHeaderText}>ATTENDANCE</Text>
@@ -2477,7 +2628,6 @@ function JSMAppContent() {
                       </View>
                     </View>
 
-                    {/* Data Rows */}
                     {activeStudents.map((st, idx) => {
                       const m = getStudentMetrics(st.id);
                       const latestLesson = m.stLessons[0];
@@ -2519,7 +2669,6 @@ function JSMAppContent() {
                           key={st.id}
                           style={[styles.matrixScrollDataRow, idx % 2 === 1 && styles.matrixRowAlt]}
                         >
-                          {/* Attendance Cell (Fixed-width status badge prevents shifting) */}
                           <TouchableOpacity
                             activeOpacity={0.75}
                             style={[styles.matrixRowCell, { width: 148 }]}
@@ -2544,7 +2693,6 @@ function JSMAppContent() {
                             </Text>
                           </TouchableOpacity>
 
-                          {/* Latest Class Cell */}
                           <TouchableOpacity
                             activeOpacity={0.75}
                             style={[styles.matrixRowCell, { width: 175 }]}
@@ -2575,7 +2723,6 @@ function JSMAppContent() {
                             </Text>
                           </TouchableOpacity>
 
-                          {/* Fees Cell */}
                           <TouchableOpacity
                             activeOpacity={0.75}
                             style={[styles.matrixRowCell, { width: 155 }]}
@@ -3601,7 +3748,7 @@ function JSMAppContent() {
   const anyFormModalOpen = studentModal || lessonEditModal || attendanceModal || feeModal;
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'bottom', 'left', 'right']}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.navy} />
 
       {/* Top Navigation Bar */}
@@ -3625,8 +3772,10 @@ function JSMAppContent() {
         <PanGestureHandler
           activeOffsetX={10}
           failOffsetY={[-18, 18]}
-          onEnded={(e) => {
-            if (e.nativeEvent.translationX > 24) openDrawer();
+          onHandlerStateChange={(e) => {
+            if (e.nativeEvent.state === State.END && e.nativeEvent.translationX > 24) {
+              openDrawer();
+            }
           }}
         >
           <View style={styles.leftEdgeSwipeZone} />
@@ -3711,8 +3860,10 @@ function JSMAppContent() {
           <Animated.View style={[styles.drawerOverlay, { opacity: drawerBackdropAnim }]}>
             <PanGestureHandler
               activeOffsetX={[-15, 15]}
-              onEnded={(e) => {
-                if (e.nativeEvent.translationX < -30) closeDrawer();
+              onHandlerStateChange={(e) => {
+                if (e.nativeEvent.state === State.END && e.nativeEvent.translationX < -30) {
+                  closeDrawer();
+                }
               }}
             >
               <Animated.View style={[styles.drawerContainer, { transform: [{ translateX: drawerSlideAnim }] }]}>
@@ -3805,8 +3956,15 @@ function JSMAppContent() {
         </GestureHandlerRootView>
       </Modal>
 
-      {/* MASTER LIST & REPORT GENERATOR MODAL (FILTER BY STUDENT & DATE/MONTH) */}
-      <Modal visible={masterListModal} animationType="slide" onRequestClose={() => setMasterListModal(false)}>
+      {/* MASTER LIST & REPORT GENERATOR MODAL */}
+      <Modal
+        visible={masterListModal}
+        animationType="slide"
+        onRequestClose={() => {
+          if (calendarPicker.visible) closeCalendarPicker();
+          else setMasterListModal(false);
+        }}
+      >
         <SafeAreaView style={styles.fullScreenModalSafe}>
           <View style={styles.fullScreenModalHeader}>
             <SmoothNavyGradient />
@@ -3820,14 +3978,16 @@ function JSMAppContent() {
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.fullScreenCloseBtn}
-                onPress={() => setMasterListModal(false)}
+                onPress={() => {
+                  closeCalendarPicker();
+                  setMasterListModal(false);
+                }}
               >
                 <Ionicons name="close-outline" size={26} color={COLORS.gold} />
               </TouchableOpacity>
             </View>
           </View>
 
-          {/* Filter Bar: Student & Month/Date Selectors */}
           <View style={styles.masterFilterSection}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <View style={{ flexDirection: 'row', gap: 6 }}>
@@ -3963,6 +4123,7 @@ function JSMAppContent() {
                 <ScalePressable
                   key={row.student.id}
                   onPress={() => {
+                    closeCalendarPicker();
                     setMasterListModal(false);
                     setNavDirection(1);
                     setSelectedStudentId(row.student.id);
@@ -4034,8 +4195,13 @@ function JSMAppContent() {
       </Modal>
 
       {/* BOTTOM-SLIDING CONTEXTUAL ACTION SHEET */}
-      <Modal visible={contextMenu.visible} transparent animationType="slide" onRequestClose={closeContextMenu}>
-        <Pressable style={styles.bottomSheetBackdrop} onPress={closeContextMenu}>
+      <Modal
+        visible={contextMenu.visible}
+        transparent
+        animationType="slide"
+        onRequestClose={dismissContextMenuWithReopen}
+      >
+        <Pressable style={styles.bottomSheetBackdrop} onPress={dismissContextMenuWithReopen}>
           <Pressable style={styles.bottomContextSheet} onPress={(e) => e.stopPropagation()}>
             <View style={styles.bottomSheetPill} />
             <Text style={styles.contextSheetHeader}>{contextMenu.title}</Text>
@@ -4054,13 +4220,7 @@ function JSMAppContent() {
               mode="outlined"
               textColor={COLORS.navy}
               style={{ marginTop: 14, width: '100%', borderColor: COLORS.border, borderRadius: 12 }}
-              onPress={() => {
-                const shouldReopenSubj = contextMenu.reopenSubjectsModal;
-                const shouldReopenLog = contextMenu.reopenTodayLogModal;
-                closeContextMenu();
-                if (shouldReopenSubj) scheduleTimeout(() => setSubjectsModal(true), 220);
-                if (shouldReopenLog) scheduleTimeout(() => setTodayLogModal(true), 220);
-              }}
+              onPress={dismissContextMenuWithReopen}
             >
               Cancel
             </PaperButton>
@@ -4211,8 +4371,8 @@ function JSMAppContent() {
         </SafeAreaView>
       </Modal>
 
-      {/* MANAGE SUBJECTS MODAL (DECLUTTERED: LONG-PRESS TO EDIT/DELETE, 6-DOT HANDLE TO REORDER) */}
-      <Modal visible={subjectsModal} transparent animationType="fade" onRequestClose={() => setSubjectsModal(false)}>
+      {/* MANAGE SUBJECTS MODAL */}
+      <Modal visible={subjectsModal} transparent animationType="fade" onRequestClose={closeSubjectsModalClean}>
         <GestureHandlerRootView style={{ flex: 1 }}>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
             <Surface style={styles.modalCard} elevation={5}>
@@ -4261,7 +4421,7 @@ function JSMAppContent() {
                         <Surface
                           style={[
                             styles.cleanRecordCard,
-                            { minHeight: 50, paddingVertical: 8, paddingHorizontal: 12 },
+                            { height: 52, paddingVertical: 8, paddingHorizontal: 12 },
                             isDragging && styles.draggingSubjectCard,
                           ]}
                           elevation={isDragging ? 5 : 2}
@@ -4301,7 +4461,7 @@ function JSMAppContent() {
                             }}
                             delayLongPress={260}
                           >
-                            <Text style={styles.recordPrimaryTitle}>
+                            <Text style={styles.recordPrimaryTitle} numberOfLines={1}>
                               {idx + 1}. {subj.name}
                             </Text>
                           </Pressable>
@@ -4315,11 +4475,7 @@ function JSMAppContent() {
                 mode="outlined"
                 textColor={COLORS.navy}
                 style={{ alignSelf: 'flex-end', borderColor: COLORS.silver }}
-                onPress={() => {
-                  Keyboard.dismiss();
-                  setSubjectForm({ id: null, name: '' });
-                  setSubjectsModal(false);
-                }}
+                onPress={closeSubjectsModalClean}
               >
                 Done
               </PaperButton>
@@ -4329,7 +4485,15 @@ function JSMAppContent() {
       </Modal>
 
       {/* REGISTER / EDIT STUDENT MODAL */}
-      <Modal visible={studentModal} transparent animationType="fade" onRequestClose={() => setStudentModal(false)}>
+      <Modal
+        visible={studentModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (calendarPicker.visible) closeCalendarPicker();
+          else setStudentModal(false);
+        }}
+      >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
             <Text style={styles.sectionTitle}>
@@ -4415,6 +4579,7 @@ function JSMAppContent() {
                 textColor={COLORS.navy}
                 onPress={() => {
                   Keyboard.dismiss();
+                  closeCalendarPicker();
                   setStudentModal(false);
                 }}
               >
@@ -4439,7 +4604,10 @@ function JSMAppContent() {
         visible={lessonEditModal}
         transparent
         animationType="fade"
-        onRequestClose={() => setLessonEditModal(false)}
+        onRequestClose={() => {
+          if (calendarPicker.visible) closeCalendarPicker();
+          else setLessonEditModal(false);
+        }}
       >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
@@ -4511,6 +4679,7 @@ function JSMAppContent() {
                 textColor={COLORS.navy}
                 onPress={() => {
                   Keyboard.dismiss();
+                  closeCalendarPicker();
                   setLessonEditModal(false);
                 }}
               >
@@ -4535,7 +4704,10 @@ function JSMAppContent() {
         visible={attendanceModal}
         transparent
         animationType="fade"
-        onRequestClose={() => setAttendanceModal(false)}
+        onRequestClose={() => {
+          if (calendarPicker.visible) closeCalendarPicker();
+          else setAttendanceModal(false);
+        }}
       >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
@@ -4637,6 +4809,7 @@ function JSMAppContent() {
                 textColor={COLORS.navy}
                 onPress={() => {
                   Keyboard.dismiss();
+                  closeCalendarPicker();
                   setAttendanceModal(false);
                 }}
               >
@@ -4657,7 +4830,15 @@ function JSMAppContent() {
       </Modal>
 
       {/* RECORD / EDIT FEE MODAL */}
-      <Modal visible={feeModal} transparent animationType="fade" onRequestClose={() => setFeeModal(false)}>
+      <Modal
+        visible={feeModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (calendarPicker.visible) closeCalendarPicker();
+          else setFeeModal(false);
+        }}
+      >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
             <Text style={styles.sectionTitle}>{feeForm.id ? 'EDIT FEE' : 'RECORD FEE'}</Text>
@@ -4763,9 +4944,28 @@ function JSMAppContent() {
                     style={[styles.choiceChip, feeForm.status === st && styles.choiceChipSelected]}
                     onPress={() => {
                       Keyboard.dismiss();
-                      if (st === 'Unpaid') setFeeForm({ ...feeForm, status: st, amountPaid: '0' });
-                      else if (st === 'Paid') setFeeForm({ ...feeForm, status: st, balanceDue: '0' });
-                      else setFeeForm({ ...feeForm, status: st });
+                      if (st === 'Unpaid') {
+                        setFeeForm({
+                          ...feeForm,
+                          status: st,
+                          amountPaid: '0',
+                          balanceDue: feeForm.balanceDue === '0' ? '' : feeForm.balanceDue,
+                        });
+                      } else if (st === 'Paid') {
+                        setFeeForm({
+                          ...feeForm,
+                          status: st,
+                          amountPaid: feeForm.amountPaid === '0' ? '' : feeForm.amountPaid,
+                          balanceDue: '0',
+                        });
+                      } else {
+                        setFeeForm({
+                          ...feeForm,
+                          status: st,
+                          amountPaid: feeForm.amountPaid === '0' ? '' : feeForm.amountPaid,
+                          balanceDue: feeForm.balanceDue === '0' ? '' : feeForm.balanceDue,
+                        });
+                      }
                     }}
                   >
                     <Text style={[styles.choiceChipText, feeForm.status === st && styles.choiceChipTextSelected]}>
@@ -4820,6 +5020,7 @@ function JSMAppContent() {
                 textColor={COLORS.navy}
                 onPress={() => {
                   Keyboard.dismiss();
+                  closeCalendarPicker();
                   setFeeModal(false);
                 }}
               >
