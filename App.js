@@ -1,5 +1,5 @@
 // ==========================================
-// PART 1 OF 3
+// PART 1 OF 2
 // ==========================================
 import React, { Component, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
@@ -225,6 +225,20 @@ const normalizeISODate = (rawStr) => {
 };
 
 const getLocalCurrentMonthLabel = () => `${MONTHS_FULL[new Date().getMonth()]} ${new Date().getFullYear()}`;
+
+const getSelectableMonthsList = (currentVal = '') => {
+  const list = [];
+  const now = new Date();
+  for (let offset = -6; offset <= 5; offset++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+    list.push(`${MONTHS_FULL[d.getMonth()]} ${d.getFullYear()}`);
+  }
+  if (currentVal && !list.includes(currentVal)) {
+    list.unshift(currentVal);
+  }
+  return list;
+};
+
 const getGreetingByLocalTime = () => {
   const h = new Date().getHours();
   return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
@@ -368,6 +382,27 @@ const ScalePressable = ({ children, onPress, onLongPress, delayLongPress = 280, 
     </Pressable>
   );
 };
+
+// Minimalist Dropdown Selector matching Paper Outlined Inputs
+const DropdownField = ({ label, valueLabel, onPress, style, compact = false }) => (
+  <TouchableOpacity
+    activeOpacity={0.75}
+    style={[styles.dropdownField, compact && styles.dropdownFieldCompact, style]}
+    onPress={() => {
+      Keyboard.dismiss();
+      triggerHaptic(8);
+      onPress();
+    }}
+  >
+    <View style={{ flex: 1, paddingRight: 8 }}>
+      {label ? <Text style={styles.dropdownFloatingLabel}>{label}</Text> : null}
+      <Text style={[styles.dropdownValueText, compact && { fontSize: 13 }]} numberOfLines={1}>
+        {valueLabel || 'Select...'}
+      </Text>
+    </View>
+    <Ionicons name="chevron-down-outline" size={18} color={COLORS.navy} />
+  </TouchableOpacity>
+);
 
 const EmptyStateWatermark = ({ message, compact = false, actionLabel, onAction }) => (
   <View style={[styles.emptyWatermarkContainer, compact && { paddingVertical: 14 }]}>
@@ -533,7 +568,7 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
   );
 };
 
-// Minimal QuickDateRow: Only "Today" and "Pick Date" (Yesterday removed)
+// Minimal QuickDateRow: Only "Today" and "Pick Date"
 const QuickDateRow = ({ currentDate, onSelectDate, onOpenCalendar }) => {
   const today = getTodayISO();
   return (
@@ -584,27 +619,53 @@ function JSMAppContent() {
   const isMountedRef = useRef(true);
   const pendingTimeoutsRef = useRef([]);
 
-  // Network & Offline Sync States
   const [isNetworkOnline, setIsNetworkOnline] = useState(true);
   const [pendingSyncByCol, setPendingSyncByCol] = useState({});
 
-  // Master List / Report Generator Modal States
   const [masterListModal, setMasterListModal] = useState(false);
   const [masterStudentFilter, setMasterStudentFilter] = useState('ALL');
   const [masterMonthFilter, setMasterMonthFilter] = useState('ALL');
   const [masterDateFilter, setMasterDateFilter] = useState('');
 
-  // Dedicated Student Popup Modal from Firebase Matrix Row Tap
   const [studentReportModal, setStudentReportModal] = useState({
     visible: false,
     studentId: null,
     dateFilter: '',
   });
 
-  // Floating Search Toggle in Student Directory
   const [searchBarVisible, setSearchBarVisible] = useState(false);
   const [studentSearch, setStudentSearch] = useState('');
   const [studentFilter, setStudentFilter] = useState('All');
+
+  // Progressive disclosure toggles for optional Note / Remarks fields
+  const [showInlineAttNote, setShowInlineAttNote] = useState(false);
+  const [showModalAttNote, setShowModalAttNote] = useState(false);
+  const [showFeeNote, setShowFeeNote] = useState(false);
+
+  // Reusable Dropdown Picker Portal State
+  const [dropdownPicker, setDropdownPicker] = useState({
+    visible: false,
+    title: '',
+    options: [],
+    selectedValue: null,
+    onSelect: null,
+  });
+
+  const closeDropdownPicker = useCallback(() => {
+    setDropdownPicker((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+  }, []);
+
+  const openDropdownPicker = useCallback((title, options, selectedValue, onSelect) => {
+    Keyboard.dismiss();
+    triggerHaptic(8);
+    setDropdownPicker({
+      visible: true,
+      title,
+      options,
+      selectedValue,
+      onSelect,
+    });
+  }, []);
 
   const scheduleTimeout = useCallback((fn, delayMs) => {
     const id = setTimeout(() => {
@@ -871,6 +932,10 @@ function JSMAppContent() {
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (dropdownPicker.visible) {
+        closeDropdownPicker();
+        return true;
+      }
       if (calendarPicker.visible) {
         closeCalendarPicker();
         return true;
@@ -935,6 +1000,7 @@ function JSMAppContent() {
   }, [
     activeTab,
     selectedStudentId,
+    dropdownPicker.visible,
     calendarPicker.visible,
     contextMenu.visible,
     studentReportModal.visible,
@@ -947,16 +1013,14 @@ function JSMAppContent() {
     todayLogModal,
     masterListModal,
     drawerOpen,
+    closeDropdownPicker,
     closeCalendarPicker,
     dismissContextMenuWithReopen,
     closeSubjectsModalClean,
     closeDrawer,
   ]);
-  // ==========================================
-// PART 2 OF 3
-// ==========================================
 
-  // Real-Time Firestore Listeners with Metadata Tracking for Offline Caching
+  // Real-Time Firestore Listeners
   useEffect(() => {
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
     const timer = setTimeout(() => {
@@ -1221,6 +1285,7 @@ function JSMAppContent() {
   useEffect(() => {
     setInlineLessonForm({ date: getTodayISO(), technique: '', lesson: '', repertoire: '', assignment: '' });
     setInlineAttendanceForm({ date: getTodayISO(), status: 'Present', remarks: '' });
+    setShowInlineAttNote(false);
   }, [selectedStudentId]);
 
   const getStudentMetrics = useCallback(
@@ -1254,7 +1319,6 @@ function JSMAppContent() {
     [activeLessons, activeAttendance, activeFees]
   );
 
-  // Data for the Single-Student Report Popup (triggered from Firebase Matrix row tap)
   const studentReportData = useMemo(() => {
     const st = studentMap[studentReportModal.studentId];
     if (!st || st.isDeleted) return null;
@@ -1388,7 +1452,6 @@ function JSMAppContent() {
     }
   };
 
-  // Filtered Master List data computation
   const masterListData = useMemo(() => {
     const targetStudents =
       masterStudentFilter === 'ALL'
@@ -1810,6 +1873,8 @@ function JSMAppContent() {
           });
           setLessonEditModal(true);
         } else if (entityType === 'attendance') {
+          const hasRem = Boolean(safeString(item.remarks).trim());
+          setShowModalAttNote(hasRem);
           setAttendanceModalForm({
             id: item.id,
             studentId: item.studentId,
@@ -1819,6 +1884,8 @@ function JSMAppContent() {
           });
           setAttendanceModal(true);
         } else if (entityType === 'fee') {
+          const hasRem = Boolean(safeString(item.remarks).trim());
+          setShowFeeNote(hasRem);
           setFeeForm({
             id: item.id,
             studentId: item.studentId,
@@ -1891,6 +1958,7 @@ function JSMAppContent() {
       };
       const editingId = studentForm.id;
       closeCalendarPicker();
+      closeDropdownPicker();
       setStudentModal(false);
       setStudentForm({
         id: null,
@@ -2017,6 +2085,7 @@ function JSMAppContent() {
       const statusVal = inlineAttendanceForm.status;
       const remarksVal = safeString(inlineAttendanceForm.remarks).trim();
       setInlineAttendanceForm({ date: getTodayISO(), status: 'Present', remarks: '' });
+      setShowInlineAttNote(false);
       const existingRecord = activeAttendance.find(
         (a) => a.studentId === selectedStudentId && a.date === validDate
       );
@@ -2076,7 +2145,9 @@ function JSMAppContent() {
       triggerHaptic(12);
       const editingId = attendanceModalForm.id;
       closeCalendarPicker();
+      closeDropdownPicker();
       setAttendanceModal(false);
+      setShowModalAttNote(false);
       if (editingId) {
         await withWriteTimeout(updateDoc(doc(db, 'attendance', editingId), payload));
         await logActivity(
@@ -2165,7 +2236,9 @@ function JSMAppContent() {
         remarks: safeString(feeForm.remarks).trim(),
       };
       closeCalendarPicker();
+      closeDropdownPicker();
       setFeeModal(false);
+      setShowFeeNote(false);
       if (editingId) {
         await withWriteTimeout(updateDoc(doc(db, 'fees', editingId), payload));
         await logActivity(
@@ -2378,6 +2451,9 @@ function JSMAppContent() {
     }
     return false;
   }, []);
+// ==========================================
+// PART 2 OF 2
+// ==========================================
 
   const renderCalendarDays = () => {
     const { viewYear, viewMonth, selectedDate, onSelect } = calendarPicker;
@@ -2427,10 +2503,7 @@ function JSMAppContent() {
   const renderCalendarOverlay = () => {
     if (!calendarPicker.visible) return null;
     return (
-      <Pressable
-        style={styles.calendarPortalOverlay}
-        onPress={closeCalendarPicker}
-      >
+      <Pressable style={styles.calendarPortalOverlay} onPress={closeCalendarPicker}>
         <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
           <View style={styles.calendarHeaderRow}>
             <TouchableOpacity
@@ -2493,6 +2566,53 @@ function JSMAppContent() {
     );
   };
 
+  const renderDropdownOverlay = () => {
+    if (!dropdownPicker.visible) return null;
+    return (
+      <Pressable style={styles.dropdownPortalOverlay} onPress={closeDropdownPicker}>
+        <Pressable style={styles.dropdownModalCard} onPress={(e) => e.stopPropagation()}>
+          <View style={styles.cardHeaderRow}>
+            <Text style={styles.sectionTitle}>{ safeString(dropdownPicker.title).toUpperCase() }</Text>
+            <TouchableOpacity onPress={closeDropdownPicker} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close-outline" size={22} color={COLORS.navy} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={{ maxHeight: 300, marginTop: 4 }} keyboardShouldPersistTaps="handled">
+            {dropdownPicker.options.map((opt) => {
+              const isSelected = opt.value === dropdownPicker.selectedValue;
+              return (
+                <TouchableOpacity
+                  key={String(opt.value)}
+                  style={[styles.dropdownOptionRow, isSelected && styles.dropdownOptionRowSelected]}
+                  onPress={() => {
+                    triggerHaptic(8);
+                    if (typeof dropdownPicker.onSelect === 'function') {
+                      dropdownPicker.onSelect(opt.value);
+                    }
+                    closeDropdownPicker();
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.dropdownOptionText,
+                      isSelected && styles.dropdownOptionTextSelected,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {opt.label}
+                  </Text>
+                  {isSelected ? (
+                    <Ionicons name="checkmark-circle" size={18} color={COLORS.gold} />
+                  ) : null}
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    );
+  };
+
   // ==========================================
   // 6. HOMEPAGE: THIN GREETING, LARGER NOTICE BOARD & HORIZONTAL MATRIX
   // ==========================================
@@ -2515,7 +2635,7 @@ function JSMAppContent() {
 
     return (
       <View style={styles.homeNoScrollContainer}>
-        {/* 1. Slim Greeting Strip (Stats Pills Removed) */}
+        {/* 1. Slim Greeting Strip */}
         <View style={styles.compactGreetingStrip}>
           <SmoothNavyGradient />
           <Text style={styles.compactGreetingTitle} numberOfLines={1}>
@@ -2524,7 +2644,7 @@ function JSMAppContent() {
           <Text style={styles.compactGreetingDate}>{formatReadableLocalDate(todayISO)}</Text>
         </View>
 
-        {/* 2. Larger Notice Board (No Default Text) + 3 Action Cards */}
+        {/* 2. Larger Notice Board + 3 Action Cards */}
         <View style={styles.compactActionSection}>
           <ScalePressable
             onPress={() => {
@@ -2559,7 +2679,6 @@ function JSMAppContent() {
             </View>
           </ScalePressable>
 
-          {/* 3 Compact Equal-Width Cards in 1 Row */}
           <View style={styles.threeSmallCardsRow}>
             <View style={{ flex: 1 }}>
               <ScalePressable
@@ -2684,7 +2803,6 @@ function JSMAppContent() {
               nestedScrollEnabled={true}
             >
               <View style={styles.matrixWrapper}>
-                {/* Sticky Left Column: Student Names */}
                 <View style={styles.matrixStickyLeftCol}>
                   <View style={[styles.matrixHeaderCell, styles.matrixStickyHeaderCell]}>
                     <Text style={styles.matrixHeaderText}>STUDENT</Text>
@@ -2725,7 +2843,6 @@ function JSMAppContent() {
                   })}
                 </View>
 
-                {/* Horizontally Scrollable Right Columns: Attendance, Latest Class, Fees */}
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={true}
@@ -2954,6 +3071,12 @@ function JSMAppContent() {
     const activeSubjectIdSet = new Set(activeSubjects.map((s) => s.id));
     const unassignedStudents = filteredStudents.filter((st) => !activeSubjectIdSet.has(st.subjectId));
 
+    const filterOptions = [
+      { value: 'All', label: `All Students (${activeStudents.length})` },
+      { value: 'Due', label: 'Due / Unpaid Only' },
+      { value: 'Priority', label: 'Priority ☆ Notes Only' },
+    ];
+
     return (
       <ScrollView
         contentContainerStyle={styles.scrollContentWithFab}
@@ -2962,33 +3085,68 @@ function JSMAppContent() {
         keyboardDismissMode="on-drag"
       >
         <View style={styles.tabTopBar}>
-          <Text style={styles.pageHeading}>Students</Text>
-          <TouchableOpacity
-            style={[
-              styles.floatingSearchToggleBtn,
-              (searchBarVisible || studentSearch.length > 0) && styles.floatingSearchToggleBtnActive,
-            ]}
-            onPress={() => {
-              triggerHaptic(8);
-              triggerLayoutAnimation();
-              if (searchBarVisible && studentSearch) {
-                setStudentSearch('');
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <Text style={styles.pageHeading}>Students</Text>
+            {studentFilter !== 'All' ? (
+              <TouchableOpacity
+                style={styles.activeFilterPill}
+                onPress={() => {
+                  triggerHaptic(6);
+                  setStudentFilter('All');
+                }}
+              >
+                <Text style={styles.activeFilterPillText}>
+                  {studentFilter === 'Due' ? 'Due / Unpaid' : '☆ Notes'} ✕
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <TouchableOpacity
+              style={[
+                styles.floatingSearchToggleBtn,
+                studentFilter !== 'All' && styles.floatingSearchToggleBtnActive,
+              ]}
+              onPress={() =>
+                openDropdownPicker('Filter Students', filterOptions, studentFilter, (val) => {
+                  triggerLayoutAnimation();
+                  setStudentFilter(val);
+                })
               }
-              setSearchBarVisible(!searchBarVisible);
-            }}
-          >
-            <Ionicons
-              name={searchBarVisible ? 'close-outline' : 'search-outline'}
-              size={20}
-              color={searchBarVisible || studentSearch.length > 0 ? COLORS.gold : COLORS.navy}
-            />
-          </TouchableOpacity>
+            >
+              <Ionicons
+                name="funnel-outline"
+                size={18}
+                color={studentFilter !== 'All' ? COLORS.gold : COLORS.navy}
+              />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.floatingSearchToggleBtn,
+                (searchBarVisible || studentSearch.length > 0) && styles.floatingSearchToggleBtnActive,
+              ]}
+              onPress={() => {
+                triggerHaptic(8);
+                triggerLayoutAnimation();
+                if (searchBarVisible && studentSearch) {
+                  setStudentSearch('');
+                }
+                setSearchBarVisible(!searchBarVisible);
+              }}
+            >
+              <Ionicons
+                name={searchBarVisible ? 'close-outline' : 'search-outline'}
+                size={20}
+                color={searchBarVisible || studentSearch.length > 0 ? COLORS.gold : COLORS.navy}
+              />
+            </TouchableOpacity>
+          </View>
         </View>
 
         {searchBarVisible && (
           <PaperInput
             mode="outlined"
-            placeholder="Search..."
+            label="Search students"
             value={studentSearch}
             onChangeText={setStudentSearch}
             autoFocus
@@ -3003,28 +3161,6 @@ function JSMAppContent() {
             style={[styles.tintedInput, { marginBottom: 14 }]}
           />
         )}
-
-        <View style={[styles.chipRow, { marginBottom: 16 }]}>
-          {[
-            { key: 'All', label: `All (${activeStudents.length})` },
-            { key: 'Due', label: 'Due / Unpaid' },
-            { key: 'Priority', label: '☆ Notes' },
-          ].map((f) => (
-            <TouchableOpacity
-              key={f.key}
-              style={[styles.choiceChip, studentFilter === f.key && styles.choiceChipSelected]}
-              onPress={() => {
-                Keyboard.dismiss();
-                triggerHaptic(6);
-                setStudentFilter(f.key);
-              }}
-            >
-              <Text style={[styles.choiceChipText, studentFilter === f.key && styles.choiceChipTextSelected]}>
-                {f.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
 
         {activeSubjects.length === 0 && unassignedStudents.length === 0 ? (
           <Surface style={styles.whiteCard} elevation={2}>
@@ -3195,9 +3331,9 @@ function JSMAppContent() {
                 />
                 <PaperInput
                   mode="outlined"
+                  label="Date"
                   value={inlineLessonForm.date}
                   onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, date: t })}
-                  placeholder="YYYY-MM-DD"
                   right={
                     <PaperInput.Icon
                       icon="calendar-outline"
@@ -3214,36 +3350,36 @@ function JSMAppContent() {
                 />
                 <PaperInput
                   mode="outlined"
+                  label="Technique"
                   value={inlineLessonForm.technique}
                   onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, technique: t })}
-                  placeholder="Technique"
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
                 />
                 <PaperInput
                   mode="outlined"
+                  label="Lesson"
                   value={inlineLessonForm.lesson}
                   onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, lesson: t })}
-                  placeholder="Lesson"
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
                 />
                 <PaperInput
                   mode="outlined"
+                  label="Repertoire"
                   value={inlineLessonForm.repertoire}
                   onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, repertoire: t })}
-                  placeholder="Repertoire"
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
                 />
                 <PaperInput
                   mode="outlined"
+                  label="Assignment"
                   value={inlineLessonForm.assignment}
                   onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, assignment: t })}
-                  placeholder="Assignment"
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
@@ -3253,7 +3389,7 @@ function JSMAppContent() {
                   buttonColor={COLORS.navy}
                   textColor={COLORS.gold}
                   onPress={handleSaveInlineLesson}
-                  style={{ marginTop: 8, borderRadius: 10 }}
+                  style={{ marginTop: 6, borderRadius: 10 }}
                 >
                   Save Lesson
                 </PaperButton>
@@ -3325,6 +3461,7 @@ function JSMAppContent() {
                 />
                 <PaperInput
                   mode="outlined"
+                  label="Date"
                   value={inlineAttendanceForm.date}
                   onChangeText={(t) => setInlineAttendanceForm({ ...inlineAttendanceForm, date: t })}
                   right={
@@ -3341,46 +3478,56 @@ function JSMAppContent() {
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
                 />
-                <View style={styles.chipRow}>
-                  {ATTENDANCE_STATUSES.map((st) => (
-                    <TouchableOpacity
-                      key={st}
-                      style={[
-                        styles.choiceChip,
-                        inlineAttendanceForm.status === st && styles.choiceChipSelected,
-                      ]}
-                      onPress={() => {
-                        Keyboard.dismiss();
-                        triggerHaptic(6);
-                        setInlineAttendanceForm({ ...inlineAttendanceForm, status: st });
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.choiceChipText,
-                          inlineAttendanceForm.status === st && styles.choiceChipTextSelected,
-                        ]}
-                      >
-                        {st}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <PaperInput
-                  mode="outlined"
-                  value={inlineAttendanceForm.remarks}
-                  onChangeText={(t) => setInlineAttendanceForm({ ...inlineAttendanceForm, remarks: t })}
-                  placeholder="Remarks"
-                  outlineColor={COLORS.border}
-                  activeOutlineColor={COLORS.navy}
-                  style={styles.tintedInput}
+                <DropdownField
+                  label="Attendance Status"
+                  valueLabel={inlineAttendanceForm.status}
+                  onPress={() =>
+                    openDropdownPicker(
+                      'Attendance Status',
+                      ATTENDANCE_STATUSES.map((s) => ({ label: s, value: s })),
+                      inlineAttendanceForm.status,
+                      (val) => setInlineAttendanceForm({ ...inlineAttendanceForm, status: val })
+                    )
+                  }
                 />
+                {showInlineAttNote || Boolean(inlineAttendanceForm.remarks) ? (
+                  <PaperInput
+                    mode="outlined"
+                    label="Note / Remarks"
+                    value={inlineAttendanceForm.remarks}
+                    onChangeText={(t) => setInlineAttendanceForm({ ...inlineAttendanceForm, remarks: t })}
+                    right={
+                      <PaperInput.Icon
+                        icon="close"
+                        onPress={() => {
+                          triggerLayoutAnimation();
+                          setInlineAttendanceForm({ ...inlineAttendanceForm, remarks: '' });
+                          setShowInlineAttNote(false);
+                        }}
+                      />
+                    }
+                    outlineColor={COLORS.border}
+                    activeOutlineColor={COLORS.navy}
+                    style={styles.tintedInput}
+                  />
+                ) : (
+                  <TouchableOpacity
+                    style={styles.addNoteToggleBtn}
+                    onPress={() => {
+                      triggerLayoutAnimation();
+                      setShowInlineAttNote(true);
+                    }}
+                  >
+                    <Ionicons name="add-circle-outline" size={15} color={COLORS.navy} />
+                    <Text style={styles.addNoteToggleText}>+ Add Note</Text>
+                  </TouchableOpacity>
+                )}
                 <PaperButton
                   mode="contained"
                   buttonColor={COLORS.navy}
                   textColor={COLORS.gold}
                   onPress={handleSaveInlineAttendance}
-                  style={{ marginTop: 8, borderRadius: 10 }}
+                  style={{ marginTop: 6, borderRadius: 10 }}
                 >
                   Save Attendance
                 </PaperButton>
@@ -3435,11 +3582,11 @@ function JSMAppContent() {
               </View>
               <PaperInput
                 mode="outlined"
+                label="Faculty Notes"
                 multiline
                 numberOfLines={5}
                 value={noteDraft}
                 onChangeText={setNoteDraft}
-                placeholder="Notes..."
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={[styles.tintedInput, { marginTop: 12 }]}
@@ -3492,7 +3639,8 @@ function JSMAppContent() {
                           {formatReadableLocalDate(fee.date)} • {fee.mode} • {fee.status}
                         </Text>
                         <Text style={styles.recordDetailLine}>
-                          Paid: ₹{fee.amountPaid} | Balance: ₹{fee.balanceDue}
+                          Paid: ₹{fee.amountPaid}
+                          {safeNumber(fee.balanceDue, 0) > 0 ? ` | Balance: ₹${fee.balanceDue}` : ''}
                         </Text>
                         {fee.remarks ? <Text style={styles.silverMeta}>{fee.remarks}</Text> : null}
                       </View>
@@ -3502,7 +3650,6 @@ function JSMAppContent() {
                         onPress={() => generateAndShareReceiptPDF(fee)}
                       >
                         <Ionicons name="share-social-outline" size={16} color={COLORS.gold} />
-                        <Text style={styles.pdfExportTouchBtnText}>Receipt</Text>
                       </TouchableOpacity>
                     </Surface>
                   </ScalePressable>
@@ -3529,17 +3676,25 @@ function JSMAppContent() {
       >
         <View style={styles.tabTopBar}>
           <Text style={styles.pageHeading}>Attendance</Text>
-          <PaperButton
-            mode="outlined"
-            textColor={COLORS.navy}
-            style={{ borderColor: COLORS.silver }}
-            onPress={() => {
-              triggerLayoutAnimation();
-              setAttendanceFilterAllMonths(!attendanceFilterAllMonths);
-            }}
-          >
-            {attendanceFilterAllMonths ? 'Last 2 Months' : 'All Months'}
-          </PaperButton>
+          <DropdownField
+            compact
+            style={{ width: 152, marginBottom: 0 }}
+            valueLabel={attendanceFilterAllMonths ? 'All Months' : 'Last 2 Months'}
+            onPress={() =>
+              openDropdownPicker(
+                'Timeframe',
+                [
+                  { label: 'Last 2 Months', value: false },
+                  { label: 'All Months', value: true },
+                ],
+                attendanceFilterAllMonths,
+                (val) => {
+                  triggerLayoutAnimation();
+                  setAttendanceFilterAllMonths(val);
+                }
+              )
+            }
+          />
         </View>
 
         {groupedAttendance.length === 0 ? (
@@ -3679,7 +3834,8 @@ function JSMAppContent() {
                                 : ''}
                             </Text>
                             <Text style={styles.recordDetailLine}>
-                              Paid: ₹{fee.amountPaid} | Balance: ₹{fee.balanceDue}
+                              Paid: ₹{fee.amountPaid}
+                              {safeNumber(fee.balanceDue, 0) > 0 ? ` | Balance: ₹${fee.balanceDue}` : ''}
                             </Text>
                           </View>
                           <View style={{ alignItems: 'flex-end', gap: 8 }}>
@@ -3691,8 +3847,7 @@ function JSMAppContent() {
                               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                               onPress={() => generateAndShareReceiptPDF(fee)}
                             >
-                              <Ionicons name="document-text-outline" size={16} color={COLORS.gold} />
-                              <Text style={styles.pdfExportTouchBtnText}>PDF</Text>
+                              <Ionicons name="share-social-outline" size={15} color={COLORS.gold} />
                             </TouchableOpacity>
                           </View>
                         </Surface>
@@ -3766,9 +3921,6 @@ function JSMAppContent() {
       </ScrollView>
     );
   };
-  // ==========================================
-// PART 3 OF 3
-// ==========================================
 
   // ==========================================
   // 7. CLEAN FLOATING ACTION BUTTON (FAB) CONFIG
@@ -3802,6 +3954,7 @@ function JSMAppContent() {
         onPress: () => {
           Keyboard.dismiss();
           triggerHaptic(12);
+          setShowFeeNote(false);
           setFeeForm({
             id: null,
             studentId: selectedStudent.id,
@@ -3827,6 +3980,7 @@ function JSMAppContent() {
           triggerHaptic(12);
           if (activeStudents.length === 0)
             return Alert.alert('No Students', 'Add a student before marking attendance.');
+          setShowModalAttNote(false);
           setAttendanceModalForm({
             id: null,
             studentId: activeStudents[0]?.id || '',
@@ -3847,6 +4001,7 @@ function JSMAppContent() {
           triggerHaptic(12);
           if (activeStudents.length === 0)
             return Alert.alert('No Students', 'Enroll a student before recording fees.');
+          setShowFeeNote(false);
           setFeeForm({
             id: null,
             studentId: activeStudents[0]?.id || '',
@@ -3895,7 +4050,6 @@ function JSMAppContent() {
       </View>
 
       <View style={{ flex: 1 }}>
-        {/* Edge Swipe Strip */}
         <PanGestureHandler
           activeOffsetX={10}
           failOffsetY={[-18, 18]}
@@ -3921,7 +4075,6 @@ function JSMAppContent() {
           {activeTab === 'Trash' && renderTrashTab()}
         </AnimatedScreen>
 
-        {/* Clean Bottom-Right Floating Action Button (FAB) */}
         {fabConfig && (
           <ScalePressable style={styles.fabContainerPos} onPress={fabConfig.onPress}>
             <View style={styles.fabButton}>
@@ -3933,6 +4086,7 @@ function JSMAppContent() {
         )}
 
         {!anyFormModalOpen && !masterListModal && renderCalendarOverlay()}
+        {!anyFormModalOpen && !masterListModal && renderDropdownOverlay()}
       </View>
 
       {/* Bottom Tab Bar */}
@@ -4240,7 +4394,8 @@ function JSMAppContent() {
                         {formatReadableLocalDate(fee.date)} • {fee.mode} • {fee.status}
                       </Text>
                       <Text style={styles.recordDetailLine}>
-                        Paid: ₹{fee.amountPaid} | Balance: ₹{fee.balanceDue}
+                        Paid: ₹{fee.amountPaid}
+                        {safeNumber(fee.balanceDue, 0) > 0 ? ` | Balance: ₹${fee.balanceDue}` : ''}
                       </Text>
                     </View>
                   </Surface>
@@ -4252,12 +4407,13 @@ function JSMAppContent() {
         </SafeAreaView>
       </Modal>
 
-      {/* MASTER LIST & REPORT GENERATOR MODAL */}
+      {/* MASTER LIST & REPORT GENERATOR MODAL (WITH STREAMLINED DROPDOWN FILTERS) */}
       <Modal
         visible={masterListModal}
         animationType="slide"
         onRequestClose={() => {
-          if (calendarPicker.visible) closeCalendarPicker();
+          if (dropdownPicker.visible) closeDropdownPicker();
+          else if (calendarPicker.visible) closeCalendarPicker();
           else setMasterListModal(false);
         }}
       >
@@ -4275,6 +4431,7 @@ function JSMAppContent() {
               <TouchableOpacity
                 style={styles.fullScreenCloseBtn}
                 onPress={() => {
+                  closeDropdownPicker();
                   closeCalendarPicker();
                   setMasterListModal(false);
                 }}
@@ -4285,128 +4442,79 @@ function JSMAppContent() {
           </View>
 
           <View style={styles.masterFilterSection}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              <View style={{ flexDirection: 'row', gap: 6 }}>
-                <TouchableOpacity
-                  style={[styles.choiceChip, masterStudentFilter === 'ALL' && styles.choiceChipSelected]}
-                  onPress={() => {
-                    triggerHaptic(6);
-                    setMasterStudentFilter('ALL');
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.choiceChipText,
-                      masterStudentFilter === 'ALL' && styles.choiceChipTextSelected,
-                    ]}
-                  >
-                    All Students ({activeStudents.length})
-                  </Text>
-                </TouchableOpacity>
-                {activeStudents.map((st) => (
-                  <TouchableOpacity
-                    key={st.id}
-                    style={[styles.choiceChip, masterStudentFilter === st.id && styles.choiceChipSelected]}
-                    onPress={() => {
-                      triggerHaptic(6);
-                      setMasterStudentFilter(st.id);
-                    }}
-                  >
-                    <Text
-                      style={[
-                        styles.choiceChipText,
-                        masterStudentFilter === st.id && styles.choiceChipTextSelected,
-                      ]}
-                    >
-                      {st.name}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </ScrollView>
+            <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+              <DropdownField
+                compact
+                label="Student"
+                style={{ flex: 1, marginBottom: 0 }}
+                valueLabel={
+                  masterStudentFilter === 'ALL'
+                    ? `All Students (${activeStudents.length})`
+                    : studentMap[masterStudentFilter]?.name || 'Select'
+                }
+                onPress={() =>
+                  openDropdownPicker(
+                    'Select Student',
+                    [
+                      { label: `All Students (${activeStudents.length})`, value: 'ALL' },
+                      ...activeStudents.map((st) => ({ label: st.name, value: st.id })),
+                    ],
+                    masterStudentFilter,
+                    (val) => setMasterStudentFilter(val)
+                  )
+                }
+              />
 
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-              style={{ marginTop: 8 }}
-            >
-              <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
-                <TouchableOpacity
-                  style={[
-                    styles.choiceChip,
-                    masterMonthFilter === 'ALL' && !masterDateFilter && styles.choiceChipSelected,
-                  ]}
-                  onPress={() => {
-                    triggerHaptic(6);
-                    setMasterDateFilter('');
-                    setMasterMonthFilter('ALL');
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.choiceChipText,
-                      masterMonthFilter === 'ALL' && !masterDateFilter && styles.choiceChipTextSelected,
-                    ]}
-                  >
-                    All Time
-                  </Text>
-                </TouchableOpacity>
-                {availableMasterMonths.map((mLabel) => (
-                  <TouchableOpacity
-                    key={mLabel}
-                    style={[
-                      styles.choiceChip,
-                      masterMonthFilter === mLabel && !masterDateFilter && styles.choiceChipSelected,
-                    ]}
-                    onPress={() => {
-                      triggerHaptic(6);
+              <DropdownField
+                compact
+                label="Month"
+                style={{ flex: 1, marginBottom: 0 }}
+                valueLabel={
+                  masterDateFilter
+                    ? formatReadableLocalDate(masterDateFilter)
+                    : masterMonthFilter === 'ALL'
+                    ? 'All Time'
+                    : masterMonthFilter
+                }
+                onPress={() =>
+                  openDropdownPicker(
+                    'Select Period',
+                    [
+                      { label: 'All Time', value: 'ALL' },
+                      ...availableMasterMonths.map((m) => ({ label: m, value: m })),
+                    ],
+                    masterMonthFilter,
+                    (val) => {
                       setMasterDateFilter('');
-                      setMasterMonthFilter(mLabel);
-                    }}
-                  >
-                    <Text
-                      style={[
-                        styles.choiceChipText,
-                        masterMonthFilter === mLabel && !masterDateFilter && styles.choiceChipTextSelected,
-                      ]}
-                    >
-                      {mLabel}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+                      setMasterMonthFilter(val);
+                    }
+                  )
+                }
+              />
+
+              <TouchableOpacity
+                style={[styles.calendarIconBtn, masterDateFilter && { backgroundColor: COLORS.gold }]}
+                onPress={() =>
+                  openCalendarPicker(masterDateFilter || getTodayISO(), (picked) => {
+                    setMasterDateFilter(picked);
+                  })
+                }
+              >
+                <Ionicons
+                  name="calendar-outline"
+                  size={18}
+                  color={masterDateFilter ? COLORS.navy : COLORS.gold}
+                />
+              </TouchableOpacity>
+              {masterDateFilter ? (
                 <TouchableOpacity
-                  style={[styles.quickDateChipCalendar, masterDateFilter && { backgroundColor: COLORS.gold }]}
-                  onPress={() =>
-                    openCalendarPicker(masterDateFilter || getTodayISO(), (picked) => {
-                      setMasterDateFilter(picked);
-                    })
-                  }
+                  style={styles.iconActionBtn}
+                  onPress={() => setMasterDateFilter('')}
                 >
-                  <Ionicons
-                    name="calendar-outline"
-                    size={13}
-                    color={masterDateFilter ? COLORS.navy : COLORS.gold}
-                  />
-                  <Text
-                    style={[
-                      styles.quickDateChipCalendarText,
-                      masterDateFilter && { color: COLORS.navy },
-                    ]}
-                  >
-                    {masterDateFilter ? formatReadableLocalDate(masterDateFilter) : 'Exact Date'}
-                  </Text>
+                  <Ionicons name="close-outline" size={18} color={COLORS.danger} />
                 </TouchableOpacity>
-                {masterDateFilter ? (
-                  <TouchableOpacity
-                    style={styles.iconActionBtn}
-                    onPress={() => setMasterDateFilter('')}
-                  >
-                    <Ionicons name="close-outline" size={16} color={COLORS.danger} />
-                  </TouchableOpacity>
-                ) : null}
-              </View>
-            </ScrollView>
+              ) : null}
+            </View>
           </View>
 
           <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
@@ -4441,8 +4549,7 @@ function JSMAppContent() {
                       </Text>
                     </View>
                   </View>
-                  <View style={styles.sheetDivider} />
-                  <Text style={styles.recordDetailLine} numberOfLines={2}>
+                  <Text style={[styles.recordDetailLine, { marginTop: 8 }]} numberOfLines={2}>
                     <Text style={styles.boldLabel}>Classes: </Text>
                     {row.stLessons.length > 0
                       ? row.stLessons
@@ -4479,6 +4586,7 @@ function JSMAppContent() {
             )}
           </ScrollView>
           {renderCalendarOverlay()}
+          {renderDropdownOverlay()}
         </SafeAreaView>
       </Modal>
 
@@ -4493,7 +4601,7 @@ function JSMAppContent() {
           <Pressable style={styles.bottomContextSheet} onPress={(e) => e.stopPropagation()}>
             <View style={styles.bottomSheetPill} />
             <Text style={styles.contextSheetHeader}>{contextMenu.title}</Text>
-            <View style={styles.contextDivider} />
+            <View style={{ height: 8 }} />
             {contextMenu.entityType !== 'activity' && (
               <TouchableOpacity style={styles.contextOptionBtn} onPress={() => handleContextAction('edit')}>
                 <Ionicons name="create-outline" size={18} color={COLORS.navy} />
@@ -4528,11 +4636,11 @@ function JSMAppContent() {
             </View>
             <PaperInput
               mode="outlined"
+              label="Announcement"
               multiline
               numberOfLines={5}
               value={noticeInput}
               onChangeText={setNoticeInput}
-              placeholder="Announcement..."
               outlineColor={COLORS.border}
               activeOutlineColor={COLORS.navy}
               style={[styles.tintedInput, { marginTop: 10, marginBottom: 14 }]}
@@ -4666,12 +4774,12 @@ function JSMAppContent() {
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, alignItems: 'center' }}>
                 <PaperInput
                   mode="outlined"
+                  label="Subject"
                   value={subjectForm.name}
                   onChangeText={(t) => setSubjectForm({ ...subjectForm, name: t })}
-                  placeholder="Subject"
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
-                  style={[styles.tintedInput, { flex: 1, height: 48, marginBottom: 0 }]}
+                  style={[styles.tintedInput, { flex: 1, marginBottom: 0 }]}
                 />
                 <PaperButton
                   mode="contained"
@@ -4770,13 +4878,14 @@ function JSMAppContent() {
         </GestureHandlerRootView>
       </Modal>
 
-      {/* REGISTER / EDIT STUDENT MODAL */}
+      {/* REGISTER / EDIT STUDENT MODAL (WITH SUBJECT DROPDOWN & FLOATING LABELS) */}
       <Modal
         visible={studentModal}
         transparent
         animationType="fade"
         onRequestClose={() => {
-          if (calendarPicker.visible) closeCalendarPicker();
+          if (dropdownPicker.visible) closeDropdownPicker();
+          else if (calendarPicker.visible) closeCalendarPicker();
           else setStudentModal(false);
         }}
       >
@@ -4788,49 +4897,40 @@ function JSMAppContent() {
             <ScrollView style={{ maxHeight: 380, marginTop: 8 }} keyboardShouldPersistTaps="handled">
               <PaperInput
                 mode="outlined"
+                label="Full Name *"
                 value={studentForm.name}
                 onChangeText={(t) => setStudentForm({ ...studentForm, name: t })}
-                placeholder="Full Name *"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
-              <View style={styles.chipRow}>
-                {activeSubjects.map((s) => (
-                  <TouchableOpacity
-                    key={s.id}
-                    style={[styles.choiceChip, studentForm.subjectId === s.id && styles.choiceChipSelected]}
-                    onPress={() => {
-                      Keyboard.dismiss();
-                      setStudentForm({ ...studentForm, subjectId: s.id });
-                    }}
-                  >
-                    <Text
-                      style={[
-                        styles.choiceChipText,
-                        studentForm.subjectId === s.id && styles.choiceChipTextSelected,
-                      ]}
-                    >
-                      {s.name}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+              <DropdownField
+                label="Subject *"
+                valueLabel={subjectMap[studentForm.subjectId]?.name || 'Select Subject'}
+                onPress={() =>
+                  openDropdownPicker(
+                    'Select Subject',
+                    activeSubjects.map((s) => ({ label: s.name, value: s.id })),
+                    studentForm.subjectId,
+                    (val) => setStudentForm({ ...studentForm, subjectId: val })
+                  )
+                }
+              />
               <PaperInput
                 mode="outlined"
+                label="Phone / WhatsApp"
                 value={studentForm.phone}
                 onChangeText={(t) => setStudentForm({ ...studentForm, phone: t })}
                 keyboardType="phone-pad"
-                placeholder="Phone / WhatsApp"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
               <PaperInput
                 mode="outlined"
+                label="Parent / Guardian"
                 value={studentForm.guardian}
                 onChangeText={(t) => setStudentForm({ ...studentForm, guardian: t })}
-                placeholder="Parent / Guardian"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
@@ -4842,6 +4942,7 @@ function JSMAppContent() {
               />
               <PaperInput
                 mode="outlined"
+                label="Joined Date"
                 value={studentForm.joinedDate}
                 onChangeText={(t) => setStudentForm({ ...studentForm, joinedDate: t })}
                 right={
@@ -4865,6 +4966,7 @@ function JSMAppContent() {
                 textColor={COLORS.navy}
                 onPress={() => {
                   Keyboard.dismiss();
+                  closeDropdownPicker();
                   closeCalendarPicker();
                   setStudentModal(false);
                 }}
@@ -4882,6 +4984,7 @@ function JSMAppContent() {
             </View>
           </Surface>
           {renderCalendarOverlay()}
+          {renderDropdownOverlay()}
         </KeyboardAvoidingView>
       </Modal>
 
@@ -4906,6 +5009,7 @@ function JSMAppContent() {
               />
               <PaperInput
                 mode="outlined"
+                label="Date"
                 value={lessonEditForm.date}
                 onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, date: t })}
                 right={
@@ -4924,36 +5028,36 @@ function JSMAppContent() {
               />
               <PaperInput
                 mode="outlined"
+                label="Technique"
                 value={lessonEditForm.technique}
                 onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, technique: t })}
-                placeholder="Technique"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
               <PaperInput
                 mode="outlined"
+                label="Lesson"
                 value={lessonEditForm.lesson}
                 onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, lesson: t })}
-                placeholder="Lesson"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
               <PaperInput
                 mode="outlined"
+                label="Repertoire"
                 value={lessonEditForm.repertoire}
                 onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, repertoire: t })}
-                placeholder="Repertoire"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
               <PaperInput
                 mode="outlined"
+                label="Assignment"
                 value={lessonEditForm.assignment}
                 onChangeText={(t) => setLessonEditForm({ ...lessonEditForm, assignment: t })}
-                placeholder="Assignment"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
@@ -4985,13 +5089,14 @@ function JSMAppContent() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* MARK / EDIT ATTENDANCE MODAL */}
+      {/* MARK / EDIT ATTENDANCE MODAL (WITH STUDENT & STATUS DROPDOWNS + COLLAPSIBLE NOTE) */}
       <Modal
         visible={attendanceModal}
         transparent
         animationType="fade"
         onRequestClose={() => {
-          if (calendarPicker.visible) closeCalendarPicker();
+          if (dropdownPicker.visible) closeDropdownPicker();
+          else if (calendarPicker.visible) closeCalendarPicker();
           else setAttendanceModal(false);
         }}
       >
@@ -5000,38 +5105,19 @@ function JSMAppContent() {
             <Text style={styles.sectionTitle}>
               {attendanceModalForm.id ? 'EDIT ATTENDANCE' : 'MARK ATTENDANCE'}
             </Text>
-            <ScrollView style={{ maxHeight: 360, marginTop: 8 }} keyboardShouldPersistTaps="handled">
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={{ marginBottom: 10 }}
-                keyboardShouldPersistTaps="handled"
-              >
-                <View style={{ flexDirection: 'row', gap: 6 }}>
-                  {activeStudents.map((st) => (
-                    <TouchableOpacity
-                      key={st.id}
-                      style={[
-                        styles.choiceChip,
-                        attendanceModalForm.studentId === st.id && styles.choiceChipSelected,
-                      ]}
-                      onPress={() => {
-                        Keyboard.dismiss();
-                        setAttendanceModalForm({ ...attendanceModalForm, studentId: st.id });
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.choiceChipText,
-                          attendanceModalForm.studentId === st.id && styles.choiceChipTextSelected,
-                        ]}
-                      >
-                        {st.name}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </ScrollView>
+            <ScrollView style={{ maxHeight: 360, marginTop: 10 }} keyboardShouldPersistTaps="handled">
+              <DropdownField
+                label="Student"
+                valueLabel={studentMap[attendanceModalForm.studentId]?.name || 'Select Student'}
+                onPress={() =>
+                  openDropdownPicker(
+                    'Select Student',
+                    activeStudents.map((st) => ({ label: st.name, value: st.id })),
+                    attendanceModalForm.studentId,
+                    (val) => setAttendanceModalForm({ ...attendanceModalForm, studentId: val })
+                  )
+                }
+              />
               <QuickDateRow
                 currentDate={attendanceModalForm.date}
                 onSelectDate={(d) => setAttendanceModalForm({ ...attendanceModalForm, date: d })}
@@ -5039,6 +5125,7 @@ function JSMAppContent() {
               />
               <PaperInput
                 mode="outlined"
+                label="Date"
                 value={attendanceModalForm.date}
                 onChangeText={(t) => setAttendanceModalForm({ ...attendanceModalForm, date: t })}
                 right={
@@ -5055,39 +5142,50 @@ function JSMAppContent() {
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
-              <View style={styles.chipRow}>
-                {ATTENDANCE_STATUSES.map((st) => (
-                  <TouchableOpacity
-                    key={st}
-                    style={[
-                      styles.choiceChip,
-                      attendanceModalForm.status === st && styles.choiceChipSelected,
-                    ]}
-                    onPress={() => {
-                      Keyboard.dismiss();
-                      setAttendanceModalForm({ ...attendanceModalForm, status: st });
-                    }}
-                  >
-                    <Text
-                      style={[
-                        styles.choiceChipText,
-                        attendanceModalForm.status === st && styles.choiceChipTextSelected,
-                      ]}
-                    >
-                      {st}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              <PaperInput
-                mode="outlined"
-                value={attendanceModalForm.remarks}
-                onChangeText={(t) => setAttendanceModalForm({ ...attendanceModalForm, remarks: t })}
-                placeholder="Remarks"
-                outlineColor={COLORS.border}
-                activeOutlineColor={COLORS.navy}
-                style={styles.tintedInput}
+              <DropdownField
+                label="Attendance Status"
+                valueLabel={attendanceModalForm.status}
+                onPress={() =>
+                  openDropdownPicker(
+                    'Attendance Status',
+                    ATTENDANCE_STATUSES.map((s) => ({ label: s, value: s })),
+                    attendanceModalForm.status,
+                    (val) => setAttendanceModalForm({ ...attendanceModalForm, status: val })
+                  )
+                }
               />
+              {showModalAttNote || Boolean(attendanceModalForm.remarks) ? (
+                <PaperInput
+                  mode="outlined"
+                  label="Note / Remarks"
+                  value={attendanceModalForm.remarks}
+                  onChangeText={(t) => setAttendanceModalForm({ ...attendanceModalForm, remarks: t })}
+                  right={
+                    <PaperInput.Icon
+                      icon="close"
+                      onPress={() => {
+                        triggerLayoutAnimation();
+                        setAttendanceModalForm({ ...attendanceModalForm, remarks: '' });
+                        setShowModalAttNote(false);
+                      }}
+                    />
+                  }
+                  outlineColor={COLORS.border}
+                  activeOutlineColor={COLORS.navy}
+                  style={styles.tintedInput}
+                />
+              ) : (
+                <TouchableOpacity
+                  style={styles.addNoteToggleBtn}
+                  onPress={() => {
+                    triggerLayoutAnimation();
+                    setShowModalAttNote(true);
+                  }}
+                >
+                  <Ionicons name="add-circle-outline" size={15} color={COLORS.navy} />
+                  <Text style={styles.addNoteToggleText}>+ Add Note</Text>
+                </TouchableOpacity>
+              )}
             </ScrollView>
             <View style={styles.modalBtnRow}>
               <PaperButton
@@ -5095,6 +5193,7 @@ function JSMAppContent() {
                 textColor={COLORS.navy}
                 onPress={() => {
                   Keyboard.dismiss();
+                  closeDropdownPicker();
                   closeCalendarPicker();
                   setAttendanceModal(false);
                 }}
@@ -5112,80 +5211,72 @@ function JSMAppContent() {
             </View>
           </Surface>
           {renderCalendarOverlay()}
+          {renderDropdownOverlay()}
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* RECORD / EDIT FEE MODAL */}
+      {/* RECORD / EDIT FEE MODAL (DROPDOWNS, SMART FIELD HIDING & SHARE ICON) */}
       <Modal
         visible={feeModal}
         transparent
         animationType="fade"
         onRequestClose={() => {
-          if (calendarPicker.visible) closeCalendarPicker();
+          if (dropdownPicker.visible) closeDropdownPicker();
+          else if (calendarPicker.visible) closeCalendarPicker();
           else setFeeModal(false);
         }}
       >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
             <Text style={styles.sectionTitle}>{feeForm.id ? 'EDIT FEE' : 'RECORD FEE'}</Text>
-            <ScrollView style={{ maxHeight: 420, marginTop: 8 }} keyboardShouldPersistTaps="handled">
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={{ marginBottom: 8 }}
-                keyboardShouldPersistTaps="handled"
-              >
-                <View style={{ flexDirection: 'row', gap: 6 }}>
-                  {activeStudents.map((st) => (
-                    <TouchableOpacity
-                      key={st.id}
-                      style={[styles.choiceChip, feeForm.studentId === st.id && styles.choiceChipSelected]}
-                      onPress={() => {
-                        Keyboard.dismiss();
-                        setFeeForm({ ...feeForm, studentId: st.id });
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.choiceChipText,
-                          feeForm.studentId === st.id && styles.choiceChipTextSelected,
-                        ]}
-                      >
-                        {st.name}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </ScrollView>
-              <View style={styles.chipRow}>
-                {FEE_TYPES.map((ft) => (
-                  <TouchableOpacity
-                    key={ft}
-                    style={[styles.choiceChip, feeForm.feeType === ft && styles.choiceChipSelected]}
-                    onPress={() => {
-                      Keyboard.dismiss();
-                      setFeeForm({ ...feeForm, feeType: ft });
-                    }}
-                  >
-                    <Text
-                      style={[styles.choiceChipText, feeForm.feeType === ft && styles.choiceChipTextSelected]}
-                    >
-                      {ft}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+            <ScrollView style={{ maxHeight: 420, marginTop: 10 }} keyboardShouldPersistTaps="handled">
+              <DropdownField
+                label="Student"
+                valueLabel={studentMap[feeForm.studentId]?.name || 'Select Student'}
+                onPress={() =>
+                  openDropdownPicker(
+                    'Select Student',
+                    activeStudents.map((st) => ({ label: st.name, value: st.id })),
+                    feeForm.studentId,
+                    (val) => setFeeForm({ ...feeForm, studentId: val })
+                  )
+                }
+              />
+
+              <DropdownField
+                label="Fee Category"
+                valueLabel={feeForm.feeType}
+                onPress={() =>
+                  openDropdownPicker(
+                    'Fee Category',
+                    FEE_TYPES.map((ft) => ({ label: ft, value: ft })),
+                    feeForm.feeType,
+                    (val) => {
+                      triggerLayoutAnimation();
+                      setFeeForm({ ...feeForm, feeType: val });
+                    }
+                  )
+                }
+              />
+
               {feeForm.feeType === 'Monthly Fee' && (
-                <PaperInput
-                  mode="outlined"
-                  value={feeForm.monthPaidFor}
-                  onChangeText={(t) => setFeeForm({ ...feeForm, monthPaidFor: t })}
-                  placeholder="Month Paid For *"
-                  outlineColor={COLORS.border}
-                  activeOutlineColor={COLORS.navy}
-                  style={styles.tintedInput}
+                <DropdownField
+                  label="Month Paid For *"
+                  valueLabel={feeForm.monthPaidFor || getLocalCurrentMonthLabel()}
+                  onPress={() =>
+                    openDropdownPicker(
+                      'Month Paid For',
+                      getSelectableMonthsList(feeForm.monthPaidFor).map((m) => ({
+                        label: m,
+                        value: m,
+                      })),
+                      feeForm.monthPaidFor,
+                      (val) => setFeeForm({ ...feeForm, monthPaidFor: val })
+                    )
+                  }
                 />
               )}
+
               <QuickDateRow
                 currentDate={feeForm.date}
                 onSelectDate={(d) => setFeeForm({ ...feeForm, date: d })}
@@ -5193,6 +5284,7 @@ function JSMAppContent() {
               />
               <PaperInput
                 mode="outlined"
+                label="Date"
                 value={feeForm.date}
                 onChangeText={(t) => setFeeForm({ ...feeForm, date: t })}
                 right={
@@ -5207,105 +5299,128 @@ function JSMAppContent() {
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
               />
-              <View style={styles.chipRow}>
-                {PAYMENT_MODES.map((m) => (
-                  <TouchableOpacity
-                    key={m}
-                    style={[styles.choiceChip, feeForm.mode === m && styles.choiceChipSelected]}
-                    onPress={() => {
-                      Keyboard.dismiss();
-                      setFeeForm({ ...feeForm, mode: m });
-                    }}
-                  >
-                    <Text style={[styles.choiceChipText, feeForm.mode === m && styles.choiceChipTextSelected]}>
-                      {m}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              <View style={styles.chipRow}>
-                {FEE_STATUSES.map((st) => (
-                  <TouchableOpacity
-                    key={st}
-                    style={[styles.choiceChip, feeForm.status === st && styles.choiceChipSelected]}
-                    onPress={() => {
-                      Keyboard.dismiss();
-                      if (st === 'Unpaid') {
-                        setFeeForm({
-                          ...feeForm,
-                          status: st,
-                          amountPaid: '0',
-                          balanceDue: feeForm.balanceDue === '0' ? '' : feeForm.balanceDue,
-                        });
-                      } else if (st === 'Paid') {
-                        setFeeForm({
-                          ...feeForm,
-                          status: st,
-                          amountPaid: feeForm.amountPaid === '0' ? '' : feeForm.amountPaid,
-                          balanceDue: '0',
-                        });
-                      } else {
-                        setFeeForm({
-                          ...feeForm,
-                          status: st,
-                          amountPaid: feeForm.amountPaid === '0' ? '' : feeForm.amountPaid,
-                          balanceDue: feeForm.balanceDue === '0' ? '' : feeForm.balanceDue,
-                        });
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <DropdownField
+                  label="Payment Mode"
+                  style={{ flex: 1 }}
+                  valueLabel={feeForm.mode}
+                  onPress={() =>
+                    openDropdownPicker(
+                      'Payment Mode',
+                      PAYMENT_MODES.map((m) => ({ label: m, value: m })),
+                      feeForm.mode,
+                      (val) => setFeeForm({ ...feeForm, mode: val })
+                    )
+                  }
+                />
+
+                <DropdownField
+                  label="Status"
+                  style={{ flex: 1 }}
+                  valueLabel={feeForm.status}
+                  onPress={() =>
+                    openDropdownPicker(
+                      'Payment Status',
+                      FEE_STATUSES.map((st) => ({ label: st, value: st })),
+                      feeForm.status,
+                      (st) => {
+                        triggerLayoutAnimation();
+                        if (st === 'Unpaid') {
+                          setFeeForm({
+                            ...feeForm,
+                            status: st,
+                            amountPaid: '0',
+                            balanceDue: feeForm.balanceDue === '0' ? '' : feeForm.balanceDue,
+                          });
+                        } else if (st === 'Paid') {
+                          setFeeForm({
+                            ...feeForm,
+                            status: st,
+                            amountPaid: feeForm.amountPaid === '0' ? '' : feeForm.amountPaid,
+                            balanceDue: '0',
+                          });
+                        } else {
+                          setFeeForm({
+                            ...feeForm,
+                            status: st,
+                            amountPaid: feeForm.amountPaid === '0' ? '' : feeForm.amountPaid,
+                            balanceDue: feeForm.balanceDue === '0' ? '' : feeForm.balanceDue,
+                          });
+                        }
                       }
-                    }}
-                  >
-                    <Text style={[styles.choiceChipText, feeForm.status === st && styles.choiceChipTextSelected]}>
-                      {st}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+                    )
+                  }
+                />
               </View>
-              <Text style={styles.inputLabel}>Amount Paid (₹)</Text>
-              <PaperInput
-                mode="outlined"
-                editable={feeForm.status !== 'Unpaid'}
-                keyboardType="numeric"
-                value={feeForm.status === 'Unpaid' ? '0' : feeForm.amountPaid}
-                onChangeText={(t) => setFeeForm({ ...feeForm, amountPaid: sanitizeCurrency(t) })}
-                placeholder="0"
-                outlineColor={COLORS.border}
-                activeOutlineColor={COLORS.navy}
-                style={[
-                  styles.tintedInput,
-                  feeForm.status === 'Unpaid' && { backgroundColor: '#E5E5E5' },
-                ]}
-              />
-              <Text style={styles.inputLabel}>Balance Due (₹)</Text>
-              <PaperInput
-                mode="outlined"
-                editable={feeForm.status !== 'Paid'}
-                keyboardType="numeric"
-                value={feeForm.status === 'Paid' ? '0' : feeForm.balanceDue}
-                onChangeText={(t) => setFeeForm({ ...feeForm, balanceDue: sanitizeCurrency(t) })}
-                placeholder="0"
-                outlineColor={COLORS.border}
-                activeOutlineColor={COLORS.navy}
-                style={[
-                  styles.tintedInput,
-                  feeForm.status === 'Paid' && { backgroundColor: '#E5E5E5' },
-                ]}
-              />
-              <PaperInput
-                mode="outlined"
-                value={feeForm.remarks}
-                onChangeText={(t) => setFeeForm({ ...feeForm, remarks: t })}
-                placeholder="Remarks"
-                outlineColor={COLORS.border}
-                activeOutlineColor={COLORS.navy}
-                style={styles.tintedInput}
-              />
+
+              {feeForm.status !== 'Unpaid' && (
+                <PaperInput
+                  mode="outlined"
+                  label="Amount Paid (₹)"
+                  keyboardType="numeric"
+                  value={feeForm.amountPaid}
+                  onChangeText={(t) => setFeeForm({ ...feeForm, amountPaid: sanitizeCurrency(t) })}
+                  outlineColor={COLORS.border}
+                  activeOutlineColor={COLORS.navy}
+                  style={styles.tintedInput}
+                />
+              )}
+
+              {(feeForm.status === 'Partial' || feeForm.status === 'Unpaid') && (
+                <PaperInput
+                  mode="outlined"
+                  label="Balance Due (₹)"
+                  keyboardType="numeric"
+                  value={feeForm.balanceDue}
+                  onChangeText={(t) => setFeeForm({ ...feeForm, balanceDue: sanitizeCurrency(t) })}
+                  outlineColor={COLORS.border}
+                  activeOutlineColor={COLORS.navy}
+                  style={styles.tintedInput}
+                />
+              )}
+
+              {showFeeNote || Boolean(feeForm.remarks) ? (
+                <PaperInput
+                  mode="outlined"
+                  label="Note / Remarks"
+                  value={feeForm.remarks}
+                  onChangeText={(t) => setFeeForm({ ...feeForm, remarks: t })}
+                  right={
+                    <PaperInput.Icon
+                      icon="close"
+                      onPress={() => {
+                        triggerLayoutAnimation();
+                        setFeeForm({ ...feeForm, remarks: '' });
+                        setShowFeeNote(false);
+                      }}
+                    />
+                  }
+                  outlineColor={COLORS.border}
+                  activeOutlineColor={COLORS.navy}
+                  style={styles.tintedInput}
+                />
+              ) : (
+                <TouchableOpacity
+                  style={styles.addNoteToggleBtn}
+                  onPress={() => {
+                    triggerLayoutAnimation();
+                    setShowFeeNote(true);
+                  }}
+                >
+                  <Ionicons name="add-circle-outline" size={15} color={COLORS.navy} />
+                  <Text style={styles.addNoteToggleText}>+ Add Note</Text>
+                </TouchableOpacity>
+              )}
             </ScrollView>
-            <View style={[styles.modalBtnRow, { flexWrap: 'wrap', gap: 8 }]}>
+
+            <View style={[styles.modalBtnRow, { alignItems: 'center' }]}>
               <PaperButton
                 mode="outlined"
                 textColor={COLORS.navy}
                 onPress={() => {
                   Keyboard.dismiss();
+                  closeDropdownPicker();
                   closeCalendarPicker();
                   setFeeModal(false);
                 }}
@@ -5320,17 +5435,16 @@ function JSMAppContent() {
               >
                 Save
               </PaperButton>
-              <PaperButton
-                mode="contained"
-                buttonColor={COLORS.gold}
-                textColor={COLORS.navy}
+              <TouchableOpacity
+                style={styles.iconShareBtnGold}
                 onPress={() => handleSaveFee(true)}
               >
-                Save & Share
-              </PaperButton>
+                <Ionicons name="share-social-outline" size={18} color={COLORS.navy} />
+              </TouchableOpacity>
             </View>
           </Surface>
           {renderCalendarOverlay()}
+          {renderDropdownOverlay()}
         </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
@@ -5392,6 +5506,127 @@ const styles = StyleSheet.create({
   leftEdgeSwipeZone: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 16, zIndex: 50 },
   scrollContent: { padding: 18, paddingBottom: 36 },
   scrollContentWithFab: { padding: 18, paddingBottom: 98 },
+
+  // --- DROPDOWN FIELD & PORTAL STYLES ---
+  dropdownField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: COLORS.inputTint,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    marginBottom: 10,
+    minHeight: 52,
+  },
+  dropdownFieldCompact: {
+    minHeight: 42,
+    paddingVertical: 6,
+    paddingHorizontal: 11,
+  },
+  dropdownFloatingLabel: {
+    color: COLORS.silver,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    marginBottom: 2,
+  },
+  dropdownValueText: {
+    color: COLORS.navy,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  dropdownPortalOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(5, 19, 41, 0.6)',
+    justifyContent: 'center',
+    padding: 22,
+    zIndex: 9999,
+    elevation: 22,
+  },
+  dropdownModalCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    padding: 18,
+    borderWidth: 1.5,
+    borderColor: COLORS.gold,
+    shadowColor: COLORS.midnight,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.22,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  dropdownOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    marginVertical: 2,
+  },
+  dropdownOptionRowSelected: {
+    backgroundColor: COLORS.navy,
+  },
+  dropdownOptionText: {
+    color: COLORS.navy,
+    fontSize: 14,
+    fontWeight: '600',
+    flex: 1,
+  },
+  dropdownOptionTextSelected: {
+    color: COLORS.gold,
+    fontWeight: '800',
+  },
+  addNoteToggleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 5,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    marginBottom: 6,
+  },
+  addNoteToggleText: {
+    color: COLORS.navy,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  iconShareBtnGold: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.navy,
+  },
+  activeFilterPill: {
+    backgroundColor: COLORS.navy,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+  },
+  activeFilterPillText: {
+    color: COLORS.gold,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  calendarIconBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 8,
+    backgroundColor: COLORS.navy,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+  },
 
   // --- HOMEPAGE: SLIM GREETING + LARGER NOTICE BOARD + HORIZONTAL MATRIX ---
   homeNoScrollContainer: {
@@ -5696,11 +5931,6 @@ const styles = StyleSheet.create({
     fontSize: 7,
     fontWeight: '800',
   },
-  sheetDivider: {
-    height: 1,
-    backgroundColor: '#F0ECE1',
-    marginVertical: 8,
-  },
 
   // --- DIRECTORY & LEDGER STYLES ---
   floatingSearchToggleBtn: {
@@ -5928,7 +6158,6 @@ const styles = StyleSheet.create({
   pillNavItemActive: { backgroundColor: COLORS.navy },
   pillNavText: { color: COLORS.navy, fontSize: 12, fontWeight: '700' },
   pillNavTextActive: { color: COLORS.gold },
-  inputLabel: { color: COLORS.navy, fontSize: 12, fontWeight: '700', marginTop: 6, marginBottom: 4 },
   quickDateRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 8 },
   quickDateChip: {
     backgroundColor: COLORS.cream,
@@ -5979,7 +6208,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.navy,
     borderColor: COLORS.gold,
     borderWidth: 1,
-    paddingHorizontal: 11,
+    paddingHorizontal: 10,
     paddingVertical: 6,
     minHeight: 32,
     borderRadius: 8,
@@ -6216,7 +6445,6 @@ const styles = StyleSheet.create({
     fontFamily: SERIF_FONT,
     textAlign: 'center',
   },
-  contextDivider: { height: 1, backgroundColor: COLORS.cream, width: '100%', marginVertical: 12 },
   contextOptionBtn: {
     width: '100%',
     flexDirection: 'row',
@@ -6224,8 +6452,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F2EFE9',
   },
   contextOptionText: { color: COLORS.navy, fontSize: 15, fontWeight: '700' },
   calendarHeaderRow: {
