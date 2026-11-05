@@ -1,3 +1,6 @@
+// ==========================================
+// PART 1 OF 3
+// ==========================================
 import React, { Component, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   StyleSheet,
@@ -99,13 +102,13 @@ const COLORS = {
   white: '#FFFFFF',
   danger: '#9E2A2B',
   dangerBg: '#FDE8E8',
-  success: '#2D6A4F',
-  successBg: '#E6F4EA',
+  success: '#166534',
+  successBg: '#DCFCE7',
   liveGreen: '#22C55E',
   offlineRed: '#EF4444',
   syncAmber: '#F59E0B',
-  warning: '#B45309',
-  warningBg: '#FEF3C7',
+  warning: '#9A3412',
+  warningBg: '#FFEDD5',
   charcoal: '#1D242B',
   border: '#E6E1D6',
 };
@@ -209,7 +212,6 @@ const getOffsetDateISO = (daysOffset = 0) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 const getTodayISO = () => getOffsetDateISO(0);
-const getYesterdayISO = () => getOffsetDateISO(-1);
 
 const normalizeISODate = (rawStr) => {
   if (!rawStr || typeof rawStr !== 'string') return null;
@@ -375,7 +377,7 @@ const EmptyStateWatermark = ({ message, compact = false, actionLabel, onAction }
       color="rgba(12, 45, 87, 0.055)"
       style={styles.watermarkIcon}
     />
-    <Text style={styles.emptyText}>{message}</Text>
+    {message ? <Text style={styles.emptyText}>{message}</Text> : null}
     {actionLabel && onAction ? (
       <TouchableOpacity
         style={styles.emptyStateActionBtn}
@@ -423,6 +425,7 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const slideAnim = useRef(new Animated.Value(0)).current;
   const dragX = useRef(new Animated.Value(0)).current;
+  const isFirstRender = useRef(true);
   const onSwipeRef = useRef(onSwipe);
 
   useEffect(() => {
@@ -448,7 +451,7 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
     () =>
       dragX.interpolate({
         inputRange: [-220, 0, 220],
-        outputRange: [0.74, 1, 0.74],
+        outputRange: [0.85, 1, 0.85],
         extrapolate: 'clamp',
       }),
     [dragX]
@@ -456,19 +459,25 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
 
   useEffect(() => {
     dragX.stopAnimation(() => dragX.setValue(0));
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      fadeAnim.setValue(1);
+      slideAnim.setValue(0);
+      return;
+    }
     fadeAnim.setValue(0);
     slideAnim.setValue(direction * 28);
 
     const anim = Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
-        duration: 240,
+        duration: 220,
         easing: Easing.out(Easing.quad),
         useNativeDriver: true,
       }),
       Animated.timing(slideAnim, {
         toValue: 0,
-        duration: 240,
+        duration: 220,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
@@ -524,9 +533,9 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
   );
 };
 
+// Minimal QuickDateRow: Only "Today" and "Pick Date" (Yesterday removed)
 const QuickDateRow = ({ currentDate, onSelectDate, onOpenCalendar }) => {
   const today = getTodayISO();
-  const yesterday = getYesterdayISO();
   return (
     <View style={styles.quickDateRow}>
       <TouchableOpacity
@@ -538,17 +547,6 @@ const QuickDateRow = ({ currentDate, onSelectDate, onOpenCalendar }) => {
       >
         <Text style={[styles.quickDateChipText, currentDate === today && styles.quickDateChipTextActive]}>
           Today
-        </Text>
-      </TouchableOpacity>
-      <TouchableOpacity
-        style={[styles.quickDateChip, currentDate === yesterday && styles.quickDateChipActive]}
-        onPress={() => {
-          triggerHaptic(8);
-          onSelectDate(yesterday);
-        }}
-      >
-        <Text style={[styles.quickDateChipText, currentDate === yesterday && styles.quickDateChipTextActive]}>
-          Yesterday
         </Text>
       </TouchableOpacity>
       {onOpenCalendar ? (
@@ -595,6 +593,13 @@ function JSMAppContent() {
   const [masterStudentFilter, setMasterStudentFilter] = useState('ALL');
   const [masterMonthFilter, setMasterMonthFilter] = useState('ALL');
   const [masterDateFilter, setMasterDateFilter] = useState('');
+
+  // Dedicated Student Popup Modal from Firebase Matrix Row Tap
+  const [studentReportModal, setStudentReportModal] = useState({
+    visible: false,
+    studentId: null,
+    dateFilter: '',
+  });
 
   // Floating Search Toggle in Student Directory
   const [searchBarVisible, setSearchBarVisible] = useState(false);
@@ -791,7 +796,6 @@ function JSMAppContent() {
   });
   const initialLoadDone = useRef(false);
 
-  // Drag-and-drop state and refs for Subject 6-dot handle reordering
   const [orderedSubjects, setOrderedSubjects] = useState([]);
   const [draggingSubjectId, setDraggingSubjectId] = useState(null);
   const [subjectScrollLocked, setSubjectScrollLocked] = useState(false);
@@ -865,7 +869,6 @@ function JSMAppContent() {
     if (shouldReopenLog) scheduleTimeout(() => setTodayLogModal(true), 220);
   }, [contextMenu.reopenSubjectsModal, contextMenu.reopenTodayLogModal, closeContextMenu, scheduleTimeout]);
 
-  // Android Hardware Back Button Handler
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (calendarPicker.visible) {
@@ -874,6 +877,10 @@ function JSMAppContent() {
       }
       if (contextMenu.visible) {
         dismissContextMenuWithReopen();
+        return true;
+      }
+      if (studentReportModal.visible) {
+        setStudentReportModal({ visible: false, studentId: null, dateFilter: '' });
         return true;
       }
       if (studentModal) {
@@ -930,6 +937,7 @@ function JSMAppContent() {
     selectedStudentId,
     calendarPicker.visible,
     contextMenu.visible,
+    studentReportModal.visible,
     studentModal,
     lessonEditModal,
     attendanceModal,
@@ -944,6 +952,9 @@ function JSMAppContent() {
     closeSubjectsModalClean,
     closeDrawer,
   ]);
+  // ==========================================
+// PART 2 OF 3
+// ==========================================
 
   // Real-Time Firestore Listeners with Metadata Tracking for Offline Caching
   useEffect(() => {
@@ -1150,7 +1161,6 @@ function JSMAppContent() {
     return { collected, pending };
   }, [activeFees]);
 
-  // Distinct available months across all records for the Master List Filter (sorted newest first)
   const availableMasterMonths = useMemo(() => {
     const monthSet = new Set([getLocalCurrentMonthLabel()]);
     activeLessons.forEach((l) => {
@@ -1244,6 +1254,140 @@ function JSMAppContent() {
     [activeLessons, activeAttendance, activeFees]
   );
 
+  // Data for the Single-Student Report Popup (triggered from Firebase Matrix row tap)
+  const studentReportData = useMemo(() => {
+    const st = studentMap[studentReportModal.studentId];
+    if (!st || st.isDeleted) return null;
+    const df = studentReportModal.dateFilter;
+    const matchDate = (iso) => (!df ? true : iso === df);
+    const stLessons = activeLessons.filter((l) => l.studentId === st.id && matchDate(l.date));
+    const stAtt = activeAttendance.filter((a) => a.studentId === st.id && matchDate(a.date));
+    const stFees = activeFees.filter((f) => f.studentId === st.id && matchDate(f.date));
+    const totalPaid = stFees.reduce((acc, f) => acc + safeNumber(f.amountPaid, 0), 0);
+    const totalDue = stFees.reduce((acc, f) => acc + safeNumber(f.balanceDue, 0), 0);
+    return {
+      student: st,
+      subjectName: safeString(subjectMap[st.subjectId]?.name, 'Unassigned'),
+      stLessons,
+      stAtt,
+      stFees,
+      totalPaid,
+      totalDue,
+    };
+  }, [
+    studentReportModal.studentId,
+    studentReportModal.dateFilter,
+    studentMap,
+    subjectMap,
+    activeLessons,
+    activeAttendance,
+    activeFees,
+  ]);
+
+  const printStudentReport = async () => {
+    if (!studentReportData) return;
+    triggerHaptic(12);
+    const { student, subjectName, stLessons, stAtt, stFees, totalPaid, totalDue } = studentReportData;
+    const periodLabel = studentReportModal.dateFilter
+      ? formatReadableLocalDate(studentReportModal.dateFilter)
+      : 'All Dates';
+
+    const lessonsRows =
+      stLessons.length === 0
+        ? '<tr><td colspan="2">—</td></tr>'
+        : stLessons
+            .map(
+              (l) => `
+          <tr>
+            <td style="width:110px;"><strong>${escapeHtml(formatReadableLocalDate(l.date))}</strong></td>
+            <td>${escapeHtml(
+              [
+                l.lesson ? `Lesson: ${l.lesson}` : '',
+                l.technique ? `Technique: ${l.technique}` : '',
+                l.repertoire ? `Repertoire: ${l.repertoire}` : '',
+                l.assignment ? `Assignment: ${l.assignment}` : '',
+              ]
+                .filter(Boolean)
+                .join(' • ') || 'Logged'
+            )}</td>
+          </tr>`
+            )
+            .join('');
+
+    const attRows =
+      stAtt.length === 0
+        ? '<tr><td colspan="3">—</td></tr>'
+        : stAtt
+            .map(
+              (a) => `
+          <tr>
+            <td style="width:110px;"><strong>${escapeHtml(formatReadableLocalDate(a.date))}</strong></td>
+            <td style="width:110px;">${escapeHtml(a.status)}</td>
+            <td>${escapeHtml(a.remarks || '—')}</td>
+          </tr>`
+            )
+            .join('');
+
+    const feeRows =
+      stFees.length === 0
+        ? '<tr><td colspan="4">—</td></tr>'
+        : stFees
+            .map(
+              (f) => `
+          <tr>
+            <td style="width:110px;"><strong>${escapeHtml(formatReadableLocalDate(f.date))}</strong></td>
+            <td>${escapeHtml(f.feeType)}${
+                f.feeType === 'Monthly Fee' && f.monthPaidFor ? ` (${escapeHtml(f.monthPaidFor)})` : ''
+              }</td>
+            <td>${escapeHtml(f.status)} • ${escapeHtml(f.mode)}</td>
+            <td>Paid: ₹${safeNumber(f.amountPaid, 0).toFixed(0)} | Due: ₹${safeNumber(f.balanceDue, 0).toFixed(0)}</td>
+          </tr>`
+            )
+            .join('');
+
+    const html = `
+      <!DOCTYPE html><html><head><meta charset="utf-8" />
+      <style>
+        body { font-family: 'Georgia', serif; padding: 26px; color: #0C2D57; background: #FFFFFF; }
+        h1 { margin: 0 0 4px; font-size: 22px; }
+        .sub { color: #555; font-size: 12px; margin-bottom: 16px; }
+        h2 { font-size: 13px; letter-spacing: 1px; color: #0C2D57; border-bottom: 2px solid #D4B978; padding-bottom: 4px; margin-top: 18px; }
+        table { width: 100%; border-collapse: collapse; font-family: sans-serif; font-size: 12px; margin-top: 6px; }
+        td, th { border-bottom: 1px solid #E6E1D6; padding: 8px; text-align: left; vertical-align: top; }
+      </style></head>
+      <body>
+        <h1>${escapeHtml(student.name)}</h1>
+        <div class="sub">${escapeHtml(subjectName)} • Filter: ${escapeHtml(periodLabel)}${
+      student.phone ? ` • ${escapeHtml(student.phone)}` : ''
+    }</div>
+        ${
+          student.notes
+            ? `<h2>NOTES</h2><p style="font-family:sans-serif;font-size:12px;">${escapeHtml(student.notes)}</p>`
+            : ''
+        }
+        <h2>CLASSES (${stLessons.length})</h2>
+        <table><tbody>${lessonsRows}</tbody></table>
+        <h2>ATTENDANCE (${stAtt.length})</h2>
+        <table><tbody>${attRows}</tbody></table>
+        <h2>FEES (Paid: ₹${totalPaid.toFixed(0)} | Due: ₹${totalDue.toFixed(0)})</h2>
+        <table><tbody>${feeRows}</tbody></table>
+      </body></html>
+    `;
+
+    try {
+      await Print.printAsync({ html });
+    } catch (e) {
+      try {
+        const { uri } = await Print.printToFileAsync({ html });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf' });
+        }
+      } catch (err) {
+        Alert.alert('Print Error', 'Could not print student report.');
+      }
+    }
+  };
+
   // Filtered Master List data computation
   const masterListData = useMemo(() => {
     const targetStudents =
@@ -1315,7 +1459,7 @@ function JSMAppContent() {
         }</span></td>
           <td>P: ${row.presentCount} | A: ${row.absentCount} | R: ${row.reschedCount}</td>
           <td>Paid: ₹${row.totalPaid.toFixed(0)}<br/><span style="color:${
-          row.totalDue > 0 ? '#9E2A2B' : '#2D6A4F'
+          row.totalDue > 0 ? '#9E2A2B' : '#166534'
         };font-size:11px;">Due: ₹${row.totalDue.toFixed(0)}</span></td>
         </tr>`
       )
@@ -1350,18 +1494,20 @@ function JSMAppContent() {
       </body></html>
     `;
     try {
-      const { uri } = await Print.printToFileAsync({ html });
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, {
-          mimeType: 'application/pdf',
-          dialogTitle: 'JSM Master Report',
-          UTI: 'com.adobe.pdf',
-        });
-      } else {
-        Alert.alert('PDF Created', `Saved to: ${uri}`);
-      }
+      await Print.printAsync({ html });
     } catch (e) {
-      Alert.alert('Export Error', 'Could not generate the Master List PDF.');
+      try {
+        const { uri } = await Print.printToFileAsync({ html });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(uri, {
+            mimeType: 'application/pdf',
+            dialogTitle: 'JSM Master Report',
+            UTI: 'com.adobe.pdf',
+          });
+        }
+      } catch (err) {
+        Alert.alert('Export Error', 'Could not generate the Master List PDF.');
+      }
     }
   };
 
@@ -1473,6 +1619,9 @@ function JSMAppContent() {
       if (collectionName === 'students' && selectedStudentId === item.id) setSelectedStudentId(null);
       if (collectionName === 'subjects' && subjectForm.id === item.id) setSubjectForm({ id: null, name: '' });
       if (collectionName === 'students' && masterStudentFilter === item.id) setMasterStudentFilter('ALL');
+      if (collectionName === 'students' && studentReportModal.studentId === item.id) {
+        setStudentReportModal({ visible: false, studentId: null, dateFilter: '' });
+      }
       await withWriteTimeout(
         updateDoc(doc(db, collectionName, item.id), { isDeleted: true, deletedAt: Date.now() })
       );
@@ -2076,7 +2225,6 @@ function JSMAppContent() {
       triggerLayoutAnimation();
       triggerHaptic(12);
       await withWriteTimeout(updateDoc(doc(db, item._col, item.id), { isDeleted: false, deletedAt: null }));
-      // If restoring a child record whose parent student is also in Trash, restore the parent student so the record is visible
       if (
         ['lessons', 'attendance', 'fees'].includes(item._col) &&
         item.studentId &&
@@ -2346,7 +2494,7 @@ function JSMAppContent() {
   };
 
   // ==========================================
-  // 6. HOMEPAGE: COMPACT 4 CARDS & HORIZONTAL MATRIX LIVE WIDGET
+  // 6. HOMEPAGE: THIN GREETING, LARGER NOTICE BOARD & HORIZONTAL MATRIX
   // ==========================================
   const renderHomeTab = () => {
     const todayISO = getTodayISO();
@@ -2355,34 +2503,28 @@ function JSMAppContent() {
       : hasAnyPendingWrites
       ? COLORS.syncAmber
       : COLORS.liveGreen;
-    const liveStatusLabel = !isNetworkOnline
-      ? 'OFFLINE'
-      : hasAnyPendingWrites
-      ? 'SYNCING'
-      : 'LIVE';
+
+    const openStudentPopup = (stId) => {
+      triggerHaptic(8);
+      setStudentReportModal({
+        visible: true,
+        studentId: stId,
+        dateFilter: '',
+      });
+    };
 
     return (
       <View style={styles.homeNoScrollContainer}>
-        {/* 1. Compact Greeting & Stats Banner */}
+        {/* 1. Slim Greeting Strip (Stats Pills Removed) */}
         <View style={styles.compactGreetingStrip}>
           <SmoothNavyGradient />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.compactGreetingTitle}>{getGreetingByLocalTime()}, Maestro</Text>
-            <Text style={styles.compactGreetingDate}>{formatReadableLocalDate(todayISO)}</Text>
-          </View>
-          <View style={styles.compactMetricsRow}>
-            <View style={styles.compactMetricPill}>
-              <Text style={styles.compactMetricValue}>{activeStudents.length}</Text>
-              <Text style={styles.compactMetricLabel}>STUDENTS</Text>
-            </View>
-            <View style={styles.compactMetricPill}>
-              <Text style={styles.compactMetricValue}>{activeSubjects.length}</Text>
-              <Text style={styles.compactMetricLabel}>SUBJECTS</Text>
-            </View>
-          </View>
+          <Text style={styles.compactGreetingTitle} numberOfLines={1}>
+            {getGreetingByLocalTime()}, Maestro
+          </Text>
+          <Text style={styles.compactGreetingDate}>{formatReadableLocalDate(todayISO)}</Text>
         </View>
 
-        {/* 2. Top Half: Notice Board + 3 Smaller Action Cards */}
+        {/* 2. Larger Notice Board (No Default Text) + 3 Action Cards */}
         <View style={styles.compactActionSection}>
           <ScalePressable
             onPress={() => {
@@ -2394,7 +2536,7 @@ function JSMAppContent() {
             <View style={styles.compactNoticeCard}>
               <MaterialCommunityIcons
                 name="music-clef-treble"
-                size={50}
+                size={56}
                 color="rgba(12, 45, 87, 0.045)"
                 style={styles.noticeWatermark}
               />
@@ -2409,15 +2551,11 @@ function JSMAppContent() {
                   <Text style={styles.compactNoticeDate}>{formatReadableLocalDate(noticeUpdatedAt)}</Text>
                 ) : null}
               </View>
-              <Text
-                style={[
-                  styles.compactNoticeBody,
-                  !noticeText && { color: COLORS.silver, fontStyle: 'italic' },
-                ]}
-                numberOfLines={2}
-              >
-                {noticeText ? noticeText : 'No active announcements.'}
-              </Text>
+              {noticeText ? (
+                <Text style={styles.compactNoticeBody} numberOfLines={4}>
+                  {noticeText}
+                </Text>
+              ) : null}
             </View>
           </ScalePressable>
 
@@ -2521,22 +2659,6 @@ function JSMAppContent() {
                 ]}
               />
               <Text style={styles.liveWidgetTitle}>FIREBASE LIVE MATRIX</Text>
-              <View
-                style={[
-                  styles.liveStatusPill,
-                  {
-                    backgroundColor: !isNetworkOnline
-                      ? COLORS.dangerBg
-                      : hasAnyPendingWrites
-                      ? COLORS.warningBg
-                      : COLORS.successBg,
-                  },
-                ]}
-              >
-                <Text style={[styles.liveStatusPillText, { color: liveStatusColor }]}>
-                  {liveStatusLabel}
-                </Text>
-              </View>
             </View>
 
             <TouchableOpacity
@@ -2546,14 +2668,14 @@ function JSMAppContent() {
                 setMasterListModal(true);
               }}
             >
-              <Ionicons name="grid-outline" size={13} color={COLORS.gold} />
+              <Ionicons name="grid-outline" size={11} color={COLORS.gold} />
               <Text style={styles.masterListBtnText}>Master List</Text>
             </TouchableOpacity>
           </View>
 
           {activeStudents.length === 0 ? (
             <View style={{ flex: 1, justifyContent: 'center' }}>
-              <EmptyStateWatermark compact message="No students enrolled yet." />
+              <EmptyStateWatermark compact message="" />
             </View>
           ) : (
             <ScrollView
@@ -2583,13 +2705,7 @@ function JSMAppContent() {
                           styles.matrixStickyCell,
                           idx % 2 === 1 && styles.matrixRowAlt,
                         ]}
-                        onPress={() => {
-                          triggerHaptic(8);
-                          setNavDirection(1);
-                          setSelectedStudentId(st.id);
-                          setProfileTab('Classes');
-                          setActiveTab('Students');
-                        }}
+                        onPress={() => openStudentPopup(st.id)}
                       >
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                           <Text style={styles.matrixStudentName} numberOfLines={1}>
@@ -2635,15 +2751,23 @@ function JSMAppContent() {
                       const latestFee = m.stFees[0];
 
                       const attBg = !latestAtt
-                        ? COLORS.inputTint
+                        ? COLORS.cream
                         : latestAtt.status === 'Present'
                         ? COLORS.successBg
                         : latestAtt.status === 'Absent'
                         ? COLORS.dangerBg
                         : COLORS.warningBg;
 
+                      const attBorder = !latestAtt
+                        ? COLORS.border
+                        : latestAtt.status === 'Present'
+                        ? '#86EFAC'
+                        : latestAtt.status === 'Absent'
+                        ? '#FCA5A5'
+                        : '#FDBA74';
+
                       const attColor = !latestAtt
-                        ? COLORS.silver
+                        ? COLORS.navy
                         : latestAtt.status === 'Present'
                         ? COLORS.success
                         : latestAtt.status === 'Absent'
@@ -2655,14 +2779,21 @@ function JSMAppContent() {
                           ? COLORS.successBg
                           : m.feeStatus === 'Due / Unpaid'
                           ? COLORS.dangerBg
-                          : COLORS.inputTint;
+                          : COLORS.cream;
+
+                      const feeBorder =
+                        m.feeStatus === 'Paid'
+                          ? '#86EFAC'
+                          : m.feeStatus === 'Due / Unpaid'
+                          ? '#FCA5A5'
+                          : COLORS.border;
 
                       const feeColor =
                         m.feeStatus === 'Paid'
                           ? COLORS.success
                           : m.feeStatus === 'Due / Unpaid'
                           ? COLORS.danger
-                          : COLORS.silver;
+                          : COLORS.navy;
 
                       return (
                         <View
@@ -2672,20 +2803,19 @@ function JSMAppContent() {
                           <TouchableOpacity
                             activeOpacity={0.75}
                             style={[styles.matrixRowCell, { width: 148 }]}
-                            onPress={() => {
-                              triggerHaptic(8);
-                              setNavDirection(1);
-                              setSelectedStudentId(st.id);
-                              setProfileTab('Attendance');
-                              setActiveTab('Students');
-                            }}
+                            onPress={() => openStudentPopup(st.id)}
                           >
-                            <View style={[styles.matrixStatusBadge, { backgroundColor: attBg }]}>
+                            <View
+                              style={[
+                                styles.matrixStatusBadge,
+                                { backgroundColor: attBg, borderColor: attBorder },
+                              ]}
+                            >
                               <Text
                                 style={[styles.matrixStatusBadgeText, { color: attColor }]}
                                 numberOfLines={1}
                               >
-                                {latestAtt ? latestAtt.status.toUpperCase() : 'NO RECORD'}
+                                {latestAtt ? latestAtt.status.toUpperCase() : '—'}
                               </Text>
                             </View>
                             <Text style={styles.matrixCellMeta} numberOfLines={1}>
@@ -2696,13 +2826,7 @@ function JSMAppContent() {
                           <TouchableOpacity
                             activeOpacity={0.75}
                             style={[styles.matrixRowCell, { width: 175 }]}
-                            onPress={() => {
-                              triggerHaptic(8);
-                              setNavDirection(1);
-                              setSelectedStudentId(st.id);
-                              setProfileTab('Classes');
-                              setActiveTab('Students');
-                            }}
+                            onPress={() => openStudentPopup(st.id)}
                           >
                             <Text style={styles.matrixCellPrimary} numberOfLines={1}>
                               {latestLesson
@@ -2713,8 +2837,8 @@ function JSMAppContent() {
                                     latestLesson.assignment,
                                   ]
                                     .filter(Boolean)
-                                    .join(' • ') || 'Lesson Logged'
-                                : 'No classes'}
+                                    .join(' • ') || 'Logged'
+                                : '—'}
                             </Text>
                             <Text style={styles.matrixCellMeta} numberOfLines={1}>
                               {latestLesson
@@ -2726,20 +2850,19 @@ function JSMAppContent() {
                           <TouchableOpacity
                             activeOpacity={0.75}
                             style={[styles.matrixRowCell, { width: 155 }]}
-                            onPress={() => {
-                              triggerHaptic(8);
-                              setNavDirection(1);
-                              setSelectedStudentId(st.id);
-                              setProfileTab('Fees');
-                              setActiveTab('Students');
-                            }}
+                            onPress={() => openStudentPopup(st.id)}
                           >
-                            <View style={[styles.matrixStatusBadge, { backgroundColor: feeBg }]}>
+                            <View
+                              style={[
+                                styles.matrixStatusBadge,
+                                { backgroundColor: feeBg, borderColor: feeBorder },
+                              ]}
+                            >
                               <Text
                                 style={[styles.matrixStatusBadgeText, { color: feeColor }]}
                                 numberOfLines={1}
                               >
-                                {latestFee ? `₹${latestFee.amountPaid} • ${latestFee.status.toUpperCase()}` : 'NO RECORDS'}
+                                {latestFee ? `₹${latestFee.amountPaid} • ${latestFee.status.toUpperCase()}` : '—'}
                               </Text>
                             </View>
                             <Text style={styles.matrixCellMeta} numberOfLines={1}>
@@ -2865,7 +2988,7 @@ function JSMAppContent() {
         {searchBarVisible && (
           <PaperInput
             mode="outlined"
-            placeholder="Search name, instrument, phone..."
+            placeholder="Search..."
             value={studentSearch}
             onChangeText={setStudentSearch}
             autoFocus
@@ -2906,7 +3029,7 @@ function JSMAppContent() {
         {activeSubjects.length === 0 && unassignedStudents.length === 0 ? (
           <Surface style={styles.whiteCard} elevation={2}>
             <EmptyStateWatermark
-              message="No subjects configured yet."
+              message=""
               actionLabel="Add Subjects"
               onAction={() => {
                 setSubjectForm({ id: null, name: '' });
@@ -2928,7 +3051,7 @@ function JSMAppContent() {
                     <Text style={styles.groupHeaderCount}>{subjStudents.length}</Text>
                   </View>
                   {subjStudents.length === 0 ? (
-                    <EmptyStateWatermark compact message={`No students in ${subj.name}`} />
+                    <EmptyStateWatermark compact message="" />
                   ) : (
                     subjStudents.map(renderStudentCard)
                   )}
@@ -3093,7 +3216,7 @@ function JSMAppContent() {
                   mode="outlined"
                   value={inlineLessonForm.technique}
                   onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, technique: t })}
-                  placeholder="Technique (Scales, posture...)"
+                  placeholder="Technique"
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
@@ -3102,7 +3225,7 @@ function JSMAppContent() {
                   mode="outlined"
                   value={inlineLessonForm.lesson}
                   onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, lesson: t })}
-                  placeholder="Lesson topic..."
+                  placeholder="Lesson"
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
@@ -3111,7 +3234,7 @@ function JSMAppContent() {
                   mode="outlined"
                   value={inlineLessonForm.repertoire}
                   onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, repertoire: t })}
-                  placeholder="Repertoire..."
+                  placeholder="Repertoire"
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
@@ -3120,7 +3243,7 @@ function JSMAppContent() {
                   mode="outlined"
                   value={inlineLessonForm.assignment}
                   onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, assignment: t })}
-                  placeholder="Assignment..."
+                  placeholder="Assignment"
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
@@ -3139,7 +3262,7 @@ function JSMAppContent() {
               <Text style={[styles.sectionTitle, { marginVertical: 10 }]}>LESSON HISTORY</Text>
               {metrics.stLessons.length === 0 ? (
                 <Surface style={styles.whiteCard} elevation={2}>
-                  <EmptyStateWatermark message="No lessons logged yet." />
+                  <EmptyStateWatermark compact message="" />
                 </Surface>
               ) : (
                 metrics.stLessons.map((les) => (
@@ -3247,7 +3370,7 @@ function JSMAppContent() {
                   mode="outlined"
                   value={inlineAttendanceForm.remarks}
                   onChangeText={(t) => setInlineAttendanceForm({ ...inlineAttendanceForm, remarks: t })}
-                  placeholder="Optional remarks..."
+                  placeholder="Remarks"
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
@@ -3266,7 +3389,7 @@ function JSMAppContent() {
               <Text style={[styles.sectionTitle, { marginVertical: 10 }]}>ATTENDANCE LOG</Text>
               {metrics.stAttendance.length === 0 ? (
                 <Surface style={styles.whiteCard} elevation={2}>
-                  <EmptyStateWatermark message="No attendance records found." />
+                  <EmptyStateWatermark compact message="" />
                 </Surface>
               ) : (
                 metrics.stAttendance.map((att) => (
@@ -3302,7 +3425,7 @@ function JSMAppContent() {
             <Surface style={styles.whiteCard} elevation={2}>
               <Text style={styles.sectionTitle}>FACULTY NOTES</Text>
               <View style={styles.prioritySwitchRow}>
-                <Text style={styles.recordPrimaryTitle}>Priority "☆ NOTE" Badge</Text>
+                <Text style={styles.recordPrimaryTitle}>Priority "☆ NOTE"</Text>
                 <Switch
                   value={priorityDraft}
                   onValueChange={setPriorityDraft}
@@ -3316,7 +3439,7 @@ function JSMAppContent() {
                 numberOfLines={5}
                 value={noteDraft}
                 onChangeText={setNoteDraft}
-                placeholder="Examination goals, recital readiness, or faculty notes..."
+                placeholder="Notes..."
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={[styles.tintedInput, { marginTop: 12 }]}
@@ -3338,7 +3461,7 @@ function JSMAppContent() {
               <Text style={[styles.sectionTitle, { marginBottom: 10 }]}>FEE LEDGER</Text>
               {metrics.stFees.length === 0 ? (
                 <Surface style={styles.whiteCard} elevation={2}>
-                  <EmptyStateWatermark message="No fee records logged for this student." />
+                  <EmptyStateWatermark compact message="" />
                 </Surface>
               ) : (
                 metrics.stFees.map((fee) => (
@@ -3421,7 +3544,7 @@ function JSMAppContent() {
 
         {groupedAttendance.length === 0 ? (
           <Surface style={styles.whiteCard} elevation={2}>
-            <EmptyStateWatermark message="No attendance records in this timeframe." />
+            <EmptyStateWatermark compact message="" />
           </Surface>
         ) : (
           groupedAttendance.map((group) => (
@@ -3514,7 +3637,7 @@ function JSMAppContent() {
 
         {groupedFees.length === 0 ? (
           <Surface style={styles.whiteCard} elevation={2}>
-            <EmptyStateWatermark message="No fee transactions recorded yet." />
+            <EmptyStateWatermark compact message="" />
           </Surface>
         ) : (
           groupedFees.map((group) => (
@@ -3604,7 +3727,7 @@ function JSMAppContent() {
 
         {trashItems.length === 0 ? (
           <Surface style={styles.whiteCard} elevation={2}>
-            <EmptyStateWatermark message="Trash archive is clean." />
+            <EmptyStateWatermark compact message="" />
           </Surface>
         ) : (
           trashItems.map((item) => {
@@ -3643,6 +3766,9 @@ function JSMAppContent() {
       </ScrollView>
     );
   };
+  // ==========================================
+// PART 3 OF 3
+// ==========================================
 
   // ==========================================
   // 7. CLEAN FLOATING ACTION BUTTON (FAB) CONFIG
@@ -3745,7 +3871,8 @@ function JSMAppContent() {
     ? activeActivities.filter((a) => a.dateISO === getTodayISO())
     : activeActivities;
   const isInsideStudentProfile = activeTab === 'Students' && Boolean(selectedStudent);
-  const anyFormModalOpen = studentModal || lessonEditModal || attendanceModal || feeModal;
+  const anyFormModalOpen =
+    studentModal || lessonEditModal || attendanceModal || feeModal || studentReportModal.visible;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom', 'left', 'right']}>
@@ -3956,6 +4083,175 @@ function JSMAppContent() {
         </GestureHandlerRootView>
       </Modal>
 
+      {/* SINGLE STUDENT DATA & PRINT MODAL (OPENED ON FIREBASE MATRIX ROW TAP) */}
+      <Modal
+        visible={studentReportModal.visible}
+        animationType="slide"
+        onRequestClose={() => {
+          if (calendarPicker.visible) closeCalendarPicker();
+          else setStudentReportModal({ visible: false, studentId: null, dateFilter: '' });
+        }}
+      >
+        <SafeAreaView style={styles.fullScreenModalSafe}>
+          <View style={styles.fullScreenModalHeader}>
+            <SmoothNavyGradient />
+            <View style={{ flex: 1, paddingRight: 8 }}>
+              <Text style={styles.fullScreenModalTitle} numberOfLines={1}>
+                {studentReportData?.student?.name || 'Student'}
+              </Text>
+              <Text style={{ color: COLORS.gold, fontSize: 11, fontWeight: '600', marginTop: 2 }}>
+                {studentReportData?.subjectName || ''}
+              </Text>
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <TouchableOpacity
+                style={[
+                  styles.quickDateChipCalendar,
+                  studentReportModal.dateFilter && { backgroundColor: COLORS.gold },
+                ]}
+                onPress={() =>
+                  openCalendarPicker(studentReportModal.dateFilter || getTodayISO(), (picked) => {
+                    setStudentReportModal((prev) => ({ ...prev, dateFilter: picked }));
+                  })
+                }
+              >
+                <Ionicons
+                  name="calendar-outline"
+                  size={14}
+                  color={studentReportModal.dateFilter ? COLORS.navy : COLORS.gold}
+                />
+                <Text
+                  style={[
+                    styles.quickDateChipCalendarText,
+                    studentReportModal.dateFilter && { color: COLORS.navy },
+                  ]}
+                >
+                  {studentReportModal.dateFilter
+                    ? formatReadableLocalDate(studentReportModal.dateFilter)
+                    : 'Date'}
+                </Text>
+              </TouchableOpacity>
+              {studentReportModal.dateFilter ? (
+                <TouchableOpacity
+                  style={styles.iconActionBtn}
+                  onPress={() => setStudentReportModal((prev) => ({ ...prev, dateFilter: '' }))}
+                >
+                  <Ionicons name="close-outline" size={16} color={COLORS.danger} />
+                </TouchableOpacity>
+              ) : null}
+              <TouchableOpacity style={styles.pdfExportTouchBtn} onPress={printStudentReport}>
+                <Ionicons name="print-outline" size={15} color={COLORS.gold} />
+                <Text style={styles.pdfExportTouchBtnText}>Print</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.fullScreenCloseBtn}
+                onPress={() => {
+                  closeCalendarPicker();
+                  setStudentReportModal({ visible: false, studentId: null, dateFilter: '' });
+                }}
+              >
+                <Ionicons name="close-outline" size={24} color={COLORS.gold} />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {studentReportData ? (
+            <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+              {studentReportData.student.notes ? (
+                <Surface style={styles.whiteCard} elevation={2}>
+                  <Text style={styles.sectionTitle}>NOTES</Text>
+                  <Text style={[styles.recordDetailLine, { marginTop: 6 }]}>
+                    {studentReportData.student.notes}
+                  </Text>
+                </Surface>
+              ) : null}
+
+              <View style={styles.groupBlock}>
+                <View style={styles.groupHeaderBar}>
+                  <Text style={styles.groupHeaderTitle}>CLASSES</Text>
+                  <Text style={styles.groupHeaderCount}>{studentReportData.stLessons.length}</Text>
+                </View>
+                {studentReportData.stLessons.map((les) => (
+                  <Surface key={les.id} style={styles.cleanRecordCard} elevation={1}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(les.date)}</Text>
+                      {les.lesson ? (
+                        <Text style={styles.recordDetailLine}>
+                          <Text style={styles.boldLabel}>Lesson: </Text>
+                          {les.lesson}
+                        </Text>
+                      ) : null}
+                      {les.technique ? (
+                        <Text style={styles.recordDetailLine}>
+                          <Text style={styles.boldLabel}>Technique: </Text>
+                          {les.technique}
+                        </Text>
+                      ) : null}
+                      {les.repertoire ? (
+                        <Text style={styles.recordDetailLine}>
+                          <Text style={styles.boldLabel}>Repertoire: </Text>
+                          {les.repertoire}
+                        </Text>
+                      ) : null}
+                      {les.assignment ? (
+                        <Text style={styles.recordDetailLine}>
+                          <Text style={styles.boldLabel}>Assignment: </Text>
+                          {les.assignment}
+                        </Text>
+                      ) : null}
+                    </View>
+                  </Surface>
+                ))}
+              </View>
+
+              <View style={styles.groupBlock}>
+                <View style={styles.groupHeaderBar}>
+                  <Text style={styles.groupHeaderTitle}>ATTENDANCE</Text>
+                  <Text style={styles.groupHeaderCount}>{studentReportData.stAtt.length}</Text>
+                </View>
+                {studentReportData.stAtt.map((att) => (
+                  <Surface key={att.id} style={styles.cleanRecordCard} elevation={1}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(att.date)}</Text>
+                      {att.remarks ? <Text style={styles.recordSecondarySub}>{att.remarks}</Text> : null}
+                    </View>
+                    <View style={styles.statusPill}>
+                      <Text style={styles.statusPillText}>{att.status}</Text>
+                    </View>
+                  </Surface>
+                ))}
+              </View>
+
+              <View style={styles.groupBlock}>
+                <View style={styles.groupHeaderBar}>
+                  <Text style={styles.groupHeaderTitle}>FEES</Text>
+                  <Text style={styles.groupHeaderCount}>
+                    Paid ₹{studentReportData.totalPaid} • Due ₹{studentReportData.totalDue}
+                  </Text>
+                </View>
+                {studentReportData.stFees.map((fee) => (
+                  <Surface key={fee.id} style={styles.cleanRecordCard} elevation={1}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.recordPrimaryTitle}>
+                        {fee.feeType}
+                        {fee.feeType === 'Monthly Fee' && fee.monthPaidFor ? ` • ${fee.monthPaidFor}` : ''}
+                      </Text>
+                      <Text style={styles.recordSecondarySub}>
+                        {formatReadableLocalDate(fee.date)} • {fee.mode} • {fee.status}
+                      </Text>
+                      <Text style={styles.recordDetailLine}>
+                        Paid: ₹{fee.amountPaid} | Balance: ₹{fee.balanceDue}
+                      </Text>
+                    </View>
+                  </Surface>
+                ))}
+              </View>
+            </ScrollView>
+          ) : null}
+          {renderCalendarOverlay()}
+        </SafeAreaView>
+      </Modal>
+
       {/* MASTER LIST & REPORT GENERATOR MODAL */}
       <Modal
         visible={masterListModal}
@@ -3974,7 +4270,7 @@ function JSMAppContent() {
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
               <TouchableOpacity style={styles.pdfExportTouchBtn} onPress={exportMasterListPDF}>
                 <Ionicons name="print-outline" size={15} color={COLORS.gold} />
-                <Text style={styles.pdfExportTouchBtnText}>Export PDF</Text>
+                <Text style={styles.pdfExportTouchBtnText}>Print</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.fullScreenCloseBtn}
@@ -4116,77 +4412,69 @@ function JSMAppContent() {
           <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
             {masterListData.length === 0 ? (
               <Surface style={styles.whiteCard} elevation={2}>
-                <EmptyStateWatermark message="No records found for this selection." />
+                <EmptyStateWatermark compact message="" />
               </Surface>
             ) : (
               masterListData.map((row) => (
-                <ScalePressable
+                <Surface
                   key={row.student.id}
-                  onPress={() => {
-                    closeCalendarPicker();
-                    setMasterListModal(false);
-                    setNavDirection(1);
-                    setSelectedStudentId(row.student.id);
-                    setProfileTab('Classes');
-                    setActiveTab('Students');
-                  }}
+                  style={[styles.whiteCard, { marginBottom: 12, padding: 16 }]}
+                  elevation={2}
                 >
-                  <Surface style={[styles.whiteCard, { marginBottom: 12, padding: 16 }]} elevation={2}>
-                    <View style={styles.cardHeaderRow}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.recordPrimaryTitle}>
-                          {row.student.name} • {row.subjectName}
-                        </Text>
-                        <Text style={styles.recordSecondarySub}>
-                          Classes: {row.stLessons.length} • Present: {row.presentCount} • Absent: {row.absentCount} • Rescheduled: {row.reschedCount}
-                        </Text>
-                      </View>
-                      <View
-                        style={[
-                          styles.feeBadge,
-                          row.totalDue > 0 ? styles.feeBadgeDue : styles.feeBadgePaid,
-                        ]}
-                      >
-                        <Text style={styles.feeBadgeText}>
-                          {row.totalDue > 0 ? `Due ₹${row.totalDue}` : `Paid ₹${row.totalPaid}`}
-                        </Text>
-                      </View>
+                  <View style={styles.cardHeaderRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.recordPrimaryTitle}>
+                        {row.student.name} • {row.subjectName}
+                      </Text>
+                      <Text style={styles.recordSecondarySub}>
+                        Classes: {row.stLessons.length} • Present: {row.presentCount} • Absent: {row.absentCount} • Rescheduled: {row.reschedCount}
+                      </Text>
                     </View>
-                    <View style={styles.sheetDivider} />
-                    <Text style={styles.recordDetailLine} numberOfLines={2}>
-                      <Text style={styles.boldLabel}>Classes: </Text>
-                      {row.stLessons.length > 0
-                        ? row.stLessons
-                            .slice(0, 3)
-                            .map(
-                              (l) =>
-                                `${formatReadableLocalDate(l.date)} (${
-                                  [l.lesson, l.technique, l.repertoire].filter(Boolean).join(', ') || 'Logged'
-                                })`
-                            )
-                            .join('  •  ')
-                        : 'None in period'}
-                    </Text>
-                    <Text style={styles.recordDetailLine} numberOfLines={2}>
-                      <Text style={styles.boldLabel}>Attendance: </Text>
-                      {row.stAtt.length > 0
-                        ? row.stAtt
-                            .slice(0, 4)
-                            .map((a) => `${formatReadableLocalDate(a.date)}: ${a.status}`)
-                            .join('  •  ')
-                        : 'None in period'}
-                    </Text>
-                    <Text style={styles.recordDetailLine} numberOfLines={2}>
-                      <Text style={styles.boldLabel}>Fees: </Text>
-                      {row.stFees.length > 0
-                        ? row.stFees
-                            .slice(0, 3)
-                            .map((f) => `${formatReadableLocalDate(f.date)}: ₹${f.amountPaid} (${f.status})`)
-                            .join('  •  ')
-                        : 'None in period'}
-                    </Text>
-                  </Surface>
-                </ScalePressable>
+                    <View
+                      style={[
+                        styles.feeBadge,
+                        row.totalDue > 0 ? styles.feeBadgeDue : styles.feeBadgePaid,
+                      ]}
+                    >
+                      <Text style={styles.feeBadgeText}>
+                        {row.totalDue > 0 ? `Due ₹${row.totalDue}` : `Paid ₹${row.totalPaid}`}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.sheetDivider} />
+                  <Text style={styles.recordDetailLine} numberOfLines={2}>
+                    <Text style={styles.boldLabel}>Classes: </Text>
+                    {row.stLessons.length > 0
+                      ? row.stLessons
+                          .slice(0, 3)
+                          .map(
+                            (l) =>
+                              `${formatReadableLocalDate(l.date)} (${
+                                [l.lesson, l.technique, l.repertoire].filter(Boolean).join(', ') || 'Logged'
+                              })`
+                          )
+                          .join('  •  ')
+                      : '—'}
+                  </Text>
+                  <Text style={styles.recordDetailLine} numberOfLines={2}>
+                    <Text style={styles.boldLabel}>Attendance: </Text>
+                    {row.stAtt.length > 0
+                      ? row.stAtt
+                          .slice(0, 4)
+                          .map((a) => `${formatReadableLocalDate(a.date)}: ${a.status}`)
+                          .join('  •  ')
+                      : '—'}
+                  </Text>
+                  <Text style={styles.recordDetailLine} numberOfLines={2}>
+                    <Text style={styles.boldLabel}>Fees: </Text>
+                    {row.stFees.length > 0
+                      ? row.stFees
+                          .slice(0, 3)
+                          .map((f) => `${formatReadableLocalDate(f.date)}: ₹${f.amountPaid} (${f.status})`)
+                          .join('  •  ')
+                      : '—'}
+                  </Text>
+                </Surface>
               ))
             )}
           </ScrollView>
@@ -4244,7 +4532,7 @@ function JSMAppContent() {
               numberOfLines={5}
               value={noticeInput}
               onChangeText={setNoticeInput}
-              placeholder="Write announcement..."
+              placeholder="Announcement..."
               outlineColor={COLORS.border}
               activeOutlineColor={COLORS.navy}
               style={[styles.tintedInput, { marginTop: 10, marginBottom: 14 }]}
@@ -4333,9 +4621,7 @@ function JSMAppContent() {
           <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
             {displayedActivities.length === 0 ? (
               <Surface style={styles.whiteCard} elevation={2}>
-                <EmptyStateWatermark
-                  message={activityFilterTodayOnly ? 'No activity today.' : 'No recent activity.'}
-                />
+                <EmptyStateWatermark compact message="" />
               </Surface>
             ) : (
               displayedActivities.map((act) => (
@@ -4382,7 +4668,7 @@ function JSMAppContent() {
                   mode="outlined"
                   value={subjectForm.name}
                   onChangeText={(t) => setSubjectForm({ ...subjectForm, name: t })}
-                  placeholder="Instrument name..."
+                  placeholder="Subject"
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={[styles.tintedInput, { flex: 1, height: 48, marginBottom: 0 }]}
@@ -4403,7 +4689,7 @@ function JSMAppContent() {
                 showsVerticalScrollIndicator={false}
               >
                 {orderedSubjects.length === 0 ? (
-                  <EmptyStateWatermark compact message="No subjects added yet." />
+                  <EmptyStateWatermark compact message="" />
                 ) : (
                   orderedSubjects.map((subj, idx) => {
                     const isDragging = draggingSubjectId === subj.id;
@@ -4797,7 +5083,7 @@ function JSMAppContent() {
                 mode="outlined"
                 value={attendanceModalForm.remarks}
                 onChangeText={(t) => setAttendanceModalForm({ ...attendanceModalForm, remarks: t })}
-                placeholder="Optional remarks"
+                placeholder="Remarks"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
@@ -4894,7 +5180,7 @@ function JSMAppContent() {
                   mode="outlined"
                   value={feeForm.monthPaidFor}
                   onChangeText={(t) => setFeeForm({ ...feeForm, monthPaidFor: t })}
-                  placeholder="Month Paid For * (e.g., November 2026)"
+                  placeholder="Month Paid For *"
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
@@ -5008,7 +5294,7 @@ function JSMAppContent() {
                 mode="outlined"
                 value={feeForm.remarks}
                 onChangeText={(t) => setFeeForm({ ...feeForm, remarks: t })}
-                placeholder="Optional receipt notes"
+                placeholder="Remarks"
                 outlineColor={COLORS.border}
                 activeOutlineColor={COLORS.navy}
                 style={styles.tintedInput}
@@ -5107,32 +5393,32 @@ const styles = StyleSheet.create({
   scrollContent: { padding: 18, paddingBottom: 36 },
   scrollContentWithFab: { padding: 18, paddingBottom: 98 },
 
-  // --- HOMEPAGE: GENEROUS NEGATIVE SPACE + COMPACT 4 CARDS + HORIZONTAL MATRIX ---
+  // --- HOMEPAGE: SLIM GREETING + LARGER NOTICE BOARD + HORIZONTAL MATRIX ---
   homeNoScrollContainer: {
     flex: 1,
     paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 12,
-    gap: 12,
+    paddingTop: 10,
+    paddingBottom: 10,
+    gap: 10,
   },
   compactGreetingStrip: {
     backgroundColor: COLORS.navy,
-    borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     overflow: 'hidden',
     shadowColor: COLORS.midnight,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.12,
-    shadowRadius: 10,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 2,
   },
   compactGreetingTitle: {
     color: COLORS.white,
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '700',
     fontFamily: SERIF_FONT,
   },
@@ -5140,32 +5426,6 @@ const styles = StyleSheet.create({
     color: COLORS.gold,
     fontSize: 11,
     fontWeight: '600',
-    marginTop: 2,
-  },
-  compactMetricsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  compactMetricPill: {
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    borderRadius: 10,
-    paddingVertical: 6,
-    paddingHorizontal: 11,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(212, 185, 120, 0.35)',
-    minWidth: 64,
-  },
-  compactMetricValue: {
-    color: COLORS.gold,
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  compactMetricLabel: {
-    color: COLORS.cream,
-    fontSize: 8,
-    fontWeight: '700',
-    letterSpacing: 0.8,
   },
   compactActionSection: {
     gap: 10,
@@ -5173,8 +5433,9 @@ const styles = StyleSheet.create({
   compactNoticeCard: {
     backgroundColor: COLORS.white,
     borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 15,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    minHeight: 96,
     overflow: 'hidden',
     borderLeftWidth: 4,
     borderLeftColor: COLORS.gold,
@@ -5193,7 +5454,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 4,
+    marginBottom: 6,
   },
   compactNoticeIconWrap: {
     width: 24,
@@ -5217,7 +5478,7 @@ const styles = StyleSheet.create({
   compactNoticeBody: {
     color: COLORS.charcoal,
     fontSize: 13,
-    lineHeight: 18,
+    lineHeight: 19,
   },
   threeSmallCardsRow: {
     flexDirection: 'row',
@@ -5227,7 +5488,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     paddingVertical: 11,
     paddingHorizontal: 12,
-    height: 76,
+    height: 74,
     justifyContent: 'space-between',
     overflow: 'hidden',
     shadowColor: COLORS.midnight,
@@ -5298,7 +5559,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
     borderRadius: 18,
     paddingHorizontal: 14,
-    paddingTop: 12,
+    paddingTop: 10,
     paddingBottom: 8,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -5308,7 +5569,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 10,
+    marginBottom: 8,
   },
   liveStatusDot: {
     width: 9,
@@ -5321,30 +5582,20 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1,
   },
-  liveStatusPill: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  liveStatusPillText: {
-    fontSize: 8,
-    fontWeight: '800',
-    letterSpacing: 0.6,
-  },
   masterListBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 4,
     backgroundColor: COLORS.navy,
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: COLORS.gold,
   },
   masterListBtnText: {
     color: COLORS.gold,
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
   },
   matrixWrapper: {
@@ -5412,13 +5663,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
   },
   matrixStatusBadgeText: {
-    fontSize: 9,
-    fontWeight: '800',
+    fontSize: 10,
+    fontWeight: '900',
     letterSpacing: 0.5,
     textAlign: 'center',
   },
@@ -5450,7 +5702,7 @@ const styles = StyleSheet.create({
     marginVertical: 8,
   },
 
-  // --- DIRECTORY & LEDGER STYLES WITH GENEROUS NEGATIVE SPACE ---
+  // --- DIRECTORY & LEDGER STYLES ---
   floatingSearchToggleBtn: {
     width: 40,
     height: 40,
@@ -5723,14 +5975,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    gap: 5,
     backgroundColor: COLORS.navy,
     borderColor: COLORS.gold,
     borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    minHeight: 36,
-    borderRadius: 10,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    minHeight: 32,
+    borderRadius: 8,
   },
   pdfExportTouchBtnText: { color: COLORS.gold, fontSize: 11, fontWeight: '800' },
   iconActionBtn: {
@@ -5878,20 +6130,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 18,
-    paddingVertical: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     borderBottomWidth: 1.5,
     borderBottomColor: COLORS.gold,
     overflow: 'hidden',
   },
   fullScreenModalTitle: {
     color: COLORS.white,
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
     fontFamily: SERIF_FONT,
   },
   fullScreenCloseBtn: {
-    padding: 5,
+    padding: 4,
     borderRadius: 20,
     backgroundColor: 'rgba(255,255,255,0.1)',
   },
