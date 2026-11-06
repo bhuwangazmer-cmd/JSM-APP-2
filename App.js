@@ -24,6 +24,7 @@ import {
   Keyboard,
   Vibration,
   BackHandler,
+  AppState,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -33,6 +34,8 @@ import * as Sharing from 'expo-sharing';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
   collection,
   doc,
   addDoc,
@@ -72,16 +75,21 @@ const triggerHaptic = (ms = 12) => {
 // 1. FIREBASE CONFIGURATION (JSM-APP-CDE22)
 // ==========================================
 const firebaseConfig = {
-  apiKey: "AIzaSyBLbRyy9q5jwfuHlxi06DBiiWNtTK_koe8",
-  authDomain: "jsm-app-cde22.firebaseapp.com",
-  projectId: "jsm-app-cde22",
-  storageBucket: "jsm-app-cde22.firebasestorage.app",
-  messagingSenderId: "78588387738",
-  appId: "1:78588387738:web:f07509bb2e37a751b0da23",
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || "AIzaSyBLbRyy9q5jwfuHlxi06DBiiWNtTK_koe8",
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || "jsm-app-cde22.firebaseapp.com",
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || "jsm-app-cde22",
+  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || "jsm-app-cde22.firebasestorage.app",
+  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "78588387738",
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID || "1:78588387738:web:f07509bb2e37a751b0da23",
 };
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-const db = getFirestore(app);
+let db;
+try {
+  db = initializeFirestore(app, { localCache: persistentLocalCache() });
+} catch (e) {
+  db = getFirestore(app);
+}
 
 // ==========================================
 // 2. THEME, TYPOGRAPHY & PALETTE
@@ -144,50 +152,114 @@ const SUBJECT_ROW_HEIGHT = 60;
 // ==========================================
 // 3. UTILITIES, SANITIZERS & BATCH HELPERS
 // ==========================================
-const safeString = (val, fallback = '') => (val === null || val === undefined ? fallback : String(val));
+const safeString = (val, fallback = '') => {
+  if (val === null || val === undefined) return fallback;
+  const str = String(val);
+  return str.trim() === '' && fallback !== '' ? fallback : str;
+};
+
 const safeNumber = (val, fallback = 0) => {
+  if (val === null || val === undefined || val === '') return fallback;
   const n = Number(val);
   return Number.isFinite(n) ? n : fallback;
 };
 
-const sanitizeDocRecord = (id, raw = {}, hasPendingWrites = false, colName = '') => {
-  const data = raw && typeof raw === 'object' ? raw : {};
-  const defaultStatus = colName === 'fees' ? 'Paid' : 'Present';
-  return {
-    ...data,
-    id: safeString(id),
-    name: safeString(data.name),
-    title: safeString(data.title),
-    subtitle: safeString(data.subtitle),
-    subjectId: safeString(data.subjectId),
-    studentId: safeString(data.studentId),
-    phone: safeString(data.phone),
-    guardian: safeString(data.guardian),
-    joinedDate: safeString(data.joinedDate),
-    date: safeString(data.date),
-    dateISO: safeString(data.dateISO),
-    technique: safeString(data.technique),
-    lesson: safeString(data.lesson),
-    repertoire: safeString(data.repertoire),
-    assignment: safeString(data.assignment),
-    status: safeString(data.status, defaultStatus),
-    remarks: safeString(data.remarks),
-    notes: safeString(data.notes),
-    feeType: safeString(data.feeType, 'Monthly Fee'),
-    monthPaidFor: safeString(data.monthPaidFor),
-    mode: safeString(data.mode, 'UPI'),
-    amountPaid: safeNumber(data.amountPaid, 0),
-    balanceDue: safeNumber(data.balanceDue, 0),
-    order: safeNumber(data.order, 999),
-    timestamp: safeNumber(data.timestamp, 0),
-    deletedAt: data.deletedAt ? safeNumber(data.deletedAt, Date.now()) : null,
-    isDeleted: Boolean(data.isDeleted),
-    priorityNote: Boolean(data.priorityNote),
-    _pendingSync: Boolean(hasPendingWrites),
-  };
+const normalizeISODate = (rawStr) => {
+  if (!rawStr || typeof rawStr !== 'string') return null;
+  const match = rawStr.trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (!match) return null;
+  const [_, year, month, day] = match.map(Number);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const checkDate = new Date(year, month - 1, day);
+  if (checkDate.getFullYear() !== year || checkDate.getMonth() !== month - 1 || checkDate.getDate() !== day) return null;
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 };
 
-const withWriteTimeout = (promise, ms = 2500) => {
+const sanitizeDocRecord = (id, raw = {}, hasPendingWrites = false, colName = '') => {
+  const data = raw && typeof raw === 'object' ? raw : {};
+  const isDeleted = Boolean(data.isDeleted);
+  const rawDate = safeString(data.date);
+  const rawJoinedDate = safeString(data.joinedDate);
+  const rawDateISO = safeString(data.dateISO);
+
+  const base = {
+    ...data,
+    id: safeString(id),
+    timestamp: safeNumber(data.timestamp, 0),
+    deletedAt: isDeleted
+      ? safeNumber(data.deletedAt, safeNumber(data.timestamp, 0) || Date.now())
+      : data.deletedAt
+      ? safeNumber(data.deletedAt, null)
+      : null,
+    isDeleted,
+    _pendingSync: Boolean(hasPendingWrites),
+  };
+
+  if (colName === 'subjects') {
+    return {
+      ...base,
+      name: safeString(data.name),
+      order: safeNumber(data.order, 999),
+    };
+  }
+  if (colName === 'students') {
+    return {
+      ...base,
+      name: safeString(data.name),
+      subjectId: safeString(data.subjectId),
+      phone: safeString(data.phone),
+      guardian: safeString(data.guardian),
+      joinedDate: normalizeISODate(rawJoinedDate) || rawJoinedDate,
+      notes: safeString(data.notes),
+      priorityNote: Boolean(data.priorityNote),
+    };
+  }
+  if (colName === 'lessons') {
+    return {
+      ...base,
+      studentId: safeString(data.studentId),
+      date: normalizeISODate(rawDate) || rawDate,
+      technique: safeString(data.technique),
+      lesson: safeString(data.lesson),
+      repertoire: safeString(data.repertoire),
+      assignment: safeString(data.assignment),
+    };
+  }
+  if (colName === 'attendance') {
+    return {
+      ...base,
+      studentId: safeString(data.studentId),
+      date: normalizeISODate(rawDate) || rawDate,
+      status: safeString(data.status, 'Present'),
+      remarks: safeString(data.remarks),
+    };
+  }
+  if (colName === 'fees') {
+    return {
+      ...base,
+      studentId: safeString(data.studentId),
+      date: normalizeISODate(rawDate) || rawDate,
+      feeType: safeString(data.feeType, 'Monthly Fee'),
+      monthPaidFor: safeString(data.monthPaidFor),
+      mode: safeString(data.mode, 'UPI'),
+      status: safeString(data.status, 'Paid'),
+      amountPaid: safeNumber(data.amountPaid, 0),
+      balanceDue: safeNumber(data.balanceDue, 0),
+      remarks: safeString(data.remarks),
+    };
+  }
+  if (colName === 'activities') {
+    return {
+      ...base,
+      title: safeString(data.title),
+      subtitle: safeString(data.subtitle),
+      dateISO: normalizeISODate(rawDateISO) || rawDateISO,
+    };
+  }
+  return base;
+};
+
+const withWriteTimeout = (promise, ms = 1200) => {
   let timerId;
   const timeoutPromise = new Promise((resolve) => {
     timerId = setTimeout(() => resolve({ timedOutOffline: true }), ms);
@@ -212,17 +284,6 @@ const getOffsetDateISO = (daysOffset = 0) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 const getTodayISO = () => getOffsetDateISO(0);
-
-const normalizeISODate = (rawStr) => {
-  if (!rawStr || typeof rawStr !== 'string') return null;
-  const match = rawStr.trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
-  if (!match) return null;
-  const [_, year, month, day] = match.map(Number);
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-  const checkDate = new Date(year, month - 1, day);
-  if (checkDate.getFullYear() !== year || checkDate.getMonth() !== month - 1 || checkDate.getDate() !== day) return null;
-  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-};
 
 const getLocalCurrentMonthLabel = () => `${MONTHS_FULL[new Date().getMonth()]} ${new Date().getFullYear()}`;
 
@@ -289,7 +350,7 @@ const isWithinLastTwoLocalMonths = (isoDateStr) => {
   if (isNaN(year) || isNaN(monthIdx)) return false;
   const now = new Date();
   const diff = now.getFullYear() * 12 + now.getMonth() - (year * 12 + monthIdx);
-  return diff >= 0 && diff <= 1;
+  return diff <= 1;
 };
 
 const getDaysRemainingInTrash = (deletedAtMs) => {
@@ -307,8 +368,10 @@ const escapeHtml = (unsafe) =>
 
 const sanitizeCurrency = (val) => {
   const cleaned = safeString(val).replace(/[^0-9.]/g, '');
+  if (!cleaned) return '';
   const parts = cleaned.split('.');
-  return parts.length <= 1 ? cleaned : `${parts[0]}.${parts.slice(1).join('').slice(0, 2)}`;
+  const intPart = parts[0].replace(/^0+(?=\d)/, '') || (parts.length > 1 ? '0' : '');
+  return parts.length <= 1 ? intPart : `${intPart}.${parts.slice(1).join('').slice(0, 2)}`;
 };
 
 const commitBatchDeletes = async (entries) => {
@@ -405,7 +468,7 @@ const DropdownField = ({ label, valueLabel, onPress, style, compact = false }) =
 );
 
 const EmptyStateWatermark = ({ message, compact = false, actionLabel, onAction }) => (
-  <View style={[styles.emptyWatermarkContainer, compact && { paddingVertical: 14 }]}>
+  <View style={[styles.emptyWatermarkContainer, compact && { paddingVertical: 14, minHeight: 56 }]}>
     <MaterialCommunityIcons
       name="music-clef-treble"
       size={compact ? 44 : 72}
@@ -618,8 +681,17 @@ function JSMAppContent() {
   const savingLockRef = useRef(false);
   const isMountedRef = useRef(true);
   const pendingTimeoutsRef = useRef([]);
+  const purgingIdsRef = useRef(new Set());
+  const loadedColsRef = useRef({
+    subjects: false,
+    students: false,
+    lessons: false,
+    attendance: false,
+    fees: false,
+  });
 
   const [isNetworkOnline, setIsNetworkOnline] = useState(true);
+  const isNetworkOnlineRef = useRef(true);
   const [pendingSyncByCol, setPendingSyncByCol] = useState({});
 
   const [masterListModal, setMasterListModal] = useState(false);
@@ -698,28 +770,43 @@ function JSMAppContent() {
 
   useEffect(() => {
     let active = true;
+    let appStateCurrent = AppState.currentState;
+
     const verifyConnection = async () => {
+      if (!active || !isMountedRef.current || appStateCurrent !== 'active') return;
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 3000);
       try {
         await fetch('https://clients3.google.com/generate_204', {
           method: 'HEAD',
-          mode: 'no-cors',
           cache: 'no-store',
           signal: controller.signal,
         });
-        if (active && isMountedRef.current) setIsNetworkOnline(true);
+        if (active && isMountedRef.current) {
+          isNetworkOnlineRef.current = true;
+          setIsNetworkOnline(true);
+        }
       } catch (e) {
-        if (active && isMountedRef.current) setIsNetworkOnline(false);
+        if (active && isMountedRef.current) {
+          isNetworkOnlineRef.current = false;
+          setIsNetworkOnline(false);
+        }
       } finally {
         clearTimeout(timeoutId);
       }
     };
+
     verifyConnection();
-    const intervalId = setInterval(verifyConnection, 7000);
+    const intervalId = setInterval(verifyConnection, 10000);
+    const appStateSub = AppState.addEventListener('change', (nextState) => {
+      appStateCurrent = nextState;
+      if (nextState === 'active') verifyConnection();
+    });
+
     return () => {
       active = false;
       clearInterval(intervalId);
+      appStateSub.remove();
     };
   }, []);
 
@@ -861,7 +948,14 @@ function JSMAppContent() {
   const [draggingSubjectId, setDraggingSubjectId] = useState(null);
   const [subjectScrollLocked, setSubjectScrollLocked] = useState(false);
   const dragSubjectY = useRef(new Animated.Value(0)).current;
-  const dragInfoRef = useRef({ active: false, subjectId: null, startIdx: 0, currentIdx: 0, list: [] });
+  const dragInfoRef = useRef({
+    active: false,
+    subjectId: null,
+    startIdx: 0,
+    currentIdx: 0,
+    initialTranslationY: 0,
+    list: [],
+  });
 
   const activeTabRef = useRef(activeTab);
   const profileTabRef = useRef(profileTab);
@@ -989,6 +1083,12 @@ function JSMAppContent() {
         setSelectedStudentId(null);
         return true;
       }
+      if (activeTab === 'Students' && !selectedStudentId && (searchBarVisible || studentSearch.length > 0)) {
+        triggerLayoutAnimation();
+        setSearchBarVisible(false);
+        setStudentSearch('');
+        return true;
+      }
       if (activeTab !== 'Home') {
         setNavDirection(-1);
         setActiveTab('Home');
@@ -1000,6 +1100,8 @@ function JSMAppContent() {
   }, [
     activeTab,
     selectedStudentId,
+    searchBarVisible,
+    studentSearch,
     dropdownPicker.visible,
     calendarPicker.visible,
     contextMenu.visible,
@@ -1027,8 +1129,18 @@ function JSMAppContent() {
       initialLoadDone.current = true;
     }, 1000);
 
+    const safePurgeDoc = (colName, docId) => {
+      const key = `${colName}/${docId}`;
+      if (purgingIdsRef.current.has(key)) return;
+      purgingIdsRef.current.add(key);
+      deleteDoc(doc(db, colName, docId)).catch(() => {
+        purgingIdsRef.current.delete(key);
+      });
+    };
+
     const handleSnapshotWithAutoPurge = (colName, snapshot, setter) => {
       if (!isMountedRef.current) return;
+      loadedColsRef.current[colName] = true;
       const records = [];
       const hasPending = Boolean(snapshot.metadata?.hasPendingWrites);
       setPendingSyncByCol((prev) =>
@@ -1038,17 +1150,17 @@ function JSMAppContent() {
       snapshot.forEach((docSnap) => {
         const clean = sanitizeDocRecord(docSnap.id, docSnap.data(), docSnap.metadata?.hasPendingWrites, colName);
         if (clean.isDeleted && clean.deletedAt && Date.now() - clean.deletedAt > THIRTY_DAYS_MS) {
-          deleteDoc(doc(db, colName, clean.id)).catch(() => {});
+          safePurgeDoc(colName, clean.id);
           if (colName === 'students') {
             lessonsRef.current
               .filter((l) => l.studentId === clean.id)
-              .forEach((l) => deleteDoc(doc(db, 'lessons', l.id)).catch(() => {}));
+              .forEach((l) => safePurgeDoc('lessons', l.id));
             attendanceRef.current
               .filter((a) => a.studentId === clean.id)
-              .forEach((a) => deleteDoc(doc(db, 'attendance', a.id)).catch(() => {}));
+              .forEach((a) => safePurgeDoc('attendance', a.id));
             feesRef.current
               .filter((f) => f.studentId === clean.id)
-              .forEach((f) => deleteDoc(doc(db, 'fees', f.id)).catch(() => {}));
+              .forEach((f) => safePurgeDoc('fees', f.id));
           }
         } else {
           records.push(clean);
@@ -1101,9 +1213,9 @@ function JSMAppContent() {
         snap.forEach((d) => {
           const clean = sanitizeDocRecord(d.id, d.data(), d.metadata?.hasPendingWrites, 'activities');
           if (clean.isDeleted && clean.deletedAt && Date.now() - clean.deletedAt > THIRTY_DAYS_MS) {
-            deleteDoc(doc(db, 'activities', clean.id)).catch(() => {});
+            safePurgeDoc('activities', clean.id);
           } else if (!clean.isDeleted && clean.timestamp && Date.now() - clean.timestamp > THIRTY_DAYS_MS) {
-            deleteDoc(doc(db, 'activities', clean.id)).catch(() => {});
+            safePurgeDoc('activities', clean.id);
           } else {
             list.push(clean);
           }
@@ -1119,10 +1231,17 @@ function JSMAppContent() {
       { includeMetadataChanges: true },
       (docSnap) => {
         if (!isMountedRef.current) return;
+        const hasPending = Boolean(docSnap.metadata?.hasPendingWrites);
+        setPendingSyncByCol((prev) =>
+          prev.notice === hasPending ? prev : { ...prev, notice: hasPending }
+        );
         if (docSnap.exists()) {
           const d = docSnap.data() || {};
           setNoticeText(safeString(d.text));
           setNoticeUpdatedAt(safeString(d.updatedDate));
+        } else {
+          setNoticeText('');
+          setNoticeUpdatedAt('');
         }
       },
       () => {}
@@ -1140,25 +1259,48 @@ function JSMAppContent() {
     };
   }, []);
 
+  // Cross-collection orphan cleanup after initial load of all collections
+  useEffect(() => {
+    const { students: stLoaded, lessons: lLoaded, attendance: aLoaded, fees: fLoaded } = loadedColsRef.current;
+    if (!stLoaded || !lLoaded || !aLoaded || !fLoaded) return;
+    const validStudentIds = new Set(students.map((s) => s.id));
+    const purgeOrphan = (colName, id) => {
+      const key = `${colName}/${id}`;
+      if (purgingIdsRef.current.has(key)) return;
+      purgingIdsRef.current.add(key);
+      deleteDoc(doc(db, colName, id)).catch(() => {
+        purgingIdsRef.current.delete(key);
+      });
+    };
+    lessons.forEach((l) => {
+      if (l.studentId && !validStudentIds.has(l.studentId)) purgeOrphan('lessons', l.id);
+    });
+    attendance.forEach((a) => {
+      if (a.studentId && !validStudentIds.has(a.studentId)) purgeOrphan('attendance', a.id);
+    });
+    fees.forEach((f) => {
+      if (f.studentId && !validStudentIds.has(f.studentId)) purgeOrphan('fees', f.id);
+    });
+  }, [students, lessons, attendance, fees]);
+
   const hasAnyPendingWrites = useMemo(
     () => Object.values(pendingSyncByCol).some(Boolean),
     [pendingSyncByCol]
   );
 
-  const logActivity = async (actionTitle, subtitle) => {
+  // Non-blocking activity logger so offline saves never double-wait on timeouts
+  const logActivity = useCallback((actionTitle, subtitle) => {
     try {
-      await withWriteTimeout(
-        addDoc(collection(db, 'activities'), {
-          title: safeString(actionTitle),
-          subtitle: safeString(subtitle),
-          dateISO: getTodayISO(),
-          timestamp: Date.now(),
-          isDeleted: false,
-          deletedAt: null,
-        })
-      );
+      addDoc(collection(db, 'activities'), {
+        title: safeString(actionTitle),
+        subtitle: safeString(subtitle),
+        dateISO: getTodayISO(),
+        timestamp: Date.now(),
+        isDeleted: false,
+        deletedAt: null,
+      }).catch(() => {});
     } catch (e) {}
-  };
+  }, []);
 
   const activeSubjects = useMemo(
     () => subjects.filter((s) => !s.isDeleted).sort((a, b) => (a.order ?? 999) - (b.order ?? 999)),
@@ -1234,6 +1376,9 @@ function JSMAppContent() {
       if (a.date) monthSet.add(getMonthYearFromISO(a.date));
     });
     activeFees.forEach((f) => {
+      if (f.feeType === 'Monthly Fee' && f.monthPaidFor) {
+        monthSet.add(f.monthPaidFor);
+      }
       if (f.date) monthSet.add(getMonthYearFromISO(f.date));
     });
     return Array.from(monthSet)
@@ -1275,12 +1420,31 @@ function JSMAppContent() {
     [activeStudents, selectedStudentId]
   );
 
+  // Auto-reset selectedStudentId or studentReportModal if student was deleted remotely
   useEffect(() => {
-    if (selectedStudent) {
+    if (selectedStudentId && !activeStudents.some((s) => s.id === selectedStudentId)) {
+      setSelectedStudentId(null);
+    }
+    if (
+      studentReportModal.visible &&
+      studentReportModal.studentId &&
+      !activeStudents.some((s) => s.id === studentReportModal.studentId)
+    ) {
+      setStudentReportModal({ visible: false, studentId: null, dateFilter: '' });
+    }
+  }, [activeStudents, selectedStudentId, studentReportModal.visible, studentReportModal.studentId]);
+
+  // Only populate noteDraft when switching students so background syncs don't overwrite active typing
+  const prevNoteStudentIdRef = useRef(null);
+  useEffect(() => {
+    if (selectedStudent && prevNoteStudentIdRef.current !== selectedStudent.id) {
+      prevNoteStudentIdRef.current = selectedStudent.id;
       setNoteDraft(safeString(selectedStudent.notes));
       setPriorityDraft(Boolean(selectedStudent.priorityNote));
+    } else if (!selectedStudent) {
+      prevNoteStudentIdRef.current = null;
     }
-  }, [selectedStudentId, selectedStudent?.notes, selectedStudent?.priorityNote]);
+  }, [selectedStudent]);
 
   useEffect(() => {
     setInlineLessonForm({ date: getTodayISO(), technique: '', lesson: '', repertoire: '', assignment: '' });
@@ -1288,35 +1452,86 @@ function JSMAppContent() {
     setShowInlineAttNote(false);
   }, [selectedStudentId]);
 
-  const getStudentMetrics = useCallback(
-    (studentId) => {
-      const stLessons = activeLessons.filter((l) => l.studentId === studentId);
-      const stAttendance = activeAttendance.filter((a) => a.studentId === studentId);
-      const stFees = activeFees.filter((f) => f.studentId === studentId);
-      let attendancePct = 'N/A';
-      const gradedAttendance = stAttendance.filter((a) => a.status !== 'Rescheduled');
+  // Memoized O(1) Student Metrics Map
+  const studentMetricsMap = useMemo(() => {
+    const map = {};
+    activeStudents.forEach((st) => {
+      map[st.id] = {
+        classesTaken: 0,
+        attendancePct: 'N/A',
+        feeStatus: 'No Records',
+        totalDue: 0,
+        stLessons: [],
+        stAttendance: [],
+        stFees: [],
+        hasPendingSync: Boolean(st._pendingSync),
+      };
+    });
+
+    activeLessons.forEach((l) => {
+      const bucket = map[l.studentId];
+      if (bucket) {
+        bucket.stLessons.push(l);
+        if (l._pendingSync) bucket.hasPendingSync = true;
+      }
+    });
+
+    activeAttendance.forEach((a) => {
+      const bucket = map[a.studentId];
+      if (bucket) {
+        bucket.stAttendance.push(a);
+        if (a._pendingSync) bucket.hasPendingSync = true;
+      }
+    });
+
+    activeFees.forEach((f) => {
+      const bucket = map[f.studentId];
+      if (bucket) {
+        bucket.stFees.push(f);
+        if (f._pendingSync) bucket.hasPendingSync = true;
+      }
+    });
+
+    Object.values(map).forEach((bucket) => {
+      bucket.classesTaken = bucket.stLessons.length;
+      const gradedAttendance = bucket.stAttendance.filter((a) => a.status !== 'Rescheduled');
       if (gradedAttendance.length > 0) {
-        attendancePct = `${Math.round(
+        bucket.attendancePct = `${Math.round(
           (gradedAttendance.filter((a) => a.status === 'Present' || a.status === 'Tardy').length /
             gradedAttendance.length) *
             100
         )}%`;
       }
-      let feeStatus = 'No Records',
-        totalDue = 0;
-      if (stFees.length > 0) {
-        stFees.forEach((f) => {
+      if (bucket.stFees.length > 0) {
+        let totalDue = 0;
+        bucket.stFees.forEach((f) => {
           totalDue += safeNumber(f.balanceDue, 0);
         });
-        feeStatus = stFees.some(
+        bucket.totalDue = totalDue;
+        bucket.feeStatus = bucket.stFees.some(
           (f) => f.status === 'Unpaid' || f.status === 'Partial' || safeNumber(f.balanceDue, 0) > 0
         )
           ? 'Due / Unpaid'
           : 'Paid';
       }
-      return { classesTaken: stLessons.length, attendancePct, feeStatus, totalDue, stLessons, stAttendance, stFees };
-    },
-    [activeLessons, activeAttendance, activeFees]
+    });
+
+    return map;
+  }, [activeStudents, activeLessons, activeAttendance, activeFees]);
+
+  const getStudentMetrics = useCallback(
+    (studentId) =>
+      studentMetricsMap[studentId] || {
+        classesTaken: 0,
+        attendancePct: 'N/A',
+        feeStatus: 'No Records',
+        totalDue: 0,
+        stLessons: [],
+        stAttendance: [],
+        stFees: [],
+        hasPendingSync: false,
+      },
+    [studentMetricsMap]
   );
 
   const studentReportData = useMemo(() => {
@@ -1426,7 +1641,7 @@ function JSMAppContent() {
     }</div>
         ${
           student.notes
-            ? `<h2>NOTES</h2><p style="font-family:sans-serif;font-size:12px;">${escapeHtml(student.notes)}</p>`
+            ? `<h2>NOTES</h2><p style="font-family:sans-serif;font-size:12px;white-space:pre-wrap;">${escapeHtml(student.notes)}</p>`
             : ''
         }
         <h2>CLASSES (${stLessons.length})</h2>
@@ -1458,16 +1673,21 @@ function JSMAppContent() {
         ? activeStudents
         : activeStudents.filter((s) => s.id === masterStudentFilter);
 
-    const matchesTimeframe = (isoDate) => {
-      if (masterDateFilter && isoDate !== masterDateFilter) return false;
-      if (masterMonthFilter !== 'ALL' && getMonthYearFromISO(isoDate) !== masterMonthFilter) return false;
+    const matchesTimeframe = (isoDate, feeRecord = null) => {
+      if (masterDateFilter) return isoDate === masterDateFilter;
+      if (masterMonthFilter !== 'ALL') {
+        if (feeRecord && feeRecord.feeType === 'Monthly Fee' && feeRecord.monthPaidFor) {
+          return feeRecord.monthPaidFor === masterMonthFilter || getMonthYearFromISO(isoDate) === masterMonthFilter;
+        }
+        return getMonthYearFromISO(isoDate) === masterMonthFilter;
+      }
       return true;
     };
 
     return targetStudents.map((st) => {
       const stLessons = activeLessons.filter((l) => l.studentId === st.id && matchesTimeframe(l.date));
       const stAtt = activeAttendance.filter((a) => a.studentId === st.id && matchesTimeframe(a.date));
-      const stFees = activeFees.filter((f) => f.studentId === st.id && matchesTimeframe(f.date));
+      const stFees = activeFees.filter((f) => f.studentId === st.id && matchesTimeframe(f.date, f));
       const totalPaid = stFees.reduce((acc, f) => acc + safeNumber(f.amountPaid, 0), 0);
       const totalDue = stFees.reduce((acc, f) => acc + safeNumber(f.balanceDue, 0), 0);
       const presentCount = stAtt.filter((a) => a.status === 'Present' || a.status === 'Tardy').length;
@@ -1575,6 +1795,10 @@ function JSMAppContent() {
   };
 
   const handleCheckOTA = async () => {
+    if (__DEV__ || !Updates.isEnabled) {
+      Alert.alert('OTA Notice', 'OTA updates are only active in standalone production/preview builds.');
+      return;
+    }
     try {
       setCheckingOTA(true);
       const update = await Updates.checkForUpdateAsync();
@@ -1587,7 +1811,7 @@ function JSMAppContent() {
         Alert.alert('Up to Date', 'You are running the latest JSM build.');
       }
     } catch (e) {
-      Alert.alert('OTA Notice', 'OTA check requires a production/preview Expo Updates build.');
+      Alert.alert('OTA Notice', 'Could not check for updates at this time.');
     } finally {
       if (isMountedRef.current) setCheckingOTA(false);
     }
@@ -1602,10 +1826,12 @@ function JSMAppContent() {
   };
 
   const handleOpenWhatsApp = (phoneStr, studentName) => {
-    const digits = safeString(phoneStr).replace(/[^\d]/g, '');
-    if (!digits) return;
+    const rawDigits = safeString(phoneStr).replace(/[^\d]/g, '');
+    if (!rawDigits) return;
+    const digits = rawDigits.length === 11 && rawDigits.startsWith('0') ? rawDigits.slice(1) : rawDigits;
+    const formattedPhone = digits.length === 10 ? `91${digits}` : digits;
     Linking.openURL(
-      `https://wa.me/${digits.length === 10 ? `91${digits}` : digits}?text=${encodeURIComponent(
+      `https://wa.me/${formattedPhone}?text=${encodeURIComponent(
         `Hello from JSM regarding ${safeString(studentName, 'your music classes')}.`
       )}`
     ).catch(() => Alert.alert('WhatsApp Unavailable', 'Could not open WhatsApp.'));
@@ -1631,7 +1857,7 @@ function JSMAppContent() {
       <body><div class="card">
         <div class="crest">★ EST. 2022 ★</div><div class="title">JSM</div><div class="subtitle">OFFICIAL TUITION &amp; FEE RECEIPT</div><div class="divider"></div>
         <div class="row"><span class="label">Student Name:</span><span class="val">${escapeHtml(st?.name || 'JSM Student')}</span></div>
-        <div class="row"><span class="label">Instrument / Subject:</span><span class="val">${escapeHtml(subjectMap[st?.subjectId]?.name || 'Music Studies')}</span></div>
+        <div class="row"><span class="label">Instrument / Subject:</span><span class="val">${escapeHtml(subjectMap[st?.subjectId]?.name || 'Unassigned')}</span></div>
         <div class="row"><span class="label">Date of Transaction:</span><span class="val">${escapeHtml(formatReadableLocalDate(feeRecord.date))}</span></div>
         <div class="row"><span class="label">Fee Category:</span><span class="val">${escapeHtml(feeRecord.feeType || 'Tuition Fee')}</span></div>
         ${feeRecord.feeType === 'Monthly Fee' ? `<div class="row"><span class="label">Month Paid For:</span><span class="val">${escapeHtml(feeRecord.monthPaidFor || '-')}</span></div>` : ''}
@@ -1685,11 +1911,23 @@ function JSMAppContent() {
       if (collectionName === 'students' && studentReportModal.studentId === item.id) {
         setStudentReportModal({ visible: false, studentId: null, dateFilter: '' });
       }
-      await withWriteTimeout(
-        updateDoc(doc(db, collectionName, item.id), { isDeleted: true, deletedAt: Date.now() })
-      );
+
+      const entriesToSoftDelete = [{ col: collectionName, id: item.id }];
+      if (collectionName === 'students') {
+        lessons
+          .filter((l) => l.studentId === item.id && !l.isDeleted)
+          .forEach((l) => entriesToSoftDelete.push({ col: 'lessons', id: l.id }));
+        attendance
+          .filter((a) => a.studentId === item.id && !a.isDeleted)
+          .forEach((a) => entriesToSoftDelete.push({ col: 'attendance', id: a.id }));
+        fees
+          .filter((f) => f.studentId === item.id && !f.isDeleted)
+          .forEach((f) => entriesToSoftDelete.push({ col: 'fees', id: f.id }));
+      }
+
+      await commitBatchSoftDeletes(entriesToSoftDelete);
       if (collectionName !== 'activities') {
-        await logActivity('Moved to Trash', label);
+        logActivity('Moved to Trash', label);
       }
     } catch (e) {
       Alert.alert('Error', 'Unable to move item to Trash.');
@@ -1737,14 +1975,14 @@ function JSMAppContent() {
       const batch = writeBatch(db);
       reorderedList.forEach((subj, index) => batch.update(doc(db, 'subjects', subj.id), { order: index }));
       await withWriteTimeout(batch.commit());
-      await logActivity('Reordered Subjects', 'Updated instrument display order');
+      logActivity('Reordered Subjects', 'Updated instrument display order');
     } catch (e) {
       Alert.alert('Error', 'Could not save new subject order.');
     }
   };
 
   const handleSubjectDragStart = useCallback(
-    (subj) => {
+    (subj, initialTranslationY = 0) => {
       Keyboard.dismiss();
       const currentOrdered = orderedSubjectsRef.current;
       const currentActive = activeSubjectsRef.current;
@@ -1756,6 +1994,7 @@ function JSMAppContent() {
         subjectId: subj.id,
         startIdx: idx,
         currentIdx: idx,
+        initialTranslationY,
         list: listSnapshot,
       };
       setSubjectScrollLocked(true);
@@ -1770,14 +2009,15 @@ function JSMAppContent() {
     (subj, event) => {
       const { translationY } = event.nativeEvent;
       if (!dragInfoRef.current.active) {
-        handleSubjectDragStart(subj);
+        handleSubjectDragStart(subj, translationY);
       }
-      const { startIdx, currentIdx, list } = dragInfoRef.current;
+      const { startIdx, currentIdx, initialTranslationY = 0, list } = dragInfoRef.current;
       if (!list || list.length === 0) return;
 
+      const deltaY = translationY - initialTranslationY;
       const targetIdx = Math.max(
         0,
-        Math.min(list.length - 1, Math.round(startIdx + translationY / SUBJECT_ROW_HEIGHT))
+        Math.min(list.length - 1, Math.round(startIdx + deltaY / SUBJECT_ROW_HEIGHT))
       );
       if (targetIdx !== currentIdx) {
         const updated = [...list];
@@ -1789,16 +2029,16 @@ function JSMAppContent() {
         triggerHaptic(10);
         setOrderedSubjects(updated);
       }
-      dragSubjectY.setValue(translationY - (dragInfoRef.current.currentIdx - startIdx) * SUBJECT_ROW_HEIGHT);
+      dragSubjectY.setValue(deltaY - (dragInfoRef.current.currentIdx - startIdx) * SUBJECT_ROW_HEIGHT);
     },
     [dragSubjectY, handleSubjectDragStart]
   );
 
   const handleSubjectDragStateChange = useCallback(
     (subj, event) => {
-      const { state } = event.nativeEvent;
+      const { state, translationY } = event.nativeEvent;
       if (state === State.BEGAN) {
-        handleSubjectDragStart(subj);
+        handleSubjectDragStart(subj, translationY || 0);
       } else if (state === State.END || state === State.CANCELLED || state === State.FAILED) {
         setSubjectScrollLocked(false);
         if (!dragInfoRef.current.active) return;
@@ -1849,13 +2089,10 @@ function JSMAppContent() {
           setSubjectForm({ id: item.id, name: safeString(item.name) });
           setSubjectsModal(true);
         } else if (entityType === 'student') {
-          const validSubjectId = activeSubjects.some((s) => s.id === item.subjectId)
-            ? item.subjectId
-            : activeSubjects[0]?.id || '';
           setStudentForm({
             id: item.id,
             name: safeString(item.name),
-            subjectId: validSubjectId,
+            subjectId: safeString(item.subjectId) || activeSubjects[0]?.id || '',
             phone: safeString(item.phone),
             guardian: safeString(item.guardian),
             joinedDate: safeString(item.joinedDate, getTodayISO()),
@@ -1908,27 +2145,36 @@ function JSMAppContent() {
     Keyboard.dismiss();
     const trimmed = safeString(subjectForm.name).trim();
     if (!trimmed) return Alert.alert('Validation', 'Please enter a subject/instrument name.');
+    const editingId = subjectForm.id;
+    const isDuplicate = activeSubjects.some(
+      (s) => s.id !== editingId && safeString(s.name).trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    if (isDuplicate) {
+      return Alert.alert('Duplicate Subject', `"${trimmed}" already exists in your subjects list.`);
+    }
     if (savingLockRef.current) return;
     savingLockRef.current = true;
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
-      const editingId = subjectForm.id;
-      setSubjectForm({ id: null, name: '' });
       if (editingId) {
         await withWriteTimeout(updateDoc(doc(db, 'subjects', editingId), { name: trimmed }));
-        await logActivity('Updated Subject', trimmed);
+        setSubjectForm({ id: null, name: '' });
+        logActivity('Updated Subject', trimmed);
       } else {
+        const nextOrder =
+          activeSubjects.reduce((maxOrd, s) => Math.max(maxOrd, safeNumber(s.order, 0)), -1) + 1;
         await withWriteTimeout(
           addDoc(collection(db, 'subjects'), {
             name: trimmed,
-            order: activeSubjects.length,
+            order: nextOrder,
             timestamp: Date.now(),
             isDeleted: false,
             deletedAt: null,
           })
         );
-        await logActivity('Added Subject', trimmed);
+        setSubjectForm({ id: null, name: '' });
+        logActivity('Added Subject', trimmed);
       }
     } catch (e) {
       Alert.alert('Error', 'Could not save subject.');
@@ -1957,20 +2203,9 @@ function JSMAppContent() {
         joinedDate: validDate,
       };
       const editingId = studentForm.id;
-      closeCalendarPicker();
-      closeDropdownPicker();
-      setStudentModal(false);
-      setStudentForm({
-        id: null,
-        name: '',
-        subjectId: activeSubjects[0]?.id || '',
-        phone: '',
-        guardian: '',
-        joinedDate: getTodayISO(),
-      });
       if (editingId) {
         await withWriteTimeout(updateDoc(doc(db, 'students', editingId), payload));
-        await logActivity('Updated Student', payload.name);
+        logActivity('Updated Student', payload.name);
       } else {
         await withWriteTimeout(
           addDoc(collection(db, 'students'), {
@@ -1982,8 +2217,19 @@ function JSMAppContent() {
             deletedAt: null,
           })
         );
-        await logActivity('Enrolled Student', `${payload.name} (${safeString(subjectMap[payload.subjectId]?.name)})`);
+        logActivity('Enrolled Student', `${payload.name} (${safeString(subjectMap[payload.subjectId]?.name, 'Unassigned')})`);
       }
+      closeCalendarPicker();
+      closeDropdownPicker();
+      setStudentModal(false);
+      setStudentForm({
+        id: null,
+        name: '',
+        subjectId: activeSubjects[0]?.id || '',
+        phone: '',
+        guardian: '',
+        joinedDate: getTodayISO(),
+      });
     } catch (e) {
       Alert.alert('Error', 'Could not save student record.');
     } finally {
@@ -2019,9 +2265,9 @@ function JSMAppContent() {
         isDeleted: false,
         deletedAt: null,
       };
-      setInlineLessonForm({ date: getTodayISO(), technique: '', lesson: '', repertoire: '', assignment: '' });
       await withWriteTimeout(addDoc(collection(db, 'lessons'), payload));
-      await logActivity(
+      setInlineLessonForm({ date: getTodayISO(), technique: '', lesson: '', repertoire: '', assignment: '' });
+      logActivity(
         'Logged Lesson',
         `${safeString(studentMap[selectedStudentId]?.name, 'Student')} (${formatReadableLocalDate(validDate)})`
       );
@@ -2058,10 +2304,10 @@ function JSMAppContent() {
         repertoire: safeString(lessonEditForm.repertoire).trim(),
         assignment: safeString(lessonEditForm.assignment).trim(),
       };
+      await withWriteTimeout(updateDoc(doc(db, 'lessons', editingId), payload));
       closeCalendarPicker();
       setLessonEditModal(false);
-      await withWriteTimeout(updateDoc(doc(db, 'lessons', editingId), payload));
-      await logActivity(
+      logActivity(
         'Updated Lesson',
         `${safeString(studentMap[payload.studentId]?.name, 'Student')} (${formatReadableLocalDate(validDate)})`
       );
@@ -2084,8 +2330,6 @@ function JSMAppContent() {
       triggerHaptic(14);
       const statusVal = inlineAttendanceForm.status;
       const remarksVal = safeString(inlineAttendanceForm.remarks).trim();
-      setInlineAttendanceForm({ date: getTodayISO(), status: 'Present', remarks: '' });
-      setShowInlineAttNote(false);
       const existingRecord = activeAttendance.find(
         (a) => a.studentId === selectedStudentId && a.date === validDate
       );
@@ -2093,13 +2337,14 @@ function JSMAppContent() {
         await withWriteTimeout(
           updateDoc(doc(db, 'attendance', existingRecord.id), { status: statusVal, remarks: remarksVal })
         );
-        await logActivity(
+        logActivity(
           'Updated Attendance',
           `${safeString(studentMap[selectedStudentId]?.name, 'Student')} • ${statusVal}`
         );
       } else {
+        const deterministicId = `${selectedStudentId}_${validDate}`;
         await withWriteTimeout(
-          addDoc(collection(db, 'attendance'), {
+          setDoc(doc(db, 'attendance', deterministicId), {
             studentId: selectedStudentId,
             date: validDate,
             status: statusVal,
@@ -2109,11 +2354,13 @@ function JSMAppContent() {
             deletedAt: null,
           })
         );
-        await logActivity(
+        logActivity(
           'Marked Attendance',
           `${safeString(studentMap[selectedStudentId]?.name, 'Student')} • ${statusVal}`
         );
       }
+      setInlineAttendanceForm({ date: getTodayISO(), status: 'Present', remarks: '' });
+      setShowInlineAttNote(false);
     } catch (e) {
       Alert.alert('Error', 'Could not save attendance.');
     } finally {
@@ -2144,36 +2391,37 @@ function JSMAppContent() {
       triggerLayoutAnimation();
       triggerHaptic(12);
       const editingId = attendanceModalForm.id;
-      closeCalendarPicker();
-      closeDropdownPicker();
-      setAttendanceModal(false);
-      setShowModalAttNote(false);
       if (editingId) {
         await withWriteTimeout(updateDoc(doc(db, 'attendance', editingId), payload));
-        await logActivity(
+        logActivity(
           'Updated Attendance',
           `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ${payload.status}`
         );
       } else if (duplicateRecord) {
         await withWriteTimeout(updateDoc(doc(db, 'attendance', duplicateRecord.id), payload));
-        await logActivity(
+        logActivity(
           'Updated Attendance',
           `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ${payload.status}`
         );
       } else {
+        const deterministicId = `${payload.studentId}_${validDate}`;
         await withWriteTimeout(
-          addDoc(collection(db, 'attendance'), {
+          setDoc(doc(db, 'attendance', deterministicId), {
             ...payload,
             timestamp: Date.now(),
             isDeleted: false,
             deletedAt: null,
           })
         );
-        await logActivity(
+        logActivity(
           'Marked Attendance',
           `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ${payload.status}`
         );
       }
+      closeCalendarPicker();
+      closeDropdownPicker();
+      setAttendanceModal(false);
+      setShowModalAttNote(false);
     } catch (e) {
       Alert.alert('Error', 'Could not save attendance.');
     } finally {
@@ -2194,7 +2442,7 @@ function JSMAppContent() {
           priorityNote: Boolean(priorityDraft),
         })
       );
-      await logActivity('Updated Student Notes', safeString(studentMap[selectedStudentId]?.name));
+      logActivity('Updated Student Notes', safeString(studentMap[selectedStudentId]?.name));
     } catch (e) {
       Alert.alert('Error', 'Could not update student notes.');
     } finally {
@@ -2235,13 +2483,9 @@ function JSMAppContent() {
         balanceDue: numericBalance,
         remarks: safeString(feeForm.remarks).trim(),
       };
-      closeCalendarPicker();
-      closeDropdownPicker();
-      setFeeModal(false);
-      setShowFeeNote(false);
       if (editingId) {
         await withWriteTimeout(updateDoc(doc(db, 'fees', editingId), payload));
-        await logActivity(
+        logActivity(
           'Updated Fee Record',
           `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ₹${numericPaid}`
         );
@@ -2254,15 +2498,19 @@ function JSMAppContent() {
             deletedAt: null,
           })
         );
-        await logActivity(
+        logActivity(
           'Recorded Fee',
           `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ₹${numericPaid} (${payload.status})`
         );
       }
+      closeCalendarPicker();
+      closeDropdownPicker();
+      setFeeModal(false);
+      setShowFeeNote(false);
       if (shouldSharePDF) {
         scheduleTimeout(() => {
           generateAndShareReceiptPDF(payload);
-        }, 350);
+        }, 180);
       }
     } catch (e) {
       Alert.alert('Error', 'Could not save fee record.');
@@ -2279,9 +2527,9 @@ function JSMAppContent() {
       triggerHaptic(12);
       const today = getTodayISO();
       const textVal = overrideText !== null ? safeString(overrideText).trim() : safeString(noticeInput).trim();
-      setNoticeEditModal(false);
       await withWriteTimeout(setDoc(doc(db, 'settings', 'noticeBoard'), { text: textVal, updatedDate: today }));
-      await logActivity(
+      setNoticeEditModal(false);
+      logActivity(
         textVal ? 'Updated Notice Board' : 'Cleared Notice Board',
         formatReadableLocalDate(today)
       );
@@ -2297,18 +2545,44 @@ function JSMAppContent() {
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
-      await withWriteTimeout(updateDoc(doc(db, item._col, item.id), { isDeleted: false, deletedAt: null }));
+      const batch = writeBatch(db);
+
+      if (item._col === 'attendance') {
+        const duplicateActive = activeAttendance.find(
+          (a) => a.studentId === item.studentId && a.date === item.date && a.id !== item.id
+        );
+        if (duplicateActive) {
+          batch.update(doc(db, 'attendance', duplicateActive.id), {
+            status: item.status,
+            remarks: item.remarks,
+          });
+          batch.delete(doc(db, 'attendance', item.id));
+        } else {
+          batch.update(doc(db, 'attendance', item.id), { isDeleted: false, deletedAt: null });
+        }
+      } else {
+        batch.update(doc(db, item._col, item.id), { isDeleted: false, deletedAt: null });
+      }
+
+      if (item._col === 'students' && item.subjectId && subjectMap[item.subjectId]?.isDeleted) {
+        batch.update(doc(db, 'subjects', item.subjectId), { isDeleted: false, deletedAt: null });
+      }
+
       if (
         ['lessons', 'attendance', 'fees'].includes(item._col) &&
         item.studentId &&
         studentMap[item.studentId]?.isDeleted
       ) {
-        await withWriteTimeout(
-          updateDoc(doc(db, 'students', item.studentId), { isDeleted: false, deletedAt: null })
-        );
+        const parentSt = studentMap[item.studentId];
+        batch.update(doc(db, 'students', item.studentId), { isDeleted: false, deletedAt: null });
+        if (parentSt?.subjectId && subjectMap[parentSt.subjectId]?.isDeleted) {
+          batch.update(doc(db, 'subjects', parentSt.subjectId), { isDeleted: false, deletedAt: null });
+        }
       }
+
+      await withWriteTimeout(batch.commit());
       if (item._col !== 'activities') {
-        await logActivity('Restored from Trash', item._label);
+        logActivity('Restored from Trash', item._label);
       }
     } catch (e) {
       Alert.alert('Error', 'Could not restore item.');
@@ -2330,7 +2604,7 @@ function JSMAppContent() {
       }
       await commitBatchDeletes(docsToDelete);
       if (item._col !== 'activities') {
-        await logActivity('Permanently Deleted from Firebase', item._label);
+        logActivity('Permanently Deleted from Firebase', item._label);
       }
     } catch (e) {
       Alert.alert('Error', 'Could not delete item from Firebase.');
@@ -2381,18 +2655,27 @@ function JSMAppContent() {
     (records) => {
       const grouped = [];
       const activeSubjectIds = new Set(activeSubjects.map((s) => s.id));
+      const getRecordMonthLabel = (rec) => {
+        if (rec.feeType === 'Monthly Fee' && rec.monthPaidFor) {
+          return rec.monthPaidFor;
+        }
+        return getMonthYearFromISO(rec.date);
+      };
+
       activeSubjects.forEach((subj) => {
         const subjectRecords = records.filter((r) => studentMap[r.studentId]?.subjectId === subj.id);
         if (subjectRecords.length > 0) {
           const monthsMap = {};
           subjectRecords.forEach((rec) => {
-            const mLabel = getMonthYearFromISO(rec.date);
+            const mLabel = getRecordMonthLabel(rec);
             if (!monthsMap[mLabel]) monthsMap[mLabel] = [];
             monthsMap[mLabel].push(rec);
           });
           grouped.push({
             subject: subj,
-            months: Object.entries(monthsMap).map(([monthName, items]) => ({ monthName, items })),
+            months: Object.entries(monthsMap)
+              .map(([monthName, items]) => ({ monthName, items }))
+              .sort((a, b) => parseMonthYearSortKey(b.monthName) - parseMonthYearSortKey(a.monthName)),
           });
         }
       });
@@ -2400,13 +2683,15 @@ function JSMAppContent() {
       if (unassignedRecords.length > 0) {
         const monthsMap = {};
         unassignedRecords.forEach((rec) => {
-          const mLabel = getMonthYearFromISO(rec.date);
+          const mLabel = getRecordMonthLabel(rec);
           if (!monthsMap[mLabel]) monthsMap[mLabel] = [];
           monthsMap[mLabel].push(rec);
         });
         grouped.push({
           subject: { id: '_unassigned', name: 'Unassigned / Other' },
-          months: Object.entries(monthsMap).map(([monthName, items]) => ({ monthName, items })),
+          months: Object.entries(monthsMap)
+            .map(([monthName, items]) => ({ monthName, items }))
+            .sort((a, b) => parseMonthYearSortKey(b.monthName) - parseMonthYearSortKey(a.monthName)),
         });
       }
       return grouped;
@@ -2572,7 +2857,7 @@ function JSMAppContent() {
       <Pressable style={styles.dropdownPortalOverlay} onPress={closeDropdownPicker}>
         <Pressable style={styles.dropdownModalCard} onPress={(e) => e.stopPropagation()}>
           <View style={styles.cardHeaderRow}>
-            <Text style={styles.sectionTitle}>{ safeString(dropdownPicker.title).toUpperCase() }</Text>
+            <Text style={styles.sectionTitle}>{safeString(dropdownPicker.title).toUpperCase()}</Text>
             <TouchableOpacity onPress={closeDropdownPicker} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Ionicons name="close-outline" size={22} color={COLORS.navy} />
             </TouchableOpacity>
@@ -2635,134 +2920,146 @@ function JSMAppContent() {
 
     return (
       <View style={styles.homeNoScrollContainer}>
-        {/* 1. Slim Greeting Strip */}
-        <View style={styles.compactGreetingStrip}>
-          <SmoothNavyGradient />
-          <Text style={styles.compactGreetingTitle} numberOfLines={1}>
-            {getGreetingByLocalTime()}, Maestro
-          </Text>
-          <Text style={styles.compactGreetingDate}>{formatReadableLocalDate(todayISO)}</Text>
-        </View>
+        <PanGestureHandler
+          activeOffsetX={[-20, 20]}
+          failOffsetY={[-15, 15]}
+          onHandlerStateChange={(e) => {
+            if (e.nativeEvent.state === State.END) {
+              handleMainTabSwipe(e);
+            }
+          }}
+        >
+          <View style={{ gap: 10 }}>
+            {/* 1. Slim Greeting Strip */}
+            <View style={styles.compactGreetingStrip}>
+              <SmoothNavyGradient />
+              <Text style={styles.compactGreetingTitle} numberOfLines={1}>
+                {getGreetingByLocalTime()}, Maestro
+              </Text>
+              <Text style={styles.compactGreetingDate}>{formatReadableLocalDate(todayISO)}</Text>
+            </View>
 
-        {/* 2. Larger Notice Board + 3 Action Cards */}
-        <View style={styles.compactActionSection}>
-          <ScalePressable
-            onPress={() => {
-              triggerHaptic(10);
-              setNoticeInput(noticeText);
-              setNoticeEditModal(true);
-            }}
-          >
-            <View style={styles.compactNoticeCard}>
-              <MaterialCommunityIcons
-                name="music-clef-treble"
-                size={56}
-                color="rgba(12, 45, 87, 0.045)"
-                style={styles.noticeWatermark}
-              />
-              <View style={styles.compactNoticeHeaderRow}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-                  <View style={styles.compactNoticeIconWrap}>
-                    <Ionicons name="megaphone-outline" size={14} color={COLORS.navy} />
+            {/* 2. Larger Notice Board + 3 Action Cards */}
+            <View style={styles.compactActionSection}>
+              <ScalePressable
+                onPress={() => {
+                  triggerHaptic(10);
+                  setNoticeInput(noticeText);
+                  setNoticeEditModal(true);
+                }}
+              >
+                <View style={styles.compactNoticeCard}>
+                  <MaterialCommunityIcons
+                    name="music-clef-treble"
+                    size={56}
+                    color="rgba(12, 45, 87, 0.045)"
+                    style={styles.noticeWatermark}
+                  />
+                  <View style={styles.compactNoticeHeaderRow}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+                      <View style={styles.compactNoticeIconWrap}>
+                        <Ionicons name="megaphone-outline" size={14} color={COLORS.navy} />
+                      </View>
+                      <Text style={styles.compactNoticeTitle}>Notice Board</Text>
+                    </View>
+                    {noticeUpdatedAt ? (
+                      <Text style={styles.compactNoticeDate}>{formatReadableLocalDate(noticeUpdatedAt)}</Text>
+                    ) : null}
                   </View>
-                  <Text style={styles.compactNoticeTitle}>Notice Board</Text>
+                  {noticeText ? (
+                    <Text style={styles.compactNoticeBody} numberOfLines={4}>
+                      {noticeText}
+                    </Text>
+                  ) : null}
                 </View>
-                {noticeUpdatedAt ? (
-                  <Text style={styles.compactNoticeDate}>{formatReadableLocalDate(noticeUpdatedAt)}</Text>
-                ) : null}
+              </ScalePressable>
+
+              <View style={styles.threeSmallCardsRow}>
+                <View style={{ flex: 1 }}>
+                  <ScalePressable
+                    onPress={() => {
+                      triggerHaptic(10);
+                      if (activeSubjects.length === 0)
+                        return Alert.alert(
+                          'Create Subject First',
+                          'Please add at least one instrument in Add Subjects first.'
+                        );
+                      setStudentForm({
+                        id: null,
+                        name: '',
+                        subjectId: activeSubjects[0]?.id || '',
+                        phone: '',
+                        guardian: '',
+                        joinedDate: getTodayISO(),
+                      });
+                      setStudentModal(true);
+                    }}
+                  >
+                    <View style={[styles.smallActionCard, styles.smallActionCardNavy]}>
+                      <SmoothNavyGradient />
+                      <View style={styles.smallCardTopRow}>
+                        <View style={styles.smallIconCircleGold}>
+                          <Ionicons name="person-add-outline" size={16} color={COLORS.gold} />
+                        </View>
+                      </View>
+                      <Text style={styles.smallCardTitleGold} numberOfLines={1}>
+                        Add Student
+                      </Text>
+                    </View>
+                  </ScalePressable>
+                </View>
+
+                <View style={{ flex: 1 }}>
+                  <ScalePressable
+                    onPress={() => {
+                      triggerHaptic(10);
+                      setSubjectForm({ id: null, name: '' });
+                      setSubjectsModal(true);
+                    }}
+                  >
+                    <View style={[styles.smallActionCard, styles.smallActionCardCream]}>
+                      <View style={styles.smallCardTopRow}>
+                        <View style={styles.smallIconCircleNavy}>
+                          <Ionicons name="musical-notes-outline" size={16} color={COLORS.navy} />
+                        </View>
+                        <View style={styles.smallCountBadge}>
+                          <Text style={styles.smallCountBadgeText}>{activeSubjects.length}</Text>
+                        </View>
+                      </View>
+                      <Text style={styles.smallCardTitleNavy} numberOfLines={1}>
+                        Add Subjects
+                      </Text>
+                    </View>
+                  </ScalePressable>
+                </View>
+
+                <View style={{ flex: 1 }}>
+                  <ScalePressable
+                    onPress={() => {
+                      triggerHaptic(10);
+                      setActivityFilterTodayOnly(false);
+                      setTodayLogModal(true);
+                    }}
+                  >
+                    <View style={[styles.smallActionCard, styles.smallActionCardWhite]}>
+                      <View style={styles.smallCardTopRow}>
+                        <View style={styles.smallIconCircleNavy}>
+                          <Ionicons name="pulse-outline" size={16} color={COLORS.navy} />
+                        </View>
+                        <View style={styles.smallCountBadge}>
+                          <Text style={styles.smallCountBadgeText}>{activeActivities.length}</Text>
+                        </View>
+                      </View>
+                      <Text style={styles.smallCardTitleNavy} numberOfLines={1}>
+                        Activity Log
+                      </Text>
+                    </View>
+                  </ScalePressable>
+                </View>
               </View>
-              {noticeText ? (
-                <Text style={styles.compactNoticeBody} numberOfLines={4}>
-                  {noticeText}
-                </Text>
-              ) : null}
-            </View>
-          </ScalePressable>
-
-          <View style={styles.threeSmallCardsRow}>
-            <View style={{ flex: 1 }}>
-              <ScalePressable
-                onPress={() => {
-                  triggerHaptic(10);
-                  if (activeSubjects.length === 0)
-                    return Alert.alert(
-                      'Create Subject First',
-                      'Please add at least one instrument in Add Subjects first.'
-                    );
-                  setStudentForm({
-                    id: null,
-                    name: '',
-                    subjectId: activeSubjects[0]?.id || '',
-                    phone: '',
-                    guardian: '',
-                    joinedDate: getTodayISO(),
-                  });
-                  setStudentModal(true);
-                }}
-              >
-                <View style={[styles.smallActionCard, styles.smallActionCardNavy]}>
-                  <SmoothNavyGradient />
-                  <View style={styles.smallCardTopRow}>
-                    <View style={styles.smallIconCircleGold}>
-                      <Ionicons name="person-add-outline" size={16} color={COLORS.gold} />
-                    </View>
-                  </View>
-                  <Text style={styles.smallCardTitleGold} numberOfLines={1}>
-                    Add Student
-                  </Text>
-                </View>
-              </ScalePressable>
-            </View>
-
-            <View style={{ flex: 1 }}>
-              <ScalePressable
-                onPress={() => {
-                  triggerHaptic(10);
-                  setSubjectForm({ id: null, name: '' });
-                  setSubjectsModal(true);
-                }}
-              >
-                <View style={[styles.smallActionCard, styles.smallActionCardCream]}>
-                  <View style={styles.smallCardTopRow}>
-                    <View style={styles.smallIconCircleNavy}>
-                      <Ionicons name="musical-notes-outline" size={16} color={COLORS.navy} />
-                    </View>
-                    <View style={styles.smallCountBadge}>
-                      <Text style={styles.smallCountBadgeText}>{activeSubjects.length}</Text>
-                    </View>
-                  </View>
-                  <Text style={styles.smallCardTitleNavy} numberOfLines={1}>
-                    Add Subjects
-                  </Text>
-                </View>
-              </ScalePressable>
-            </View>
-
-            <View style={{ flex: 1 }}>
-              <ScalePressable
-                onPress={() => {
-                  triggerHaptic(10);
-                  setActivityFilterTodayOnly(false);
-                  setTodayLogModal(true);
-                }}
-              >
-                <View style={[styles.smallActionCard, styles.smallActionCardWhite]}>
-                  <View style={styles.smallCardTopRow}>
-                    <View style={styles.smallIconCircleNavy}>
-                      <Ionicons name="pulse-outline" size={16} color={COLORS.navy} />
-                    </View>
-                    <View style={styles.smallCountBadge}>
-                      <Text style={styles.smallCountBadgeText}>{activeActivities.length}</Text>
-                    </View>
-                  </View>
-                  <Text style={styles.smallCardTitleNavy} numberOfLines={1}>
-                    Activity Log
-                  </Text>
-                </View>
-              </ScalePressable>
             </View>
           </View>
-        </View>
+        </PanGestureHandler>
 
         {/* 3. Bottom Half: Horizontal Matrix Live Firebase Widget */}
         <Surface style={styles.liveFirebaseWidget} elevation={3}>
@@ -2809,11 +3106,6 @@ function JSMAppContent() {
                   </View>
                   {activeStudents.map((st, idx) => {
                     const m = getStudentMetrics(st.id);
-                    const hasCachedWrite =
-                      st._pendingSync ||
-                      m.stLessons[0]?._pendingSync ||
-                      m.stAttendance[0]?._pendingSync ||
-                      m.stFees[0]?._pendingSync;
                     return (
                       <TouchableOpacity
                         key={st.id}
@@ -2829,14 +3121,14 @@ function JSMAppContent() {
                           <Text style={styles.matrixStudentName} numberOfLines={1}>
                             {st.name}
                           </Text>
-                          {hasCachedWrite ? (
+                          {m.hasPendingSync ? (
                             <View style={styles.cachedTag}>
                               <Text style={styles.cachedTagText}>CACHED</Text>
                             </View>
                           ) : null}
                         </View>
                         <Text style={styles.matrixStudentSub} numberOfLines={1}>
-                          {safeString(subjectMap[st.subjectId]?.name, 'Music')}
+                          {safeString(subjectMap[st.subjectId]?.name, 'Unassigned')}
                         </Text>
                       </TouchableOpacity>
                     );
@@ -2891,26 +3183,33 @@ function JSMAppContent() {
                         ? COLORS.danger
                         : COLORS.warning;
 
+                      const isOverallDue = m.feeStatus === 'Due / Unpaid';
                       const feeBg =
                         m.feeStatus === 'Paid'
                           ? COLORS.successBg
-                          : m.feeStatus === 'Due / Unpaid'
+                          : isOverallDue
                           ? COLORS.dangerBg
                           : COLORS.cream;
 
                       const feeBorder =
                         m.feeStatus === 'Paid'
                           ? '#86EFAC'
-                          : m.feeStatus === 'Due / Unpaid'
+                          : isOverallDue
                           ? '#FCA5A5'
                           : COLORS.border;
 
                       const feeColor =
                         m.feeStatus === 'Paid'
                           ? COLORS.success
-                          : m.feeStatus === 'Due / Unpaid'
+                          : isOverallDue
                           ? COLORS.danger
                           : COLORS.navy;
+
+                      const feeBadgeLabel = !latestFee
+                        ? '—'
+                        : isOverallDue
+                        ? `DUE • ₹${m.totalDue}`
+                        : `₹${latestFee.amountPaid} • ${latestFee.status.toUpperCase()}`;
 
                       return (
                         <View
@@ -2979,13 +3278,13 @@ function JSMAppContent() {
                                 style={[styles.matrixStatusBadgeText, { color: feeColor }]}
                                 numberOfLines={1}
                               >
-                                {latestFee ? `₹${latestFee.amountPaid} • ${latestFee.status.toUpperCase()}` : '—'}
+                                {feeBadgeLabel}
                               </Text>
                             </View>
                             <Text style={styles.matrixCellMeta} numberOfLines={1}>
                               {latestFee
-                                ? m.totalDue > 0
-                                  ? `Due: ₹${m.totalDue}`
+                                ? isOverallDue
+                                  ? `Last: ₹${latestFee.amountPaid} (${formatReadableLocalDate(latestFee.date)})`
                                   : formatReadableLocalDate(latestFee.date)
                                 : '—'}
                             </Text>
@@ -3027,7 +3326,7 @@ function JSMAppContent() {
                   <Text style={styles.priorityBadgeText}>☆ NOTE</Text>
                 </View>
               ) : null}
-              {st._pendingSync ? (
+              {metrics.hasPendingSync ? (
                 <View style={styles.cachedTag}>
                   <Text style={styles.cachedTagText}>CACHED</Text>
                 </View>
@@ -4036,7 +4335,7 @@ function JSMAppContent() {
       {/* Top Navigation Bar */}
       <View style={styles.gradientHeaderWrapper}>
         <SmoothNavyGradient />
-        <Appbar.Header style={{ backgroundColor: 'transparent', elevation: 0 }}>
+        <Appbar.Header statusBarHeight={0} style={{ backgroundColor: 'transparent', elevation: 0 }}>
           <Appbar.Action icon="menu" color={COLORS.gold} onPress={openDrawer} />
           <Appbar.Content
             title="JSM"
@@ -4050,22 +4349,24 @@ function JSMAppContent() {
       </View>
 
       <View style={{ flex: 1 }}>
-        <PanGestureHandler
-          activeOffsetX={10}
-          failOffsetY={[-18, 18]}
-          onHandlerStateChange={(e) => {
-            if (e.nativeEvent.state === State.END && e.nativeEvent.translationX > 24) {
-              openDrawer();
-            }
-          }}
-        >
-          <View style={styles.leftEdgeSwipeZone} />
-        </PanGestureHandler>
+        {!isInsideStudentProfile && (
+          <PanGestureHandler
+            activeOffsetX={10}
+            failOffsetY={[-18, 18]}
+            onHandlerStateChange={(e) => {
+              if (e.nativeEvent.state === State.END && e.nativeEvent.translationX > 24) {
+                openDrawer();
+              }
+            }}
+          >
+            <View style={styles.leftEdgeSwipeZone} />
+          </PanGestureHandler>
+        )}
 
         <AnimatedScreen
           direction={navDirection}
           onSwipe={handleMainTabSwipe}
-          swipeEnabled={!isInsideStudentProfile}
+          swipeEnabled={!isInsideStudentProfile && activeTab !== 'Home'}
           triggerKey={`${activeTab}-${selectedStudentId || 'list'}`}
         >
           {activeTab === 'Home' && renderHomeTab()}
@@ -4242,169 +4543,192 @@ function JSMAppContent() {
         visible={studentReportModal.visible}
         animationType="slide"
         onRequestClose={() => {
-          if (calendarPicker.visible) closeCalendarPicker();
+          if (dropdownPicker.visible) closeDropdownPicker();
+          else if (calendarPicker.visible) closeCalendarPicker();
           else setStudentReportModal({ visible: false, studentId: null, dateFilter: '' });
         }}
       >
-        <SafeAreaView style={styles.fullScreenModalSafe}>
-          <View style={styles.fullScreenModalHeader}>
-            <SmoothNavyGradient />
-            <View style={{ flex: 1, paddingRight: 8 }}>
-              <Text style={styles.fullScreenModalTitle} numberOfLines={1}>
-                {studentReportData?.student?.name || 'Student'}
-              </Text>
-              <Text style={{ color: COLORS.gold, fontSize: 11, fontWeight: '600', marginTop: 2 }}>
-                {studentReportData?.subjectName || ''}
-              </Text>
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <TouchableOpacity
-                style={[
-                  styles.quickDateChipCalendar,
-                  studentReportModal.dateFilter && { backgroundColor: COLORS.gold },
-                ]}
-                onPress={() =>
-                  openCalendarPicker(studentReportModal.dateFilter || getTodayISO(), (picked) => {
-                    setStudentReportModal((prev) => ({ ...prev, dateFilter: picked }));
-                  })
-                }
-              >
-                <Ionicons
-                  name="calendar-outline"
-                  size={14}
-                  color={studentReportModal.dateFilter ? COLORS.navy : COLORS.gold}
-                />
-                <Text
-                  style={[
-                    styles.quickDateChipCalendarText,
-                    studentReportModal.dateFilter && { color: COLORS.navy },
-                  ]}
-                >
-                  {studentReportModal.dateFilter
-                    ? formatReadableLocalDate(studentReportModal.dateFilter)
-                    : 'Date'}
+        <SafeAreaProvider>
+          <SafeAreaView style={styles.fullScreenModalSafe}>
+            <View style={styles.fullScreenModalHeader}>
+              <SmoothNavyGradient />
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={styles.fullScreenModalTitle} numberOfLines={1}>
+                  {studentReportData?.student?.name || 'Student'}
                 </Text>
-              </TouchableOpacity>
-              {studentReportModal.dateFilter ? (
+                <Text style={{ color: COLORS.gold, fontSize: 11, fontWeight: '600', marginTop: 2 }}>
+                  {studentReportData?.subjectName || ''}
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <TouchableOpacity
-                  style={styles.iconActionBtn}
-                  onPress={() => setStudentReportModal((prev) => ({ ...prev, dateFilter: '' }))}
+                  style={[
+                    styles.quickDateChipCalendar,
+                    studentReportModal.dateFilter && { backgroundColor: COLORS.gold },
+                  ]}
+                  onPress={() =>
+                    openCalendarPicker(studentReportModal.dateFilter || getTodayISO(), (picked) => {
+                      setStudentReportModal((prev) => ({ ...prev, dateFilter: picked }));
+                    })
+                  }
                 >
-                  <Ionicons name="close-outline" size={16} color={COLORS.danger} />
+                  <Ionicons
+                    name="calendar-outline"
+                    size={14}
+                    color={studentReportModal.dateFilter ? COLORS.navy : COLORS.gold}
+                  />
+                  <Text
+                    style={[
+                      styles.quickDateChipCalendarText,
+                      studentReportModal.dateFilter && { color: COLORS.navy },
+                    ]}
+                  >
+                    {studentReportModal.dateFilter
+                      ? formatReadableLocalDate(studentReportModal.dateFilter)
+                      : 'Date'}
+                  </Text>
                 </TouchableOpacity>
-              ) : null}
-              <TouchableOpacity style={styles.pdfExportTouchBtn} onPress={printStudentReport}>
-                <Ionicons name="print-outline" size={15} color={COLORS.gold} />
-                <Text style={styles.pdfExportTouchBtnText}>Print</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.fullScreenCloseBtn}
-                onPress={() => {
-                  closeCalendarPicker();
-                  setStudentReportModal({ visible: false, studentId: null, dateFilter: '' });
-                }}
-              >
-                <Ionicons name="close-outline" size={24} color={COLORS.gold} />
-              </TouchableOpacity>
+                {studentReportModal.dateFilter ? (
+                  <TouchableOpacity
+                    style={styles.iconActionBtn}
+                    onPress={() => setStudentReportModal((prev) => ({ ...prev, dateFilter: '' }))}
+                  >
+                    <Ionicons name="close-outline" size={16} color={COLORS.danger} />
+                  </TouchableOpacity>
+                ) : null}
+                <TouchableOpacity style={styles.pdfExportTouchBtn} onPress={printStudentReport}>
+                  <Ionicons name="print-outline" size={15} color={COLORS.gold} />
+                  <Text style={styles.pdfExportTouchBtnText}>Print</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.fullScreenCloseBtn}
+                  onPress={() => {
+                    closeDropdownPicker();
+                    closeCalendarPicker();
+                    setStudentReportModal({ visible: false, studentId: null, dateFilter: '' });
+                  }}
+                >
+                  <Ionicons name="close-outline" size={24} color={COLORS.gold} />
+                </TouchableOpacity>
+              </View>
             </View>
-          </View>
 
-          {studentReportData ? (
-            <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-              {studentReportData.student.notes ? (
-                <Surface style={styles.whiteCard} elevation={2}>
-                  <Text style={styles.sectionTitle}>NOTES</Text>
-                  <Text style={[styles.recordDetailLine, { marginTop: 6 }]}>
-                    {studentReportData.student.notes}
-                  </Text>
-                </Surface>
-              ) : null}
-
-              <View style={styles.groupBlock}>
-                <View style={styles.groupHeaderBar}>
-                  <Text style={styles.groupHeaderTitle}>CLASSES</Text>
-                  <Text style={styles.groupHeaderCount}>{studentReportData.stLessons.length}</Text>
-                </View>
-                {studentReportData.stLessons.map((les) => (
-                  <Surface key={les.id} style={styles.cleanRecordCard} elevation={1}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(les.date)}</Text>
-                      {les.lesson ? (
-                        <Text style={styles.recordDetailLine}>
-                          <Text style={styles.boldLabel}>Lesson: </Text>
-                          {les.lesson}
-                        </Text>
-                      ) : null}
-                      {les.technique ? (
-                        <Text style={styles.recordDetailLine}>
-                          <Text style={styles.boldLabel}>Technique: </Text>
-                          {les.technique}
-                        </Text>
-                      ) : null}
-                      {les.repertoire ? (
-                        <Text style={styles.recordDetailLine}>
-                          <Text style={styles.boldLabel}>Repertoire: </Text>
-                          {les.repertoire}
-                        </Text>
-                      ) : null}
-                      {les.assignment ? (
-                        <Text style={styles.recordDetailLine}>
-                          <Text style={styles.boldLabel}>Assignment: </Text>
-                          {les.assignment}
-                        </Text>
-                      ) : null}
-                    </View>
+            {studentReportData ? (
+              <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+                {studentReportData.student.notes ? (
+                  <Surface style={styles.whiteCard} elevation={2}>
+                    <Text style={styles.sectionTitle}>NOTES</Text>
+                    <Text style={[styles.recordDetailLine, { marginTop: 6 }]}>
+                      {studentReportData.student.notes}
+                    </Text>
                   </Surface>
-                ))}
-              </View>
+                ) : null}
 
-              <View style={styles.groupBlock}>
-                <View style={styles.groupHeaderBar}>
-                  <Text style={styles.groupHeaderTitle}>ATTENDANCE</Text>
-                  <Text style={styles.groupHeaderCount}>{studentReportData.stAtt.length}</Text>
+                <View style={styles.groupBlock}>
+                  <View style={styles.groupHeaderBar}>
+                    <Text style={styles.groupHeaderTitle}>CLASSES</Text>
+                    <Text style={styles.groupHeaderCount}>{studentReportData.stLessons.length}</Text>
+                  </View>
+                  {studentReportData.stLessons.length === 0 ? (
+                    <Surface style={styles.whiteCard} elevation={1}>
+                      <EmptyStateWatermark compact message="" />
+                    </Surface>
+                  ) : (
+                    studentReportData.stLessons.map((les) => (
+                      <Surface key={les.id} style={styles.cleanRecordCard} elevation={1}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(les.date)}</Text>
+                          {les.lesson ? (
+                            <Text style={styles.recordDetailLine}>
+                              <Text style={styles.boldLabel}>Lesson: </Text>
+                              {les.lesson}
+                            </Text>
+                          ) : null}
+                          {les.technique ? (
+                            <Text style={styles.recordDetailLine}>
+                              <Text style={styles.boldLabel}>Technique: </Text>
+                              {les.technique}
+                            </Text>
+                          ) : null}
+                          {les.repertoire ? (
+                            <Text style={styles.recordDetailLine}>
+                              <Text style={styles.boldLabel}>Repertoire: </Text>
+                              {les.repertoire}
+                            </Text>
+                          ) : null}
+                          {les.assignment ? (
+                            <Text style={styles.recordDetailLine}>
+                              <Text style={styles.boldLabel}>Assignment: </Text>
+                              {les.assignment}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </Surface>
+                    ))
+                  )}
                 </View>
-                {studentReportData.stAtt.map((att) => (
-                  <Surface key={att.id} style={styles.cleanRecordCard} elevation={1}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(att.date)}</Text>
-                      {att.remarks ? <Text style={styles.recordSecondarySub}>{att.remarks}</Text> : null}
-                    </View>
-                    <View style={styles.statusPill}>
-                      <Text style={styles.statusPillText}>{att.status}</Text>
-                    </View>
-                  </Surface>
-                ))}
-              </View>
 
-              <View style={styles.groupBlock}>
-                <View style={styles.groupHeaderBar}>
-                  <Text style={styles.groupHeaderTitle}>FEES</Text>
-                  <Text style={styles.groupHeaderCount}>
-                    Paid ₹{studentReportData.totalPaid} • Due ₹{studentReportData.totalDue}
-                  </Text>
+                <View style={styles.groupBlock}>
+                  <View style={styles.groupHeaderBar}>
+                    <Text style={styles.groupHeaderTitle}>ATTENDANCE</Text>
+                    <Text style={styles.groupHeaderCount}>{studentReportData.stAtt.length}</Text>
+                  </View>
+                  {studentReportData.stAtt.length === 0 ? (
+                    <Surface style={styles.whiteCard} elevation={1}>
+                      <EmptyStateWatermark compact message="" />
+                    </Surface>
+                  ) : (
+                    studentReportData.stAtt.map((att) => (
+                      <Surface key={att.id} style={styles.cleanRecordCard} elevation={1}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.recordPrimaryTitle}>{formatReadableLocalDate(att.date)}</Text>
+                          {att.remarks ? <Text style={styles.recordSecondarySub}>{att.remarks}</Text> : null}
+                        </View>
+                        <View style={styles.statusPill}>
+                          <Text style={styles.statusPillText}>{att.status}</Text>
+                        </View>
+                      </Surface>
+                    ))
+                  )}
                 </View>
-                {studentReportData.stFees.map((fee) => (
-                  <Surface key={fee.id} style={styles.cleanRecordCard} elevation={1}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.recordPrimaryTitle}>
-                        {fee.feeType}
-                        {fee.feeType === 'Monthly Fee' && fee.monthPaidFor ? ` • ${fee.monthPaidFor}` : ''}
-                      </Text>
-                      <Text style={styles.recordSecondarySub}>
-                        {formatReadableLocalDate(fee.date)} • {fee.mode} • {fee.status}
-                      </Text>
-                      <Text style={styles.recordDetailLine}>
-                        Paid: ₹{fee.amountPaid}
-                        {safeNumber(fee.balanceDue, 0) > 0 ? ` | Balance: ₹${fee.balanceDue}` : ''}
-                      </Text>
-                    </View>
-                  </Surface>
-                ))}
-              </View>
-            </ScrollView>
-          ) : null}
-          {renderCalendarOverlay()}
-        </SafeAreaView>
+
+                <View style={styles.groupBlock}>
+                  <View style={styles.groupHeaderBar}>
+                    <Text style={styles.groupHeaderTitle}>FEES</Text>
+                    <Text style={styles.groupHeaderCount}>
+                      Paid ₹{studentReportData.totalPaid} • Due ₹{studentReportData.totalDue}
+                    </Text>
+                  </View>
+                  {studentReportData.stFees.length === 0 ? (
+                    <Surface style={styles.whiteCard} elevation={1}>
+                      <EmptyStateWatermark compact message="" />
+                    </Surface>
+                  ) : (
+                    studentReportData.stFees.map((fee) => (
+                      <Surface key={fee.id} style={styles.cleanRecordCard} elevation={1}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.recordPrimaryTitle}>
+                            {fee.feeType}
+                            {fee.feeType === 'Monthly Fee' && fee.monthPaidFor ? ` • ${fee.monthPaidFor}` : ''}
+                          </Text>
+                          <Text style={styles.recordSecondarySub}>
+                            {formatReadableLocalDate(fee.date)} • {fee.mode} • {fee.status}
+                          </Text>
+                          <Text style={styles.recordDetailLine}>
+                            Paid: ₹{fee.amountPaid}
+                            {safeNumber(fee.balanceDue, 0) > 0 ? ` | Balance: ₹${fee.balanceDue}` : ''}
+                          </Text>
+                        </View>
+                      </Surface>
+                    ))
+                  )}
+                </View>
+              </ScrollView>
+            ) : null}
+            {renderCalendarOverlay()}
+            {renderDropdownOverlay()}
+          </SafeAreaView>
+        </SafeAreaProvider>
       </Modal>
 
       {/* MASTER LIST & REPORT GENERATOR MODAL (WITH STREAMLINED DROPDOWN FILTERS) */}
@@ -4417,177 +4741,180 @@ function JSMAppContent() {
           else setMasterListModal(false);
         }}
       >
-        <SafeAreaView style={styles.fullScreenModalSafe}>
-          <View style={styles.fullScreenModalHeader}>
-            <SmoothNavyGradient />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.fullScreenModalTitle}>Master Student List</Text>
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-              <TouchableOpacity style={styles.pdfExportTouchBtn} onPress={exportMasterListPDF}>
-                <Ionicons name="print-outline" size={15} color={COLORS.gold} />
-                <Text style={styles.pdfExportTouchBtnText}>Print</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.fullScreenCloseBtn}
-                onPress={() => {
-                  closeDropdownPicker();
-                  closeCalendarPicker();
-                  setMasterListModal(false);
-                }}
-              >
-                <Ionicons name="close-outline" size={26} color={COLORS.gold} />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          <View style={styles.masterFilterSection}>
-            <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-              <DropdownField
-                compact
-                label="Student"
-                style={{ flex: 1, marginBottom: 0 }}
-                valueLabel={
-                  masterStudentFilter === 'ALL'
-                    ? `All Students (${activeStudents.length})`
-                    : studentMap[masterStudentFilter]?.name || 'Select'
-                }
-                onPress={() =>
-                  openDropdownPicker(
-                    'Select Student',
-                    [
-                      { label: `All Students (${activeStudents.length})`, value: 'ALL' },
-                      ...activeStudents.map((st) => ({ label: st.name, value: st.id })),
-                    ],
-                    masterStudentFilter,
-                    (val) => setMasterStudentFilter(val)
-                  )
-                }
-              />
-
-              <DropdownField
-                compact
-                label="Month"
-                style={{ flex: 1, marginBottom: 0 }}
-                valueLabel={
-                  masterDateFilter
-                    ? formatReadableLocalDate(masterDateFilter)
-                    : masterMonthFilter === 'ALL'
-                    ? 'All Time'
-                    : masterMonthFilter
-                }
-                onPress={() =>
-                  openDropdownPicker(
-                    'Select Period',
-                    [
-                      { label: 'All Time', value: 'ALL' },
-                      ...availableMasterMonths.map((m) => ({ label: m, value: m })),
-                    ],
-                    masterMonthFilter,
-                    (val) => {
-                      setMasterDateFilter('');
-                      setMasterMonthFilter(val);
-                    }
-                  )
-                }
-              />
-
-              <TouchableOpacity
-                style={[styles.calendarIconBtn, masterDateFilter && { backgroundColor: COLORS.gold }]}
-                onPress={() =>
-                  openCalendarPicker(masterDateFilter || getTodayISO(), (picked) => {
-                    setMasterDateFilter(picked);
-                  })
-                }
-              >
-                <Ionicons
-                  name="calendar-outline"
-                  size={18}
-                  color={masterDateFilter ? COLORS.navy : COLORS.gold}
-                />
-              </TouchableOpacity>
-              {masterDateFilter ? (
-                <TouchableOpacity
-                  style={styles.iconActionBtn}
-                  onPress={() => setMasterDateFilter('')}
-                >
-                  <Ionicons name="close-outline" size={18} color={COLORS.danger} />
+        <SafeAreaProvider>
+          <SafeAreaView style={styles.fullScreenModalSafe}>
+            <View style={styles.fullScreenModalHeader}>
+              <SmoothNavyGradient />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.fullScreenModalTitle}>Master Student List</Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <TouchableOpacity style={styles.pdfExportTouchBtn} onPress={exportMasterListPDF}>
+                  <Ionicons name="print-outline" size={15} color={COLORS.gold} />
+                  <Text style={styles.pdfExportTouchBtnText}>Print</Text>
                 </TouchableOpacity>
-              ) : null}
-            </View>
-          </View>
-
-          <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-            {masterListData.length === 0 ? (
-              <Surface style={styles.whiteCard} elevation={2}>
-                <EmptyStateWatermark compact message="" />
-              </Surface>
-            ) : (
-              masterListData.map((row) => (
-                <Surface
-                  key={row.student.id}
-                  style={[styles.whiteCard, { marginBottom: 12, padding: 16 }]}
-                  elevation={2}
+                <TouchableOpacity
+                  style={styles.fullScreenCloseBtn}
+                  onPress={() => {
+                    closeDropdownPicker();
+                    closeCalendarPicker();
+                    setMasterListModal(false);
+                  }}
                 >
-                  <View style={styles.cardHeaderRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.recordPrimaryTitle}>
-                        {row.student.name} • {row.subjectName}
-                      </Text>
-                      <Text style={styles.recordSecondarySub}>
-                        Classes: {row.stLessons.length} • Present: {row.presentCount} • Absent: {row.absentCount} • Rescheduled: {row.reschedCount}
-                      </Text>
-                    </View>
-                    <View
-                      style={[
-                        styles.feeBadge,
-                        row.totalDue > 0 ? styles.feeBadgeDue : styles.feeBadgePaid,
-                      ]}
-                    >
-                      <Text style={styles.feeBadgeText}>
-                        {row.totalDue > 0 ? `Due ₹${row.totalDue}` : `Paid ₹${row.totalPaid}`}
-                      </Text>
-                    </View>
-                  </View>
-                  <Text style={[styles.recordDetailLine, { marginTop: 8 }]} numberOfLines={2}>
-                    <Text style={styles.boldLabel}>Classes: </Text>
-                    {row.stLessons.length > 0
-                      ? row.stLessons
-                          .slice(0, 3)
-                          .map(
-                            (l) =>
-                              `${formatReadableLocalDate(l.date)} (${
-                                [l.lesson, l.technique, l.repertoire].filter(Boolean).join(', ') || 'Logged'
-                              })`
-                          )
-                          .join('  •  ')
-                      : '—'}
-                  </Text>
-                  <Text style={styles.recordDetailLine} numberOfLines={2}>
-                    <Text style={styles.boldLabel}>Attendance: </Text>
-                    {row.stAtt.length > 0
-                      ? row.stAtt
-                          .slice(0, 4)
-                          .map((a) => `${formatReadableLocalDate(a.date)}: ${a.status}`)
-                          .join('  •  ')
-                      : '—'}
-                  </Text>
-                  <Text style={styles.recordDetailLine} numberOfLines={2}>
-                    <Text style={styles.boldLabel}>Fees: </Text>
-                    {row.stFees.length > 0
-                      ? row.stFees
-                          .slice(0, 3)
-                          .map((f) => `${formatReadableLocalDate(f.date)}: ₹${f.amountPaid} (${f.status})`)
-                          .join('  •  ')
-                      : '—'}
-                  </Text>
+                  <Ionicons name="close-outline" size={26} color={COLORS.gold} />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={styles.masterFilterSection}>
+              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                <DropdownField
+                  compact
+                  label="Student"
+                  style={{ flex: 1, marginBottom: 0 }}
+                  valueLabel={
+                    masterStudentFilter === 'ALL'
+                      ? `All Students (${activeStudents.length})`
+                      : studentMap[masterStudentFilter]?.name || 'Select'
+                  }
+                  onPress={() =>
+                    openDropdownPicker(
+                      'Select Student',
+                      [
+                        { label: `All Students (${activeStudents.length})`, value: 'ALL' },
+                        ...activeStudents.map((st) => ({ label: st.name, value: st.id })),
+                      ],
+                      masterStudentFilter,
+                      (val) => setMasterStudentFilter(val)
+                    )
+                  }
+                />
+
+                <DropdownField
+                  compact
+                  label="Month"
+                  style={{ flex: 1, marginBottom: 0 }}
+                  valueLabel={
+                    masterDateFilter
+                      ? formatReadableLocalDate(masterDateFilter)
+                      : masterMonthFilter === 'ALL'
+                      ? 'All Time'
+                      : masterMonthFilter
+                  }
+                  onPress={() =>
+                    openDropdownPicker(
+                      'Select Period',
+                      [
+                        { label: 'All Time', value: 'ALL' },
+                        ...availableMasterMonths.map((m) => ({ label: m, value: m })),
+                      ],
+                      masterMonthFilter,
+                      (val) => {
+                        setMasterDateFilter('');
+                        setMasterMonthFilter(val);
+                      }
+                    )
+                  }
+                />
+
+                <TouchableOpacity
+                  style={[styles.calendarIconBtn, masterDateFilter && { backgroundColor: COLORS.gold }]}
+                  onPress={() =>
+                    openCalendarPicker(masterDateFilter || getTodayISO(), (picked) => {
+                      setMasterMonthFilter('ALL');
+                      setMasterDateFilter(picked);
+                    })
+                  }
+                >
+                  <Ionicons
+                    name="calendar-outline"
+                    size={18}
+                    color={masterDateFilter ? COLORS.navy : COLORS.gold}
+                  />
+                </TouchableOpacity>
+                {masterDateFilter ? (
+                  <TouchableOpacity
+                    style={styles.iconActionBtn}
+                    onPress={() => setMasterDateFilter('')}
+                  >
+                    <Ionicons name="close-outline" size={18} color={COLORS.danger} />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            </View>
+
+            <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+              {masterListData.length === 0 ? (
+                <Surface style={styles.whiteCard} elevation={2}>
+                  <EmptyStateWatermark compact message="" />
                 </Surface>
-              ))
-            )}
-          </ScrollView>
-          {renderCalendarOverlay()}
-          {renderDropdownOverlay()}
-        </SafeAreaView>
+              ) : (
+                masterListData.map((row) => (
+                  <Surface
+                    key={row.student.id}
+                    style={[styles.whiteCard, { marginBottom: 12, padding: 16 }]}
+                    elevation={2}
+                  >
+                    <View style={styles.cardHeaderRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.recordPrimaryTitle}>
+                          {row.student.name} • {row.subjectName}
+                        </Text>
+                        <Text style={styles.recordSecondarySub}>
+                          Classes: {row.stLessons.length} • Present: {row.presentCount} • Absent: {row.absentCount} • Rescheduled: {row.reschedCount}
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.feeBadge,
+                          row.totalDue > 0 ? styles.feeBadgeDue : styles.feeBadgePaid,
+                        ]}
+                      >
+                        <Text style={styles.feeBadgeText}>
+                          {row.totalDue > 0 ? `Due ₹${row.totalDue}` : `Paid ₹${row.totalPaid}`}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={[styles.recordDetailLine, { marginTop: 8 }]} numberOfLines={2}>
+                      <Text style={styles.boldLabel}>Classes: </Text>
+                      {row.stLessons.length > 0
+                        ? row.stLessons
+                            .slice(0, 3)
+                            .map(
+                              (l) =>
+                                `${formatReadableLocalDate(l.date)} (${
+                                  [l.lesson, l.technique, l.repertoire].filter(Boolean).join(', ') || 'Logged'
+                                })`
+                            )
+                            .join('  •  ')
+                        : '—'}
+                    </Text>
+                    <Text style={styles.recordDetailLine} numberOfLines={2}>
+                      <Text style={styles.boldLabel}>Attendance: </Text>
+                      {row.stAtt.length > 0
+                        ? row.stAtt
+                            .slice(0, 4)
+                            .map((a) => `${formatReadableLocalDate(a.date)}: ${a.status}`)
+                            .join('  •  ')
+                        : '—'}
+                    </Text>
+                    <Text style={styles.recordDetailLine} numberOfLines={2}>
+                      <Text style={styles.boldLabel}>Fees: </Text>
+                      {row.stFees.length > 0
+                        ? row.stFees
+                            .slice(0, 3)
+                            .map((f) => `${formatReadableLocalDate(f.date)}: ₹${f.amountPaid} (${f.status})`)
+                            .join('  •  ')
+                        : '—'}
+                    </Text>
+                  </Surface>
+                ))
+              )}
+            </ScrollView>
+            {renderCalendarOverlay()}
+            {renderDropdownOverlay()}
+          </SafeAreaView>
+        </SafeAreaProvider>
       </Modal>
 
       {/* BOTTOM-SLIDING CONTEXTUAL ACTION SHEET */}
@@ -4626,7 +4953,7 @@ function JSMAppContent() {
 
       {/* NOTICE BOARD MODAL */}
       <Modal visible={noticeEditModal} transparent animationType="fade" onRequestClose={() => setNoticeEditModal(false)}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
             <View style={styles.cardHeaderRow}>
               <Text style={styles.sectionTitle}>NOTICE BOARD</Text>
@@ -4684,91 +5011,93 @@ function JSMAppContent() {
 
       {/* FULL-SCREEN ACTIVITY LOG MODAL */}
       <Modal visible={todayLogModal} animationType="slide" onRequestClose={() => setTodayLogModal(false)}>
-        <SafeAreaView style={styles.fullScreenModalSafe}>
-          <View style={styles.fullScreenModalHeader}>
-            <SmoothNavyGradient />
-            <Text style={styles.fullScreenModalTitle}>Activity Log</Text>
-            <TouchableOpacity
-              style={styles.fullScreenCloseBtn}
-              onPress={() => setTodayLogModal(false)}
-            >
-              <Ionicons name="close-outline" size={26} color={COLORS.gold} />
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.fullScreenModalToolbar}>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
+        <SafeAreaProvider>
+          <SafeAreaView style={styles.fullScreenModalSafe}>
+            <View style={styles.fullScreenModalHeader}>
+              <SmoothNavyGradient />
+              <Text style={styles.fullScreenModalTitle}>Activity Log</Text>
               <TouchableOpacity
-                style={[styles.choiceChip, !activityFilterTodayOnly && styles.choiceChipSelected]}
-                onPress={() => setActivityFilterTodayOnly(false)}
+                style={styles.fullScreenCloseBtn}
+                onPress={() => setTodayLogModal(false)}
               >
-                <Text style={[styles.choiceChipText, !activityFilterTodayOnly && styles.choiceChipTextSelected]}>
-                  All ({activeActivities.length})
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.choiceChip, activityFilterTodayOnly && styles.choiceChipSelected]}
-                onPress={() => setActivityFilterTodayOnly(true)}
-              >
-                <Text style={[styles.choiceChipText, activityFilterTodayOnly && styles.choiceChipTextSelected]}>
-                  Today
-                </Text>
+                <Ionicons name="close-outline" size={26} color={COLORS.gold} />
               </TouchableOpacity>
             </View>
-            {displayedActivities.length > 0 ? (
-              <TouchableOpacity
-                style={styles.dangerOutlineBtnSmall}
-                onPress={() => handleClearAllActivities(activityFilterTodayOnly)}
-              >
-                <Ionicons name="trash-outline" size={13} color={COLORS.danger} />
-                <Text style={styles.dangerOutlineBtnSmallText}>Clear All</Text>
-              </TouchableOpacity>
-            ) : null}
-          </View>
 
-          <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-            {displayedActivities.length === 0 ? (
-              <Surface style={styles.whiteCard} elevation={2}>
-                <EmptyStateWatermark compact message="" />
-              </Surface>
-            ) : (
-              displayedActivities.map((act) => (
-                <ScalePressable
-                  key={act.id}
-                  onLongPress={() => {
-                    setTodayLogModal(false);
-                    scheduleTimeout(
-                      () =>
-                        openLongPressMenu(
-                          'activity',
-                          act,
-                          `${act.title}${act.subtitle ? ` • ${act.subtitle}` : ''}`,
-                          false,
-                          true
-                        ),
-                      220
-                    );
-                  }}
+            <View style={styles.fullScreenModalToolbar}>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TouchableOpacity
+                  style={[styles.choiceChip, !activityFilterTodayOnly && styles.choiceChipSelected]}
+                  onPress={() => setActivityFilterTodayOnly(false)}
                 >
-                  <Surface style={styles.cleanRecordCard} elevation={2}>
-                    <View style={styles.activityDot} />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.activityTitle}>{act.title}</Text>
-                      {act.subtitle ? <Text style={styles.activitySub}>{act.subtitle}</Text> : null}
-                    </View>
-                    <Text style={styles.silverMeta}>{formatReadableLocalDate(act.dateISO)}</Text>
-                  </Surface>
-                </ScalePressable>
-              ))
-            )}
-          </ScrollView>
-        </SafeAreaView>
+                  <Text style={[styles.choiceChipText, !activityFilterTodayOnly && styles.choiceChipTextSelected]}>
+                    All ({activeActivities.length})
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.choiceChip, activityFilterTodayOnly && styles.choiceChipSelected]}
+                  onPress={() => setActivityFilterTodayOnly(true)}
+                >
+                  <Text style={[styles.choiceChipText, activityFilterTodayOnly && styles.choiceChipTextSelected]}>
+                    Today
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              {displayedActivities.length > 0 ? (
+                <TouchableOpacity
+                  style={styles.dangerOutlineBtnSmall}
+                  onPress={() => handleClearAllActivities(activityFilterTodayOnly)}
+                >
+                  <Ionicons name="trash-outline" size={13} color={COLORS.danger} />
+                  <Text style={styles.dangerOutlineBtnSmallText}>Clear All</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+
+            <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+              {displayedActivities.length === 0 ? (
+                <Surface style={styles.whiteCard} elevation={2}>
+                  <EmptyStateWatermark compact message="" />
+                </Surface>
+              ) : (
+                displayedActivities.map((act) => (
+                  <ScalePressable
+                    key={act.id}
+                    onLongPress={() => {
+                      setTodayLogModal(false);
+                      scheduleTimeout(
+                        () =>
+                          openLongPressMenu(
+                            'activity',
+                            act,
+                            `${act.title}${act.subtitle ? ` • ${act.subtitle}` : ''}`,
+                            false,
+                            true
+                          ),
+                        220
+                      );
+                    }}
+                  >
+                    <Surface style={styles.cleanRecordCard} elevation={2}>
+                      <View style={styles.activityDot} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.activityTitle}>{act.title}</Text>
+                        {act.subtitle ? <Text style={styles.activitySub}>{act.subtitle}</Text> : null}
+                      </View>
+                      <Text style={styles.silverMeta}>{formatReadableLocalDate(act.dateISO)}</Text>
+                    </Surface>
+                  </ScalePressable>
+                ))
+              )}
+            </ScrollView>
+          </SafeAreaView>
+        </SafeAreaProvider>
       </Modal>
 
       {/* MANAGE SUBJECTS MODAL */}
       <Modal visible={subjectsModal} transparent animationType="fade" onRequestClose={closeSubjectsModalClean}>
         <GestureHandlerRootView style={{ flex: 1 }}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
             <Surface style={styles.modalCard} elevation={5}>
               <Text style={styles.sectionTitle}>SUBJECTS</Text>
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, alignItems: 'center' }}>
@@ -4889,7 +5218,7 @@ function JSMAppContent() {
           else setStudentModal(false);
         }}
       >
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
             <Text style={styles.sectionTitle}>
               {studentForm.id ? 'EDIT STUDENT' : 'NEW STUDENT'}
@@ -4906,15 +5235,29 @@ function JSMAppContent() {
               />
               <DropdownField
                 label="Subject *"
-                valueLabel={subjectMap[studentForm.subjectId]?.name || 'Select Subject'}
-                onPress={() =>
+                valueLabel={
+                  subjectMap[studentForm.subjectId]?.name
+                    ? `${subjectMap[studentForm.subjectId].name}${
+                        subjectMap[studentForm.subjectId].isDeleted ? ' (In Trash)' : ''
+                      }`
+                    : 'Select Subject'
+                }
+                onPress={() => {
+                  const currentSubj = subjectMap[studentForm.subjectId];
+                  const subjOptions = activeSubjects.map((s) => ({ label: s.name, value: s.id }));
+                  if (currentSubj && currentSubj.isDeleted) {
+                    subjOptions.unshift({
+                      label: `${currentSubj.name} (In Trash)`,
+                      value: currentSubj.id,
+                    });
+                  }
                   openDropdownPicker(
                     'Select Subject',
-                    activeSubjects.map((s) => ({ label: s.name, value: s.id })),
+                    subjOptions,
                     studentForm.subjectId,
                     (val) => setStudentForm({ ...studentForm, subjectId: val })
-                  )
-                }
+                  );
+                }}
               />
               <PaperInput
                 mode="outlined"
@@ -4998,7 +5341,7 @@ function JSMAppContent() {
           else setLessonEditModal(false);
         }}
       >
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
             <Text style={styles.sectionTitle}>EDIT LESSON</Text>
             <ScrollView style={{ maxHeight: 360, marginTop: 8 }} keyboardShouldPersistTaps="handled">
@@ -5100,7 +5443,7 @@ function JSMAppContent() {
           else setAttendanceModal(false);
         }}
       >
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
             <Text style={styles.sectionTitle}>
               {attendanceModalForm.id ? 'EDIT ATTENDANCE' : 'MARK ATTENDANCE'}
@@ -5226,7 +5569,7 @@ function JSMAppContent() {
           else setFeeModal(false);
         }}
       >
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
           <Surface style={styles.modalCard} elevation={5}>
             <Text style={styles.sectionTitle}>{feeForm.id ? 'EDIT FEE' : 'RECORD FEE'}</Text>
             <ScrollView style={{ maxHeight: 420, marginTop: 10 }} keyboardShouldPersistTaps="handled">
@@ -6236,6 +6579,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 26,
+    minHeight: 84,
+    overflow: 'hidden',
     position: 'relative',
   },
   watermarkIcon: {
