@@ -680,6 +680,7 @@ function JSMAppContent() {
   const drawerBackdropAnim = useRef(new Animated.Value(0)).current;
   const liveDotPulseAnim = useRef(new Animated.Value(1)).current;
   const savingLockRef = useRef(false);
+  const pendingFeeWriteIdRef = useRef(null);
   const isMountedRef = useRef(true);
   const pendingTimeoutsRef = useRef([]);
   const purgingIdsRef = useRef(new Set());
@@ -711,6 +712,9 @@ function JSMAppContent() {
   const [studentSearch, setStudentSearch] = useState('');
   const [studentFilter, setStudentFilter] = useState('All');
   const [collapsedSubjects, setCollapsedSubjects] = useState({});
+  const [studentDisplayLimit, setStudentDisplayLimit] = useState(50);
+  const [attendanceHistoryLimit, setAttendanceHistoryLimit] = useState(50);
+  const [trashDisplayLimit, setTrashDisplayLimit] = useState(50);
 
   const [attendanceViewMode, setAttendanceViewMode] = useState('Roster'); // 'Roster' | 'History'
   const [rosterDate, setRosterDate] = useState(getTodayISO());
@@ -2626,8 +2630,10 @@ function JSMAppContent() {
           `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ₹${numericPaid}`
         );
       } else {
+        const feeWriteId = pendingFeeWriteIdRef.current || doc(collection(db, 'fees')).id;
+        pendingFeeWriteIdRef.current = feeWriteId;
         await withWriteTimeout(
-          addDoc(collection(db, 'fees'), {
+          setDoc(doc(db, 'fees', feeWriteId), {
             ...payload,
             timestamp: Date.now(),
             isDeleted: false,
@@ -2639,6 +2645,7 @@ function JSMAppContent() {
           `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ₹${numericPaid} (${payload.status})`
         );
       }
+      pendingFeeWriteIdRef.current = null;
       closeCalendarPicker();
       closeDropdownPicker();
       setFeeModal(false);
@@ -3568,7 +3575,8 @@ function JSMAppContent() {
       return true;
     });
     const activeSubjectIdSet = new Set(activeSubjects.map((s) => s.id));
-    const unassignedStudents = filteredStudents.filter((st) => !activeSubjectIdSet.has(st.subjectId));
+    const visibleStudents = filteredStudents.slice(0, studentDisplayLimit);
+    const unassignedStudents = visibleStudents.filter((st) => !activeSubjectIdSet.has(st.subjectId));
 
     const filterOptions = [
       { value: 'All', label: `All Students (${activeStudents.length})` },
@@ -3675,7 +3683,7 @@ function JSMAppContent() {
         ) : (
           <>
             {activeSubjects.map((subj) => {
-              const subjStudents = filteredStudents.filter((s) => s.subjectId === subj.id);
+              const subjStudents = visibleStudents.filter((s) => s.subjectId === subj.id);
               if ((query || studentFilter !== 'All') && subjStudents.length === 0) return null;
               const isCollapsed = Boolean(collapsedSubjects[subj.id]);
 
@@ -3740,6 +3748,11 @@ function JSMAppContent() {
                   </Surface>
                 )}
               </View>
+            )}
+            {visibleStudents.length < filteredStudents.length && (
+              <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setStudentDisplayLimit((n) => n + 50)}>
+                Load 50 more students ({filteredStudents.length - visibleStudents.length} remaining)
+              </PaperButton>
             )}
           </>
         )}
@@ -4295,10 +4308,11 @@ function JSMAppContent() {
     const filteredRecords = attendanceFilterAllMonths
       ? activeAttendance
       : activeAttendance.filter((a) => isWithinLastTwoLocalMonths(a.date));
+    const visibleHistoryRecords = filteredRecords.slice(0, attendanceHistoryLimit);
 
     const historyByDate = [];
     const dateBuckets = {};
-    filteredRecords.forEach((rec) => {
+    visibleHistoryRecords.forEach((rec) => {
       const dKey = rec.date || 'Unknown';
       if (!dateBuckets[dKey]) {
         dateBuckets[dKey] = [];
@@ -4608,6 +4622,11 @@ function JSMAppContent() {
                   </Surface>
                 </View>
               ))
+            )}
+            {visibleHistoryRecords.length < filteredRecords.length && (
+              <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setAttendanceHistoryLimit((n) => n + 50)}>
+                Load 50 more records ({filteredRecords.length - visibleHistoryRecords.length} remaining)
+              </PaperButton>
             )}
           </>
         )}
@@ -4927,7 +4946,7 @@ function JSMAppContent() {
             <EmptyStateWatermark compact message="" />
           </Surface>
         ) : (
-          trashItems.map((item) => {
+          trashItems.slice(0, trashDisplayLimit).map((item) => {
             const daysLeft = getDaysRemainingInTrash(item.deletedAt);
             return (
               <ScalePressable
@@ -4959,6 +4978,11 @@ function JSMAppContent() {
               </ScalePressable>
             );
           })
+        )}
+        {trashItems.length > trashDisplayLimit && (
+          <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setTrashDisplayLimit((n) => n + 50)}>
+            Load 50 more items ({trashItems.length - trashDisplayLimit} remaining)
+          </PaperButton>
         )}
       </ScrollView>
     );
