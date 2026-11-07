@@ -164,6 +164,14 @@ const safeNumber = (val, fallback = 0) => {
   return Number.isFinite(n) ? n : fallback;
 };
 
+const getInitials = (nameStr) => {
+  const clean = safeString(nameStr).trim();
+  if (!clean) return '?';
+  const parts = clean.split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+};
+
 const normalizeISODate = (rawStr) => {
   if (!rawStr || typeof rawStr !== 'string') return null;
   const match = rawStr.trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
@@ -173,6 +181,13 @@ const normalizeISODate = (rawStr) => {
   const checkDate = new Date(year, month - 1, day);
   if (checkDate.getFullYear() !== year || checkDate.getMonth() !== month - 1 || checkDate.getDate() !== day) return null;
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+};
+
+const shiftISODate = (isoDateStr, deltaDays) => {
+  const norm = normalizeISODate(isoDateStr);
+  const base = norm ? new Date(norm.split('-').map(Number)[0], norm.split('-').map(Number)[1] - 1, norm.split('-').map(Number)[2]) : new Date();
+  base.setDate(base.getDate() + deltaDays);
+  return `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, '0')}-${String(base.getDate()).padStart(2, '0')}`;
 };
 
 const sanitizeDocRecord = (id, raw = {}, hasPendingWrites = false, colName = '') => {
@@ -414,7 +429,7 @@ const ScalePressable = ({ children, onPress, onLongPress, delayLongPress = 280, 
 
   const handlePressIn = useCallback(() => {
     Animated.spring(scaleAnim, {
-      toValue: 0.96,
+      toValue: 0.97,
       useNativeDriver: true,
       speed: 40,
       bounciness: 4,
@@ -446,7 +461,6 @@ const ScalePressable = ({ children, onPress, onLongPress, delayLongPress = 280, 
   );
 };
 
-// Minimalist Dropdown Selector matching Paper Outlined Inputs
 const DropdownField = ({ label, valueLabel, onPress, style, compact = false }) => (
   <TouchableOpacity
     activeOpacity={0.75}
@@ -631,7 +645,6 @@ const AnimatedScreen = ({ children, triggerKey, direction, onSwipe, swipeEnabled
   );
 };
 
-// Minimal QuickDateRow: Only "Today" and "Pick Date"
 const QuickDateRow = ({ currentDate, onSelectDate, onOpenCalendar }) => {
   const today = getTodayISO();
   return (
@@ -705,9 +718,19 @@ function JSMAppContent() {
     dateFilter: '',
   });
 
+  // Overhauled Register View States (Students, Attendance Roster, Fees Bank Ledger)
   const [searchBarVisible, setSearchBarVisible] = useState(false);
   const [studentSearch, setStudentSearch] = useState('');
   const [studentFilter, setStudentFilter] = useState('All');
+  const [collapsedSubjects, setCollapsedSubjects] = useState({});
+
+  const [attendanceViewMode, setAttendanceViewMode] = useState('Roster'); // 'Roster' | 'History'
+  const [rosterDate, setRosterDate] = useState(getTodayISO());
+  const [collapsedRosterSubjects, setCollapsedRosterSubjects] = useState({});
+
+  const [feeLedgerTab, setFeeLedgerTab] = useState('Pending'); // 'Pending' | 'History'
+  const [feeSearchVisible, setFeeSearchVisible] = useState(false);
+  const [feeSearchQuery, setFeeSearchQuery] = useState('');
 
   // Progressive disclosure toggles for optional Note / Remarks fields
   const [showInlineAttNote, setShowInlineAttNote] = useState(false);
@@ -737,6 +760,18 @@ function JSMAppContent() {
       selectedValue,
       onSelect,
     });
+  }, []);
+
+  const toggleSubjectGroup = useCallback((subjId) => {
+    triggerHaptic(6);
+    triggerLayoutAnimation();
+    setCollapsedSubjects((prev) => ({ ...prev, [subjId]: !prev[subjId] }));
+  }, []);
+
+  const toggleRosterSubjectGroup = useCallback((subjId) => {
+    triggerHaptic(6);
+    triggerLayoutAnimation();
+    setCollapsedRosterSubjects((prev) => ({ ...prev, [subjId]: !prev[subjId] }));
   }, []);
 
   const scheduleTimeout = useCallback((fn, delayMs) => {
@@ -1089,6 +1124,12 @@ function JSMAppContent() {
         setStudentSearch('');
         return true;
       }
+      if (activeTab === 'Fees' && (feeSearchVisible || feeSearchQuery.length > 0)) {
+        triggerLayoutAnimation();
+        setFeeSearchVisible(false);
+        setFeeSearchQuery('');
+        return true;
+      }
       if (activeTab !== 'Home') {
         setNavDirection(-1);
         setActiveTab('Home');
@@ -1102,6 +1143,8 @@ function JSMAppContent() {
     selectedStudentId,
     searchBarVisible,
     studentSearch,
+    feeSearchVisible,
+    feeSearchQuery,
     dropdownPicker.visible,
     calendarPicker.visible,
     contextMenu.visible,
@@ -1288,7 +1331,6 @@ function JSMAppContent() {
     [pendingSyncByCol]
   );
 
-  // Non-blocking activity logger so offline saves never double-wait on timeouts
   const logActivity = useCallback((actionTitle, subtitle) => {
     try {
       addDoc(collection(db, 'activities'), {
@@ -1349,6 +1391,18 @@ function JSMAppContent() {
     [fees, studentMap]
   );
   const activeActivities = useMemo(() => activities.filter((a) => !a.isDeleted), [activities]);
+
+  // O(1) Lookup Map for Daily Roster Attendance by selected `rosterDate`
+  const rosterAttendanceByStudent = useMemo(() => {
+    const map = {};
+    const targetDate = normalizeISODate(rosterDate) || getTodayISO();
+    activeAttendance.forEach((a) => {
+      if (a.date === targetDate && !map[a.studentId]) {
+        map[a.studentId] = a;
+      }
+    });
+    return map;
+  }, [activeAttendance, rosterDate]);
 
   useEffect(() => {
     activeSubjectsRef.current = activeSubjects;
@@ -1420,7 +1474,6 @@ function JSMAppContent() {
     [activeStudents, selectedStudentId]
   );
 
-  // Auto-reset selectedStudentId or studentReportModal if student was deleted remotely
   useEffect(() => {
     if (selectedStudentId && !activeStudents.some((s) => s.id === selectedStudentId)) {
       setSelectedStudentId(null);
@@ -1434,7 +1487,6 @@ function JSMAppContent() {
     }
   }, [activeStudents, selectedStudentId, studentReportModal.visible, studentReportModal.studentId]);
 
-  // Only populate noteDraft when switching students so background syncs don't overwrite active typing
   const prevNoteStudentIdRef = useRef(null);
   useEffect(() => {
     if (selectedStudent && prevNoteStudentIdRef.current !== selectedStudent.id) {
@@ -2368,6 +2420,99 @@ function JSMAppContent() {
     }
   };
 
+  // One-Tap Inline Quick-Toggle Handler for Daily Roster
+  const handleQuickRosterAttendance = async (studentId, statusVal) => {
+    if (!studentId || !ATTENDANCE_STATUSES.includes(statusVal)) return;
+    const validDate = normalizeISODate(rosterDate) || getTodayISO();
+    const existingRecord = rosterAttendanceByStudent[studentId];
+
+    try {
+      triggerHaptic(10);
+      if (existingRecord && existingRecord.status === statusVal) {
+        // Tapping the already active button opens the edit/note modal for that entry
+        const hasRem = Boolean(safeString(existingRecord.remarks).trim());
+        setShowModalAttNote(hasRem);
+        setAttendanceModalForm({
+          id: existingRecord.id,
+          studentId: existingRecord.studentId,
+          date: existingRecord.date,
+          status: existingRecord.status,
+          remarks: safeString(existingRecord.remarks),
+        });
+        setAttendanceModal(true);
+        return;
+      }
+
+      if (existingRecord) {
+        await withWriteTimeout(
+          updateDoc(doc(db, 'attendance', existingRecord.id), {
+            status: statusVal,
+          })
+        );
+      } else {
+        const deterministicId = `${studentId}_${validDate}`;
+        await withWriteTimeout(
+          setDoc(doc(db, 'attendance', deterministicId), {
+            studentId,
+            date: validDate,
+            status: statusVal,
+            remarks: '',
+            timestamp: Date.now(),
+            isDeleted: false,
+            deletedAt: null,
+          })
+        );
+      }
+      logActivity(
+        'Marked Attendance',
+        `${safeString(studentMap[studentId]?.name, 'Student')} • ${statusVal} (${formatReadableLocalDate(validDate)})`
+      );
+    } catch (e) {
+      Alert.alert('Error', 'Could not update attendance.');
+    }
+  };
+
+  // One-Tap Bulk "All Present" per Instrument Group on the Daily Roster
+  const handleBulkRosterPresent = async (subjId, subjName) => {
+    const validDate = normalizeISODate(rosterDate) || getTodayISO();
+    const targetStudents =
+      subjId === '_unassigned'
+        ? activeStudents.filter((s) => !subjectMap[s.subjectId] || subjectMap[s.subjectId].isDeleted)
+        : activeStudents.filter((s) => s.subjectId === subjId);
+
+    if (targetStudents.length === 0) return;
+    try {
+      triggerHaptic(14);
+      triggerLayoutAnimation();
+      const batch = writeBatch(db);
+      const now = Date.now();
+      targetStudents.forEach((st) => {
+        const existing = rosterAttendanceByStudent[st.id];
+        if (existing) {
+          batch.update(doc(db, 'attendance', existing.id), { status: 'Present' });
+        } else {
+          const deterministicId = `${st.id}_${validDate}`;
+          batch.set(doc(db, 'attendance', deterministicId), {
+            studentId: st.id,
+            date: validDate,
+            status: 'Present',
+            remarks: '',
+            timestamp: now,
+            isDeleted: false,
+            deletedAt: null,
+          });
+        }
+      });
+      await withWriteTimeout(batch.commit());
+      logActivity(
+        'Bulk Marked Present',
+        `${subjName} (${targetStudents.length} students • ${formatReadableLocalDate(validDate)})`
+      );
+    } catch (e) {
+      Alert.alert('Error', 'Could not bulk mark attendance.');
+    }
+  };
+
   const handleSaveModalAttendance = async () => {
     Keyboard.dismiss();
     if (!attendanceModalForm.studentId) return Alert.alert('Validation', 'Please select a Student.');
@@ -2517,6 +2662,41 @@ function JSMAppContent() {
     } finally {
       savingLockRef.current = false;
     }
+  };
+
+  // One-Tap Settle Handler for Pending Dues in the Bank Ledger
+  const handleQuickSettleFee = (feeRecord) => {
+    if (!feeRecord?.id) return;
+    const dueAmt = safeNumber(feeRecord.balanceDue, 0);
+    const stName = safeString(studentMap[feeRecord.studentId]?.name, 'Student');
+    triggerHaptic(12);
+    Alert.alert(
+      'Settle Balance Due',
+      `Mark pending balance of ₹${dueAmt.toFixed(0)} as Paid for ${stName}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Settle Now',
+          onPress: async () => {
+            try {
+              triggerLayoutAnimation();
+              const newPaidTotal = safeNumber(feeRecord.amountPaid, 0) + dueAmt;
+              await withWriteTimeout(
+                updateDoc(doc(db, 'fees', feeRecord.id), {
+                  amountPaid: newPaidTotal,
+                  balanceDue: 0,
+                  status: 'Paid',
+                  date: getTodayISO(),
+                })
+              );
+              logActivity('Settled Pending Fee', `${stName} • ₹${dueAmt.toFixed(0)}`);
+            } catch (e) {
+              Alert.alert('Error', 'Could not settle fee balance.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleUpdateNotice = async (overrideText = null) => {
@@ -2737,7 +2917,7 @@ function JSMAppContent() {
     return false;
   }, []);
 // ==========================================
-// PART 2 OF 2
+// PART 2:a OF 2
 // ==========================================
 
   const renderCalendarDays = () => {
@@ -3302,11 +3482,22 @@ function JSMAppContent() {
     );
   };
 
-  const renderStudentCard = (st) => {
+  // ==========================================
+  // 6B. OVERHAULED STUDENTS TAB: "CONTACT DIRECTORY" HIGH-DENSITY LAYOUT
+  // ==========================================
+  const renderDirectoryStudentRow = (st, isLast = false) => {
     const metrics = getStudentMetrics(st.id);
+    const isDue = metrics.feeStatus === 'Due / Unpaid';
+    const isPaid = metrics.feeStatus === 'Paid';
+
     return (
-      <ScalePressable
+      <Pressable
         key={st.id}
+        style={({ pressed }) => [
+          styles.directorySlimRow,
+          isLast && { borderBottomWidth: 0 },
+          pressed && { backgroundColor: COLORS.cream },
+        ]}
         onPress={() => {
           Keyboard.dismiss();
           triggerHaptic(8);
@@ -3316,40 +3507,58 @@ function JSMAppContent() {
           setProfileTab('Classes');
         }}
         onLongPress={() => openLongPressMenu('student', st, st.name)}
+        delayLongPress={260}
       >
-        <Surface style={styles.cleanRecordCard} elevation={2}>
-          <View style={{ flex: 1 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <Text style={styles.recordPrimaryTitle}>{safeString(st.name, 'Unnamed Student')}</Text>
-              {st.priorityNote ? (
-                <View style={styles.priorityBadge}>
-                  <Text style={styles.priorityBadgeText}>☆ NOTE</Text>
-                </View>
-              ) : null}
-              {metrics.hasPendingSync ? (
-                <View style={styles.cachedTag}>
-                  <Text style={styles.cachedTagText}>CACHED</Text>
-                </View>
-              ) : null}
-            </View>
-            <Text style={styles.recordSecondarySub}>
-              Joined {formatReadableLocalDate(st.joinedDate)} • Attendance {metrics.attendancePct}
+        {/* Left Avatar Circle with Initials & Red Due Dot */}
+        <View style={styles.directoryAvatar}>
+          <Text style={styles.directoryAvatarText}>{getInitials(st.name)}</Text>
+          {isDue ? <View style={styles.directoryDueDot} /> : null}
+        </View>
+
+        {/* Center Compact Name + Meta */}
+        <View style={{ flex: 1, paddingRight: 8 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+            <Text style={styles.directoryNameText} numberOfLines={1}>
+              {safeString(st.name, 'Unnamed Student')}
             </Text>
+            {st.priorityNote ? (
+              <Ionicons name="star" size={13} color={COLORS.gold} />
+            ) : null}
+            {metrics.hasPendingSync ? (
+              <View style={styles.cachedTag}>
+                <Text style={styles.cachedTagText}>CACHED</Text>
+              </View>
+            ) : null}
           </View>
+          <Text style={styles.directoryMetaText} numberOfLines={1}>
+            Att: {metrics.attendancePct} • {metrics.classesTaken} Classes • Joined {formatReadableLocalDate(st.joinedDate)}
+          </Text>
+        </View>
+
+        {/* Right Slim Status Pill + Chevron */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <View
             style={[
-              styles.feeBadge,
-              metrics.feeStatus === 'Paid'
+              styles.directoryStatusBadge,
+              isPaid
                 ? styles.feeBadgePaid
-                : metrics.feeStatus === 'Due / Unpaid'
+                : isDue
                 ? styles.feeBadgeDue
                 : styles.feeBadgeNeutral,
             ]}
           >
-            <Text style={styles.feeBadgeText}>{metrics.feeStatus}</Text>
+            <Text
+              style={[
+                styles.directoryStatusBadgeText,
+                { color: isDue ? COLORS.danger : isPaid ? COLORS.success : COLORS.navy },
+              ]}
+            >
+              {isDue && metrics.totalDue > 0 ? `Due ₹${metrics.totalDue}` : metrics.feeStatus}
+            </Text>
           </View>
-        </Surface>
-      </ScalePressable>
+          <Ionicons name="chevron-forward" size={15} color={COLORS.silver} />
+        </View>
+      </Pressable>
     );
   };
 
@@ -3477,29 +3686,68 @@ function JSMAppContent() {
             {activeSubjects.map((subj) => {
               const subjStudents = filteredStudents.filter((s) => s.subjectId === subj.id);
               if ((query || studentFilter !== 'All') && subjStudents.length === 0) return null;
+              const isCollapsed = Boolean(collapsedSubjects[subj.id]);
+
               return (
-                <View key={subj.id} style={styles.groupBlock}>
-                  <View style={styles.groupHeaderBar}>
-                    <Text style={styles.groupHeaderTitle}>
-                      {safeString(subj.name, 'Instrument').toUpperCase()}
-                    </Text>
+                <View key={subj.id} style={styles.directoryGroupBlock}>
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    style={styles.groupHeaderBar}
+                    onPress={() => toggleSubjectGroup(subj.id)}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Ionicons
+                        name={isCollapsed ? 'chevron-forward' : 'chevron-down'}
+                        size={14}
+                        color={COLORS.gold}
+                      />
+                      <Text style={styles.groupHeaderTitle}>
+                        {safeString(subj.name, 'Instrument').toUpperCase()}
+                      </Text>
+                    </View>
                     <Text style={styles.groupHeaderCount}>{subjStudents.length}</Text>
-                  </View>
-                  {subjStudents.length === 0 ? (
-                    <EmptyStateWatermark compact message="" />
-                  ) : (
-                    subjStudents.map(renderStudentCard)
-                  )}
+                  </TouchableOpacity>
+
+                  {!isCollapsed &&
+                    (subjStudents.length === 0 ? (
+                      <Surface style={styles.directoryListSurface} elevation={1}>
+                        <EmptyStateWatermark compact message="" />
+                      </Surface>
+                    ) : (
+                      <Surface style={styles.directoryListSurface} elevation={1}>
+                        {subjStudents.map((st, idx) =>
+                          renderDirectoryStudentRow(st, idx === subjStudents.length - 1)
+                        )}
+                      </Surface>
+                    ))}
                 </View>
               );
             })}
+
             {unassignedStudents.length > 0 && (
-              <View style={styles.groupBlock}>
-                <View style={styles.groupHeaderBar}>
-                  <Text style={styles.groupHeaderTitle}>UNASSIGNED</Text>
+              <View style={styles.directoryGroupBlock}>
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  style={styles.groupHeaderBar}
+                  onPress={() => toggleSubjectGroup('_unassigned')}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons
+                      name={collapsedSubjects._unassigned ? 'chevron-forward' : 'chevron-down'}
+                      size={14}
+                      color={COLORS.gold}
+                    />
+                    <Text style={styles.groupHeaderTitle}>UNASSIGNED</Text>
+                  </View>
                   <Text style={styles.groupHeaderCount}>{unassignedStudents.length}</Text>
-                </View>
-                {unassignedStudents.map(renderStudentCard)}
+                </TouchableOpacity>
+                {!collapsedSubjects._unassigned && (
+                  <Surface style={styles.directoryListSurface} elevation={1}>
+                    {unassignedStudents.map((st, idx) =>
+                      renderDirectoryStudentRow(st, idx === unassignedStudents.length - 1)
+                    )}
+                  </Surface>
+                )}
               </View>
             )}
           </>
@@ -3961,11 +4209,113 @@ function JSMAppContent() {
     );
   };
 
+  // ==========================================
+  // 6C. OVERHAULED ATTENDANCE TAB: "DAILY ROSTER" QUICK-TOGGLE + COMPACT HISTORY
+  // ==========================================
+  const renderRosterStudentRow = (st, isLast = false) => {
+    const rec = rosterAttendanceByStudent[st.id];
+    const currentStatus = rec?.status || null;
+
+    const statusButtons = [
+      { short: 'P', full: 'Present', activeBg: COLORS.success, activeText: COLORS.white },
+      { short: 'A', full: 'Absent', activeBg: COLORS.danger, activeText: COLORS.white },
+      { short: 'T', full: 'Tardy', activeBg: COLORS.warning, activeText: COLORS.white },
+      { short: 'R', full: 'Rescheduled', activeBg: COLORS.navy, activeText: COLORS.gold },
+    ];
+
+    return (
+      <Pressable
+        key={st.id}
+        style={[styles.directorySlimRow, isLast && { borderBottomWidth: 0 }]}
+        onLongPress={() => {
+          if (rec) {
+            openLongPressMenu(
+              'attendance',
+              rec,
+              `${st.name} - ${rec.status} (${formatReadableLocalDate(rec.date)})`
+            );
+          } else {
+            setShowModalAttNote(false);
+            setAttendanceModalForm({
+              id: null,
+              studentId: st.id,
+              date: rosterDate,
+              status: 'Present',
+              remarks: '',
+            });
+            setAttendanceModal(true);
+          }
+        }}
+        delayLongPress={260}
+      >
+        <View style={{ flex: 1, paddingRight: 8 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+            <Text style={styles.directoryNameText} numberOfLines={1}>
+              {safeString(st.name, 'Student')}
+            </Text>
+            {rec?._pendingSync ? (
+              <View style={styles.cachedTag}>
+                <Text style={styles.cachedTagText}>CACHED</Text>
+              </View>
+            ) : null}
+          </View>
+          <Text style={styles.directoryMetaText} numberOfLines={1}>
+            {currentStatus
+              ? `${currentStatus}${rec?.remarks ? ` • ${rec.remarks}` : ''}`
+              : 'Tap P / A / T / R to mark'}
+          </Text>
+        </View>
+
+        <View style={styles.rosterToggleRow}>
+          {statusButtons.map((btn) => {
+            const isSelected = currentStatus === btn.full;
+            return (
+              <TouchableOpacity
+                key={btn.full}
+                activeOpacity={0.75}
+                style={[
+                  styles.rosterToggleBtn,
+                  isSelected && { backgroundColor: btn.activeBg, borderColor: btn.activeBg },
+                ]}
+                onPress={() => handleQuickRosterAttendance(st.id, btn.full)}
+              >
+                <Text
+                  style={[
+                    styles.rosterToggleBtnText,
+                    isSelected && { color: btn.activeText, fontWeight: '900' },
+                  ]}
+                >
+                  {btn.short}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </Pressable>
+    );
+  };
+
   const renderAttendanceTab = () => {
+    const todayISO = getTodayISO();
+    const activeSubjectIdSet = new Set(activeSubjects.map((s) => s.id));
+    const unassignedRosterStudents = activeStudents.filter((st) => !activeSubjectIdSet.has(st.subjectId));
+
+    // Group History Log by Date-First so the date is written once per section header
     const filteredRecords = attendanceFilterAllMonths
       ? activeAttendance
       : activeAttendance.filter((a) => isWithinLastTwoLocalMonths(a.date));
-    const groupedAttendance = groupRecordsBySubjectAndMonth(filteredRecords);
+
+    const historyByDate = [];
+    const dateBuckets = {};
+    filteredRecords.forEach((rec) => {
+      const dKey = rec.date || 'Unknown';
+      if (!dateBuckets[dKey]) {
+        dateBuckets[dKey] = [];
+        historyByDate.push({ dateISO: dKey, items: dateBuckets[dKey] });
+      }
+      dateBuckets[dKey].push(rec);
+    });
+
     return (
       <ScrollView
         contentContainerStyle={styles.scrollContentWithFab}
@@ -3975,90 +4325,340 @@ function JSMAppContent() {
       >
         <View style={styles.tabTopBar}>
           <Text style={styles.pageHeading}>Attendance</Text>
-          <DropdownField
-            compact
-            style={{ width: 152, marginBottom: 0 }}
-            valueLabel={attendanceFilterAllMonths ? 'All Months' : 'Last 2 Months'}
-            onPress={() =>
-              openDropdownPicker(
-                'Timeframe',
-                [
-                  { label: 'Last 2 Months', value: false },
-                  { label: 'All Months', value: true },
-                ],
-                attendanceFilterAllMonths,
-                (val) => {
-                  triggerLayoutAnimation();
-                  setAttendanceFilterAllMonths(val);
-                }
-              )
-            }
-          />
+          <View style={styles.segmentedModePill}>
+            <TouchableOpacity
+              style={[
+                styles.segmentedModeOption,
+                attendanceViewMode === 'Roster' && styles.segmentedModeOptionActive,
+              ]}
+              onPress={() => {
+                triggerHaptic(6);
+                triggerLayoutAnimation();
+                setAttendanceViewMode('Roster');
+              }}
+            >
+              <Text
+                style={[
+                  styles.segmentedModeText,
+                  attendanceViewMode === 'Roster' && styles.segmentedModeTextActive,
+                ]}
+              >
+                Daily Roster
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.segmentedModeOption,
+                attendanceViewMode === 'History' && styles.segmentedModeOptionActive,
+              ]}
+              onPress={() => {
+                triggerHaptic(6);
+                triggerLayoutAnimation();
+                setAttendanceViewMode('History');
+              }}
+            >
+              <Text
+                style={[
+                  styles.segmentedModeText,
+                  attendanceViewMode === 'History' && styles.segmentedModeTextActive,
+                ]}
+              >
+                History Log
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {groupedAttendance.length === 0 ? (
-          <Surface style={styles.whiteCard} elevation={2}>
-            <EmptyStateWatermark compact message="" />
-          </Surface>
-        ) : (
-          groupedAttendance.map((group) => (
-            <View key={group.subject.id} style={styles.groupBlock}>
-              <View style={styles.groupHeaderBar}>
-                <Text style={styles.groupHeaderTitle}>
-                  {safeString(group.subject.name, 'Instrument').toUpperCase()}
+        {attendanceViewMode === 'Roster' ? (
+          <>
+            {/* Date Stepper Bar: Write Date Once at the Top */}
+            <Surface style={styles.rosterDateBar} elevation={1}>
+              <TouchableOpacity
+                style={styles.rosterDateArrowBtn}
+                onPress={() => {
+                  triggerHaptic(6);
+                  setRosterDate((prev) => shiftISODate(prev, -1));
+                }}
+              >
+                <Ionicons name="chevron-back" size={18} color={COLORS.navy} />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.rosterDateCenterBtn}
+                onPress={() => openCalendarPicker(rosterDate, (picked) => setRosterDate(picked))}
+              >
+                <Ionicons name="calendar-outline" size={15} color={COLORS.gold} />
+                <Text style={styles.rosterDateCenterText}>
+                  {rosterDate === todayISO
+                    ? `Today • ${formatReadableLocalDate(rosterDate)}`
+                    : formatReadableLocalDate(rosterDate)}
                 </Text>
+              </TouchableOpacity>
+
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                {rosterDate !== todayISO ? (
+                  <TouchableOpacity
+                    style={styles.rosterTodayJumpBtn}
+                    onPress={() => {
+                      triggerHaptic(8);
+                      setRosterDate(todayISO);
+                    }}
+                  >
+                    <Text style={styles.rosterTodayJumpText}>Today</Text>
+                  </TouchableOpacity>
+                ) : null}
+                <TouchableOpacity
+                  style={styles.rosterDateArrowBtn}
+                  onPress={() => {
+                    triggerHaptic(6);
+                    setRosterDate((prev) => shiftISODate(prev, 1));
+                  }}
+                >
+                  <Ionicons name="chevron-forward" size={18} color={COLORS.navy} />
+                </TouchableOpacity>
               </View>
-              {group.months.map((mGroup) => (
-                <View key={mGroup.monthName} style={{ marginTop: 8 }}>
-                  <Text style={styles.monthSubHeader}>{mGroup.monthName}</Text>
-                  {mGroup.items.map((att) => {
-                    const st = studentMap[att.studentId];
-                    return (
-                      <ScalePressable
-                        key={att.id}
-                        onLongPress={() =>
-                          openLongPressMenu(
-                            'attendance',
-                            att,
-                            `${safeString(st?.name, 'Student')} - ${att.status} (${formatReadableLocalDate(
-                              att.date
-                            )})`
-                          )
-                        }
+            </Surface>
+
+            {activeStudents.length === 0 ? (
+              <Surface style={styles.whiteCard} elevation={2}>
+                <EmptyStateWatermark compact message="" />
+              </Surface>
+            ) : (
+              <>
+                {activeSubjects.map((subj) => {
+                  const subjStudents = activeStudents.filter((s) => s.subjectId === subj.id);
+                  if (subjStudents.length === 0) return null;
+                  const isCollapsed = Boolean(collapsedRosterSubjects[subj.id]);
+
+                  return (
+                    <View key={subj.id} style={styles.directoryGroupBlock}>
+                      <View style={styles.groupHeaderBar}>
+                        <TouchableOpacity
+                          style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}
+                          onPress={() => toggleRosterSubjectGroup(subj.id)}
+                        >
+                          <Ionicons
+                            name={isCollapsed ? 'chevron-forward' : 'chevron-down'}
+                            size={14}
+                            color={COLORS.gold}
+                          />
+                          <Text style={styles.groupHeaderTitle}>
+                            {safeString(subj.name, 'Instrument').toUpperCase()} ({subjStudents.length})
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={styles.bulkMarkPresentChip}
+                          onPress={() => handleBulkRosterPresent(subj.id, subj.name)}
+                        >
+                          <Ionicons name="checkmark-done" size={12} color={COLORS.navy} />
+                          <Text style={styles.bulkMarkPresentChipText}>All Present</Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      {!isCollapsed && (
+                        <Surface style={styles.directoryListSurface} elevation={1}>
+                          {subjStudents.map((st, idx) =>
+                            renderRosterStudentRow(st, idx === subjStudents.length - 1)
+                          )}
+                        </Surface>
+                      )}
+                    </View>
+                  );
+                })}
+
+                {unassignedRosterStudents.length > 0 && (
+                  <View style={styles.directoryGroupBlock}>
+                    <View style={styles.groupHeaderBar}>
+                      <TouchableOpacity
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}
+                        onPress={() => toggleRosterSubjectGroup('_unassigned')}
                       >
-                        <Surface style={styles.cleanRecordCard} elevation={2}>
-                          <View style={{ flex: 1 }}>
+                        <Ionicons
+                          name={collapsedRosterSubjects._unassigned ? 'chevron-forward' : 'chevron-down'}
+                          size={14}
+                          color={COLORS.gold}
+                        />
+                        <Text style={styles.groupHeaderTitle}>
+                          UNASSIGNED ({unassignedRosterStudents.length})
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.bulkMarkPresentChip}
+                        onPress={() => handleBulkRosterPresent('_unassigned', 'Unassigned')}
+                      >
+                        <Ionicons name="checkmark-done" size={12} color={COLORS.navy} />
+                        <Text style={styles.bulkMarkPresentChipText}>All Present</Text>
+                      </TouchableOpacity>
+                    </View>
+                    {!collapsedRosterSubjects._unassigned && (
+                      <Surface style={styles.directoryListSurface} elevation={1}>
+                        {unassignedRosterStudents.map((st, idx) =>
+                          renderRosterStudentRow(st, idx === unassignedRosterStudents.length - 1)
+                        )}
+                      </Surface>
+                    )}
+                  </View>
+                )}
+              </>
+            )}
+          </>
+        ) : (
+          /* DATE-GROUPED COMPACT HISTORY LOG */
+          <>
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginBottom: 10 }}>
+              <DropdownField
+                compact
+                style={{ width: 160, marginBottom: 0 }}
+                valueLabel={attendanceFilterAllMonths ? 'All Months' : 'Last 2 Months'}
+                onPress={() =>
+                  openDropdownPicker(
+                    'Timeframe',
+                    [
+                      { label: 'Last 2 Months', value: false },
+                      { label: 'All Months', value: true },
+                    ],
+                    attendanceFilterAllMonths,
+                    (val) => {
+                      triggerLayoutAnimation();
+                      setAttendanceFilterAllMonths(val);
+                    }
+                  )
+                }
+              />
+            </View>
+
+            {historyByDate.length === 0 ? (
+              <Surface style={styles.whiteCard} elevation={2}>
+                <EmptyStateWatermark compact message="" />
+              </Surface>
+            ) : (
+              historyByDate.map((dBucket) => (
+                <View key={dBucket.dateISO} style={styles.directoryGroupBlock}>
+                  <View style={styles.groupHeaderBar}>
+                    <Text style={styles.groupHeaderTitle}>
+                      {formatReadableLocalDate(dBucket.dateISO).toUpperCase()}
+                    </Text>
+                    <Text style={styles.groupHeaderCount}>{dBucket.items.length} Marked</Text>
+                  </View>
+                  <Surface style={styles.directoryListSurface} elevation={1}>
+                    {dBucket.items.map((att, idx) => {
+                      const st = studentMap[att.studentId];
+                      const subjName = safeString(subjectMap[st?.subjectId]?.name, 'Unassigned');
+                      const isLast = idx === dBucket.items.length - 1;
+                      const badgeBg =
+                        att.status === 'Present'
+                          ? COLORS.successBg
+                          : att.status === 'Absent'
+                          ? COLORS.dangerBg
+                          : COLORS.warningBg;
+                      const badgeColor =
+                        att.status === 'Present'
+                          ? COLORS.success
+                          : att.status === 'Absent'
+                          ? COLORS.danger
+                          : COLORS.warning;
+
+                      return (
+                        <Pressable
+                          key={att.id}
+                          style={({ pressed }) => [
+                            styles.directorySlimRow,
+                            isLast && { borderBottomWidth: 0 },
+                            pressed && { backgroundColor: COLORS.cream },
+                          ]}
+                          onPress={() => {
+                            const hasRem = Boolean(safeString(att.remarks).trim());
+                            setShowModalAttNote(hasRem);
+                            setAttendanceModalForm({
+                              id: att.id,
+                              studentId: att.studentId,
+                              date: att.date,
+                              status: att.status,
+                              remarks: safeString(att.remarks),
+                            });
+                            setAttendanceModal(true);
+                          }}
+                          onLongPress={() =>
+                            openLongPressMenu(
+                              'attendance',
+                              att,
+                              `${safeString(st?.name, 'Student')} - ${att.status} (${formatReadableLocalDate(
+                                att.date
+                              )})`
+                            )
+                          }
+                          delayLongPress={260}
+                        >
+                          <View style={{ flex: 1, paddingRight: 8 }}>
                             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                              <Text style={styles.recordPrimaryTitle}>{safeString(st?.name, 'Unknown')}</Text>
+                              <Text style={styles.directoryNameText} numberOfLines={1}>
+                                {safeString(st?.name, 'Unknown')}
+                              </Text>
                               {att._pendingSync ? (
                                 <View style={styles.cachedTag}>
                                   <Text style={styles.cachedTagText}>CACHED</Text>
                                 </View>
                               ) : null}
                             </View>
-                            <Text style={styles.recordSecondarySub}>
-                              {formatReadableLocalDate(att.date)}
+                            <Text style={styles.directoryMetaText} numberOfLines={1}>
+                              {subjName}
                               {att.remarks ? ` • ${att.remarks}` : ''}
                             </Text>
                           </View>
-                          <View style={styles.statusPill}>
-                            <Text style={styles.statusPillText}>{att.status}</Text>
+                          <View style={[styles.directoryStatusBadge, { backgroundColor: badgeBg }]}>
+                            <Text style={[styles.directoryStatusBadgeText, { color: badgeColor }]}>
+                              {att.status}
+                            </Text>
                           </View>
-                        </Surface>
-                      </ScalePressable>
-                    );
-                  })}
+                        </Pressable>
+                      );
+                    })}
+                  </Surface>
                 </View>
-              ))}
-            </View>
-          ))
+              ))
+            )}
+          </>
         )}
       </ScrollView>
     );
   };
 
+  // ==========================================
+  // 6D. OVERHAULED FEES TAB: "BANK LEDGER" SEGMENTED LAYOUT
+  // ==========================================
   const renderFeesTab = () => {
-    const groupedFees = groupRecordsBySubjectAndMonth(activeFees);
+    const q = safeString(feeSearchQuery).trim().toLowerCase();
+
+    const pendingFeeRecords = activeFees.filter((f) => {
+      const isPending =
+        safeNumber(f.balanceDue, 0) > 0 || f.status === 'Unpaid' || f.status === 'Partial';
+      if (!isPending) return false;
+      if (!q) return true;
+      const stName = safeString(studentMap[f.studentId]?.name).toLowerCase();
+      const subjName = safeString(subjectMap[studentMap[f.studentId]?.subjectId]?.name).toLowerCase();
+      return (
+        stName.includes(q) ||
+        subjName.includes(q) ||
+        safeString(f.feeType).toLowerCase().includes(q) ||
+        safeString(f.monthPaidFor).toLowerCase().includes(q)
+      );
+    });
+
+    const historyFeeRecords = activeFees.filter((f) => {
+      if (!q) return true;
+      const stName = safeString(studentMap[f.studentId]?.name).toLowerCase();
+      const subjName = safeString(subjectMap[studentMap[f.studentId]?.subjectId]?.name).toLowerCase();
+      return (
+        stName.includes(q) ||
+        subjName.includes(q) ||
+        safeString(f.feeType).toLowerCase().includes(q) ||
+        safeString(f.monthPaidFor).toLowerCase().includes(q)
+      );
+    });
+
+    const displayedRecords = feeLedgerTab === 'Pending' ? pendingFeeRecords : historyFeeRecords;
+
     return (
       <ScrollView
         contentContainerStyle={styles.scrollContentWithFab}
@@ -4068,100 +4668,245 @@ function JSMAppContent() {
       >
         <View style={styles.tabTopBar}>
           <Text style={styles.pageHeading}>Fee Ledger</Text>
+          <TouchableOpacity
+            style={[
+              styles.floatingSearchToggleBtn,
+              (feeSearchVisible || feeSearchQuery.length > 0) && styles.floatingSearchToggleBtnActive,
+            ]}
+            onPress={() => {
+              triggerHaptic(8);
+              triggerLayoutAnimation();
+              if (feeSearchVisible && feeSearchQuery) {
+                setFeeSearchQuery('');
+              }
+              setFeeSearchVisible(!feeSearchVisible);
+            }}
+          >
+            <Ionicons
+              name={feeSearchVisible ? 'close-outline' : 'search-outline'}
+              size={20}
+              color={feeSearchVisible || feeSearchQuery.length > 0 ? COLORS.gold : COLORS.navy}
+            />
+          </TouchableOpacity>
         </View>
 
+        {feeSearchVisible && (
+          <PaperInput
+            mode="outlined"
+            label="Filter ledger by student, subject, or month"
+            value={feeSearchQuery}
+            onChangeText={setFeeSearchQuery}
+            autoFocus
+            left={<PaperInput.Icon icon="magnify" />}
+            right={
+              feeSearchQuery.length > 0 ? (
+                <PaperInput.Icon icon="close-circle-outline" onPress={() => setFeeSearchQuery('')} />
+              ) : null
+            }
+            outlineColor={COLORS.border}
+            activeOutlineColor={COLORS.navy}
+            style={[styles.tintedInput, { marginBottom: 12 }]}
+          />
+        )}
+
+        {/* Top Summary KPI Cards (Tappable to switch segments) */}
         <View style={styles.ledgerSummaryRow}>
-          <View style={[styles.ledgerSummaryBox, { backgroundColor: COLORS.navy, overflow: 'hidden' }]}>
-            <SmoothNavyGradient />
-            <Text style={styles.ledgerSummaryLabel}>TOTAL COLLECTED</Text>
-            <Text style={styles.ledgerSummaryValGold}>₹{globalFeeTotals.collected.toFixed(0)}</Text>
-          </View>
-          <View
+          <TouchableOpacity
+            activeOpacity={0.85}
             style={[
               styles.ledgerSummaryBox,
-              { backgroundColor: COLORS.cream, borderColor: COLORS.gold, borderWidth: 1 },
+              {
+                backgroundColor: COLORS.cream,
+                borderColor: feeLedgerTab === 'Pending' ? COLORS.danger : COLORS.gold,
+                borderWidth: feeLedgerTab === 'Pending' ? 2 : 1,
+              },
             ]}
+            onPress={() => {
+              triggerHaptic(6);
+              triggerLayoutAnimation();
+              setFeeLedgerTab('Pending');
+            }}
           >
-            <Text style={[styles.ledgerSummaryLabel, { color: COLORS.navy }]}>PENDING BALANCE</Text>
+            <Text style={[styles.ledgerSummaryLabel, { color: COLORS.navy }]}>PENDING DUES</Text>
             <Text style={[styles.ledgerSummaryValGold, { color: COLORS.danger }]}>
               ₹{globalFeeTotals.pending.toFixed(0)}
             </Text>
-          </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            activeOpacity={0.85}
+            style={[
+              styles.ledgerSummaryBox,
+              {
+                backgroundColor: COLORS.navy,
+                overflow: 'hidden',
+                borderColor: COLORS.gold,
+                borderWidth: feeLedgerTab === 'History' ? 2 : 0,
+              },
+            ]}
+            onPress={() => {
+              triggerHaptic(6);
+              triggerLayoutAnimation();
+              setFeeLedgerTab('History');
+            }}
+          >
+            <SmoothNavyGradient />
+            <Text style={styles.ledgerSummaryLabel}>TOTAL COLLECTED</Text>
+            <Text style={styles.ledgerSummaryValGold}>₹{globalFeeTotals.collected.toFixed(0)}</Text>
+          </TouchableOpacity>
         </View>
 
-        {groupedFees.length === 0 ? (
+        {/* Pinned Segmented Bank Bar: [ Pending Dues ] | [ Transaction History ] */}
+        <View style={styles.pillNavContainer}>
+          <TouchableOpacity
+            style={[styles.pillNavItem, feeLedgerTab === 'Pending' && styles.pillNavItemActive]}
+            onPress={() => {
+              triggerHaptic(6);
+              triggerLayoutAnimation();
+              setFeeLedgerTab('Pending');
+            }}
+          >
+            <Text style={[styles.pillNavText, feeLedgerTab === 'Pending' && styles.pillNavTextActive]}>
+              Pending Dues ({pendingFeeRecords.length})
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.pillNavItem, feeLedgerTab === 'History' && styles.pillNavItemActive]}
+            onPress={() => {
+              triggerHaptic(6);
+              triggerLayoutAnimation();
+              setFeeLedgerTab('History');
+            }}
+          >
+            <Text style={[styles.pillNavText, feeLedgerTab === 'History' && styles.pillNavTextActive]}>
+              Transaction History ({historyFeeRecords.length})
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {displayedRecords.length === 0 ? (
           <Surface style={styles.whiteCard} elevation={2}>
             <EmptyStateWatermark compact message="" />
           </Surface>
         ) : (
-          groupedFees.map((group) => (
-            <View key={group.subject.id} style={styles.groupBlock}>
-              <View style={styles.groupHeaderBar}>
-                <Text style={styles.groupHeaderTitle}>
-                  {safeString(group.subject.name, 'Instrument').toUpperCase()}
-                </Text>
-              </View>
-              {group.months.map((mGroup) => (
-                <View key={mGroup.monthName} style={{ marginTop: 8 }}>
-                  <Text style={styles.monthSubHeader}>{mGroup.monthName}</Text>
-                  {mGroup.items.map((fee) => {
-                    const st = studentMap[fee.studentId];
-                    const isFullyPaid = fee.status === 'Paid' && safeNumber(fee.balanceDue, 0) === 0;
-                    return (
-                      <ScalePressable
-                        key={fee.id}
-                        onLongPress={() =>
-                          openLongPressMenu('fee', fee, `${safeString(st?.name, 'Student')} - ₹${fee.amountPaid}`)
-                        }
+          <Surface style={styles.directoryListSurface} elevation={1}>
+            {displayedRecords.map((fee, idx) => {
+              const st = studentMap[fee.studentId];
+              const subjName = safeString(subjectMap[st?.subjectId]?.name, 'Unassigned');
+              const isLast = idx === displayedRecords.length - 1;
+              const dueVal = safeNumber(fee.balanceDue, 0);
+              const paidVal = safeNumber(fee.amountPaid, 0);
+              const hasDue = dueVal > 0 || fee.status === 'Unpaid' || fee.status === 'Partial';
+
+              return (
+                <Pressable
+                  key={fee.id}
+                  style={({ pressed }) => [
+                    styles.directorySlimRow,
+                    isLast && { borderBottomWidth: 0 },
+                    pressed && { backgroundColor: COLORS.cream },
+                  ]}
+                  onPress={() => {
+                    const hasRem = Boolean(safeString(fee.remarks).trim());
+                    setShowFeeNote(hasRem);
+                    setFeeForm({
+                      id: fee.id,
+                      studentId: fee.studentId,
+                      feeType: safeString(fee.feeType, 'Monthly Fee'),
+                      monthPaidFor: safeString(fee.monthPaidFor, getLocalCurrentMonthLabel()),
+                      date: safeString(fee.date, getTodayISO()),
+                      mode: safeString(fee.mode, 'UPI'),
+                      status: safeString(fee.status, 'Paid'),
+                      amountPaid: String(paidVal),
+                      balanceDue: String(dueVal),
+                      remarks: safeString(fee.remarks),
+                    });
+                    setFeeModal(true);
+                  }}
+                  onLongPress={() =>
+                    openLongPressMenu('fee', fee, `${safeString(st?.name, 'Student')} - ₹${paidVal}`)
+                  }
+                  delayLongPress={260}
+                >
+                  {/* Left Ledger Status Icon */}
+                  <View
+                    style={[
+                      styles.ledgerRowIconWrap,
+                      { backgroundColor: hasDue ? COLORS.dangerBg : COLORS.successBg },
+                    ]}
+                  >
+                    <Ionicons
+                      name={hasDue ? 'alert-circle-outline' : 'checkmark-circle-outline'}
+                      size={16}
+                      color={hasDue ? COLORS.danger : COLORS.success}
+                    />
+                  </View>
+
+                  {/* Center Student & Transaction Meta */}
+                  <View style={{ flex: 1, paddingRight: 8 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                      <Text style={styles.directoryNameText} numberOfLines={1}>
+                        {safeString(st?.name, 'Unknown')}
+                      </Text>
+                      <Text style={styles.ledgerSubjPillText}>• {subjName}</Text>
+                      {fee._pendingSync ? (
+                        <View style={styles.cachedTag}>
+                          <Text style={styles.cachedTagText}>CACHED</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <Text style={styles.directoryMetaText} numberOfLines={1}>
+                      {fee.feeType}
+                      {fee.feeType === 'Monthly Fee' && fee.monthPaidFor ? ` (${fee.monthPaidFor})` : ''} •{' '}
+                      {formatReadableLocalDate(fee.date)} • {fee.mode}
+                    </Text>
+                  </View>
+
+                  {/* Right Figures & Quick Action */}
+                  {feeLedgerTab === 'Pending' ? (
+                    <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                      <Text style={styles.ledgerDueAmountText}>Due ₹{dueVal}</Text>
+                      <TouchableOpacity
+                        style={styles.settleQuickBtn}
+                        onPress={() => handleQuickSettleFee(fee)}
                       >
-                        <Surface style={styles.cleanRecordCard} elevation={2}>
-                          <View style={{ flex: 1 }}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                              <Text style={styles.recordPrimaryTitle}>
-                                {safeString(st?.name, 'Unknown')} • {fee.feeType}
-                              </Text>
-                              {fee._pendingSync ? (
-                                <View style={styles.cachedTag}>
-                                  <Text style={styles.cachedTagText}>CACHED</Text>
-                                </View>
-                              ) : null}
-                            </View>
-                            <Text style={styles.recordSecondarySub}>
-                              {formatReadableLocalDate(fee.date)} • {fee.mode}
-                              {fee.feeType === 'Monthly Fee' && fee.monthPaidFor
-                                ? ` • ${fee.monthPaidFor}`
-                                : ''}
-                            </Text>
-                            <Text style={styles.recordDetailLine}>
-                              Paid: ₹{fee.amountPaid}
-                              {safeNumber(fee.balanceDue, 0) > 0 ? ` | Balance: ₹${fee.balanceDue}` : ''}
-                            </Text>
-                          </View>
-                          <View style={{ alignItems: 'flex-end', gap: 8 }}>
-                            <View style={[styles.feeBadge, isFullyPaid ? styles.feeBadgePaid : styles.feeBadgeDue]}>
-                              <Text style={styles.feeBadgeText}>{fee.status}</Text>
-                            </View>
-                            <TouchableOpacity
-                              style={styles.pdfExportTouchBtn}
-                              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                              onPress={() => generateAndShareReceiptPDF(fee)}
-                            >
-                              <Ionicons name="share-social-outline" size={15} color={COLORS.gold} />
-                            </TouchableOpacity>
-                          </View>
-                        </Surface>
-                      </ScalePressable>
-                    );
-                  })}
-                </View>
-              ))}
-            </View>
-          ))
+                        <Text style={styles.settleQuickBtnText}>Settle</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={styles.ledgerPaidAmountText}>+₹{paidVal}</Text>
+                        {hasDue ? (
+                          <Text style={styles.ledgerDueSubText}>Due ₹{dueVal}</Text>
+                        ) : (
+                          <Text style={styles.ledgerPaidSubText}>Paid</Text>
+                        )}
+                      </View>
+                      <TouchableOpacity
+                        style={styles.pdfExportTouchBtn}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        onPress={() => generateAndShareReceiptPDF(fee)}
+                      >
+                        <Ionicons name="share-social-outline" size={14} color={COLORS.gold} />
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </Pressable>
+              );
+            })}
+          </Surface>
         )}
       </ScrollView>
     );
   };
+// ==========================================
+// PART 2:b OF 2 (FINAL)
+// ==========================================
 
+  // ==========================================
+  // 6E. TRASH TAB: ARCHIVE & CASCADE RECOVERY
+  // ==========================================
   const renderTrashTab = () => {
     return (
       <ScrollView
@@ -4283,7 +5028,7 @@ function JSMAppContent() {
           setAttendanceModalForm({
             id: null,
             studentId: activeStudents[0]?.id || '',
-            date: getTodayISO(),
+            date: rosterDate,
             status: 'Present',
             remarks: '',
           });
@@ -4538,7 +5283,7 @@ function JSMAppContent() {
         </GestureHandlerRootView>
       </Modal>
 
-      {/* SINGLE STUDENT DATA & PRINT MODAL (OPENED ON FIREBASE MATRIX ROW TAP) */}
+      {/* SINGLE STUDENT DATA & PRINT MODAL */}
       <Modal
         visible={studentReportModal.visible}
         animationType="slide"
@@ -4731,7 +5476,7 @@ function JSMAppContent() {
         </SafeAreaProvider>
       </Modal>
 
-      {/* MASTER LIST & REPORT GENERATOR MODAL (WITH STREAMLINED DROPDOWN FILTERS) */}
+      {/* MASTER LIST & REPORT GENERATOR MODAL */}
       <Modal
         visible={masterListModal}
         animationType="slide"
@@ -5207,7 +5952,7 @@ function JSMAppContent() {
         </GestureHandlerRootView>
       </Modal>
 
-      {/* REGISTER / EDIT STUDENT MODAL (WITH SUBJECT DROPDOWN & FLOATING LABELS) */}
+      {/* REGISTER / EDIT STUDENT MODAL */}
       <Modal
         visible={studentModal}
         transparent
@@ -5432,7 +6177,7 @@ function JSMAppContent() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* MARK / EDIT ATTENDANCE MODAL (WITH STUDENT & STATUS DROPDOWNS + COLLAPSIBLE NOTE) */}
+      {/* MARK / EDIT ATTENDANCE MODAL */}
       <Modal
         visible={attendanceModal}
         transparent
@@ -5558,7 +6303,7 @@ function JSMAppContent() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* RECORD / EDIT FEE MODAL (DROPDOWNS, SMART FIELD HIDING & SHARE ICON) */}
+      {/* RECORD / EDIT FEE MODAL */}
       <Modal
         visible={feeModal}
         transparent
@@ -6272,6 +7017,234 @@ const styles = StyleSheet.create({
   cachedTagText: {
     color: COLORS.warning,
     fontSize: 7,
+    fontWeight: '800',
+  },
+
+  // --- HIGH-DENSITY DIRECTORY, ROSTER & LEDGER STYLES ---
+  directoryGroupBlock: {
+    marginBottom: 14,
+  },
+  directoryListSurface: {
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    overflow: 'hidden',
+  },
+  directorySlimRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F2EFE9',
+  },
+  directoryAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: COLORS.cream,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  directoryAvatarText: {
+    color: COLORS.navy,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  directoryDueDot: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    backgroundColor: COLORS.danger,
+    borderWidth: 1.5,
+    borderColor: COLORS.white,
+  },
+  directoryNameText: {
+    color: COLORS.navy,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  directoryMetaText: {
+    color: COLORS.silver,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  directoryStatusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  directoryStatusBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+
+  /* Attendance Roster Styles */
+  segmentedModePill: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.cream,
+    borderRadius: 12,
+    padding: 3,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  segmentedModeOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 9,
+  },
+  segmentedModeOptionActive: {
+    backgroundColor: COLORS.navy,
+  },
+  segmentedModeText: {
+    color: COLORS.navy,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  segmentedModeTextActive: {
+    color: COLORS.gold,
+  },
+  rosterDateBar: {
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  rosterDateArrowBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: COLORS.cream,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  rosterDateCenterBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: COLORS.navy,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+  },
+  rosterDateCenterText: {
+    color: COLORS.gold,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  rosterTodayJumpBtn: {
+    backgroundColor: COLORS.cream,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+  },
+  rosterTodayJumpText: {
+    color: COLORS.navy,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  bulkMarkPresentChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: COLORS.cream,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+  },
+  bulkMarkPresentChipText: {
+    color: COLORS.navy,
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  rosterToggleRow: {
+    flexDirection: 'row',
+    gap: 5,
+  },
+  rosterToggleBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 7,
+    backgroundColor: COLORS.ivory,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rosterToggleBtnText: {
+    color: COLORS.charcoal,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+
+  /* Bank Ledger Styles */
+  ledgerRowIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  ledgerSubjPillText: {
+    color: COLORS.silver,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  ledgerDueAmountText: {
+    color: COLORS.danger,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  ledgerPaidAmountText: {
+    color: COLORS.success,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  ledgerDueSubText: {
+    color: COLORS.danger,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  ledgerPaidSubText: {
+    color: COLORS.success,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  settleQuickBtn: {
+    backgroundColor: COLORS.navy,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+  },
+  settleQuickBtnText: {
+    color: COLORS.gold,
+    fontSize: 10,
     fontWeight: '800',
   },
 
