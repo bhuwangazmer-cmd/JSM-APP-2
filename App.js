@@ -717,6 +717,7 @@ function JSMAppContent() {
   const [collapsedRosterSubjects, setCollapsedRosterSubjects] = useState({});
 
   const [feeLedgerTab, setFeeLedgerTab] = useState('Pending'); // 'Pending' | 'History'
+  const [feeDisplayLimit, setFeeDisplayLimit] = useState(50);
   const [feeSearchVisible, setFeeSearchVisible] = useState(false);
   const [feeSearchQuery, setFeeSearchQuery] = useState('');
 
@@ -4648,6 +4649,7 @@ function JSMAppContent() {
     });
 
     const displayedRecords = feeLedgerTab === 'Pending' ? pendingFeeRecords : historyFeeRecords;
+    const visibleFeeRecords = displayedRecords.slice(0, feeDisplayLimit);
 
     return (
       <ScrollView
@@ -4778,10 +4780,10 @@ function JSMAppContent() {
           </Surface>
         ) : (
           <Surface style={styles.directoryListSurface} elevation={1}>
-            {displayedRecords.map((fee, idx) => {
+            {visibleFeeRecords.map((fee, idx) => {
               const st = studentMap[fee.studentId];
               const subjName = safeString(subjectMap[st?.subjectId]?.name, 'Unassigned');
-              const isLast = idx === displayedRecords.length - 1;
+              const isLast = idx === visibleFeeRecords.length - 1;
               const dueVal = safeNumber(fee.balanceDue, 0);
               const paidVal = safeNumber(fee.amountPaid, 0);
               const hasDue = dueVal > 0 || fee.status === 'Unpaid' || fee.status === 'Partial';
@@ -4885,6 +4887,14 @@ function JSMAppContent() {
             })}
           </Surface>
         )}
+        {visibleFeeRecords.length < displayedRecords.length ? (
+          <TouchableOpacity
+            style={[styles.emptyStateActionBtn, { alignSelf: 'center', marginVertical: 14 }]}
+            onPress={() => setFeeDisplayLimit((current) => current + 50)}
+          >
+            <Text style={styles.emptyStateActionText}>Load 50 more ({displayedRecords.length - visibleFeeRecords.length} remaining)</Text>
+          </TouchableOpacity>
+        ) : null}
       </ScrollView>
     );
   };
