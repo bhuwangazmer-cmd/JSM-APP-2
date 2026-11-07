@@ -5021,6 +5021,7 @@ function JSMAppContent() {
           Keyboard.dismiss();
           triggerHaptic(12);
           setShowFeeNote(false);
+          pendingFeeWriteIdRef.current = null;
           setFeeForm({
             id: null,
             studentId: selectedStudent.id,
@@ -5068,6 +5069,7 @@ function JSMAppContent() {
           if (activeStudents.length === 0)
             return Alert.alert('No Students', 'Enroll a student before recording fees.');
           setShowFeeNote(false);
+          pendingFeeWriteIdRef.current = null;
           setFeeForm({
             id: null,
             studentId: activeStudents[0]?.id || '',
@@ -6333,7 +6335,10 @@ function JSMAppContent() {
         onRequestClose={() => {
           if (dropdownPicker.visible) closeDropdownPicker();
           else if (calendarPicker.visible) closeCalendarPicker();
-          else setFeeModal(false);
+          else {
+            pendingFeeWriteIdRef.current = null;
+            setFeeModal(false);
+          }
         }}
       >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
