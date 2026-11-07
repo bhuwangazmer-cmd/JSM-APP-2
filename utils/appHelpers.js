@@ -8,7 +8,7 @@ const chunkArray = (items, size) => {
 
 const isWithinLastTwoLocalMonths = (isoDateStr, now = new Date()) => {
   if (typeof isoDateStr !== 'string') return false;
-  const match = /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(isoDateStr.trim());
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDateStr.trim());
   if (!match) return false;
   const year = Number(match[1]);
   const month = Number(match[2]);
