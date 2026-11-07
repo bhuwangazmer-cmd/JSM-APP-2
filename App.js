@@ -2,6 +2,7 @@
 // PART 1 OF 2
 // ==========================================
 import React, { Component, useState, useEffect, useRef, useMemo, useCallback } from 'react';
+const { chunkArray, isWithinLastTwoLocalMonths } = require('./utils/appHelpers');
 import {
   StyleSheet,
   Text,
@@ -338,20 +339,6 @@ const parseMonthYearSortKey = (label) => {
   const year = parseInt(parts[1], 10);
   if (mIdx === -1 || isNaN(year)) return 0;
   return year * 12 + mIdx;
-};
-
-const isWithinLastTwoLocalMonths = (isoDateStr) => {
-  const safeStr = safeString(isoDateStr).trim();
-  const normalized = normalizeISODate(safeStr) || safeStr;
-  if (!normalized) return false;
-  const parts = normalized.split('-');
-  if (parts.length < 2) return false;
-  const year = parseInt(parts[0], 10);
-  const monthIdx = parseInt(parts[1], 10) - 1;
-  if (isNaN(year) || isNaN(monthIdx)) return false;
-  const now = new Date();
-  const diff = now.getFullYear() * 12 + now.getMonth() - (year * 12 + monthIdx);
-  return diff <= 1;
 };
 
 const getDaysRemainingInTrash = (deletedAtMs) => {
@@ -2479,26 +2466,29 @@ function JSMAppContent() {
     try {
       triggerHaptic(14);
       triggerLayoutAnimation();
-      const batch = writeBatch(db);
       const now = Date.now();
-      targetStudents.forEach((st) => {
-        const existing = rosterAttendanceByStudent[st.id];
-        if (existing) {
-          batch.update(doc(db, 'attendance', existing.id), { status: 'Present' });
-        } else {
-          const deterministicId = `${st.id}_${validDate}`;
-          batch.set(doc(db, 'attendance', deterministicId), {
-            studentId: st.id,
-            date: validDate,
-            status: 'Present',
-            remarks: '',
-            timestamp: now,
-            isDeleted: false,
-            deletedAt: null,
-          });
-        }
-      });
-      await withWriteTimeout(batch.commit());
+      // Firestore limits each write batch to 500 operations; leave headroom.
+      for (const studentChunk of chunkArray(targetStudents, 450)) {
+        const batch = writeBatch(db);
+        studentChunk.forEach((st) => {
+          const existing = rosterAttendanceByStudent[st.id];
+          if (existing) {
+            batch.update(doc(db, 'attendance', existing.id), { status: 'Present' });
+          } else {
+            const deterministicId = `${st.id}_${validDate}`;
+            batch.set(doc(db, 'attendance', deterministicId), {
+              studentId: st.id,
+              date: validDate,
+              status: 'Present',
+              remarks: '',
+              timestamp: now,
+              isDeleted: false,
+              deletedAt: null,
+            });
+          }
+        });
+        await withWriteTimeout(batch.commit());
+      }
       logActivity(
         'Bulk Marked Present',
         `${subjName} (${targetStudents.length} students • ${formatReadableLocalDate(validDate)})`
