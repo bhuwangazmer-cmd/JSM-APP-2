@@ -4723,7 +4723,6 @@ function JSMAppContent() {
             ]}
             onPress={() => {
               triggerHaptic(6);
-              triggerLayoutAnimation();
               setFeeLedgerTab('Pending');
             }}
           >
@@ -4746,7 +4745,6 @@ function JSMAppContent() {
             ]}
             onPress={() => {
               triggerHaptic(6);
-              triggerLayoutAnimation();
               setFeeLedgerTab('History');
             }}
           >
