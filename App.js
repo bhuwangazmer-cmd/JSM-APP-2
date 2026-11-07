@@ -34,8 +34,6 @@ import * as Sharing from 'expo-sharing';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getFirestore,
-  initializeFirestore,
-  persistentLocalCache,
   collection,
   doc,
   addDoc,
@@ -84,12 +82,7 @@ const firebaseConfig = {
 };
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-let db;
-try {
-  db = initializeFirestore(app, { localCache: persistentLocalCache() });
-} catch (e) {
-  db = getFirestore(app);
-}
+const db = getFirestore(app);
 
 // ==========================================
 // 2. THEME, TYPOGRAPHY & PALETTE
@@ -274,23 +267,16 @@ const sanitizeDocRecord = (id, raw = {}, hasPendingWrites = false, colName = '')
   return base;
 };
 
-const withWriteTimeout = (promise, ms = 1200) => {
+const withWriteTimeout = (promise, ms = 15000) => {
   let timerId;
-  const timeoutPromise = new Promise((resolve) => {
-    timerId = setTimeout(() => resolve({ timedOutOffline: true }), ms);
+  const timeoutPromise = new Promise((_, reject) => {
+    timerId = setTimeout(() => {
+      const error = new Error('The save is taking longer than expected. Check your connection before retrying.');
+      error.code = 'jsm/write-timeout';
+      reject(error);
+    }, ms);
   });
-  return Promise.race([
-    promise
-      .then((res) => {
-        clearTimeout(timerId);
-        return res;
-      })
-      .catch((err) => {
-        clearTimeout(timerId);
-        throw err;
-      }),
-    timeoutPromise,
-  ]);
+  return Promise.race([Promise.resolve(promise), timeoutPromise]).finally(() => clearTimeout(timerId));
 };
 
 const getOffsetDateISO = (daysOffset = 0) => {
@@ -512,7 +498,9 @@ class ErrorBoundary extends Component {
   static getDerivedStateFromError(error) {
     return { hasError: true, errorMessage: safeString(error?.message, 'Unexpected UI error') };
   }
-  componentDidCatch() {}
+  componentDidCatch(error, info) {
+    console.error('[JSM] Unhandled render error:', error, info?.componentStack || '');
+  }
   render() {
     if (this.state.hasError) {
       return (
@@ -1217,31 +1205,31 @@ function JSMAppContent() {
       collection(db, 'subjects'),
       { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('subjects', snap, setSubjects),
-      () => {}
+      (error) => console.error('[JSM] Firestore listener failed (subjects):', error)
     );
     const unsubStudents = onSnapshot(
       collection(db, 'students'),
       { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('students', snap, setStudents),
-      () => {}
+      (error) => console.error('[JSM] Firestore listener failed (students):', error)
     );
     const unsubLessons = onSnapshot(
       collection(db, 'lessons'),
       { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('lessons', snap, setLessons),
-      () => {}
+      (error) => console.error('[JSM] Firestore listener failed (lessons):', error)
     );
     const unsubAttendance = onSnapshot(
       collection(db, 'attendance'),
       { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('attendance', snap, setAttendance),
-      () => {}
+      (error) => console.error('[JSM] Firestore listener failed (attendance):', error)
     );
     const unsubFees = onSnapshot(
       collection(db, 'fees'),
       { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('fees', snap, setFees),
-      () => {}
+      (error) => console.error('[JSM] Firestore listener failed (fees):', error)
     );
     const unsubActivities = onSnapshot(
       collection(db, 'activities'),
@@ -1267,7 +1255,7 @@ function JSMAppContent() {
         if (initialLoadDone.current) triggerLayoutAnimation();
         setActivities(list);
       },
-      () => {}
+      (error) => console.error('[JSM] Firestore listener failed (activities):', error)
     );
     const unsubNotice = onSnapshot(
       doc(db, 'settings', 'noticeBoard'),
@@ -1287,7 +1275,7 @@ function JSMAppContent() {
           setNoticeUpdatedAt('');
         }
       },
-      () => {}
+      (error) => console.error('[JSM] Firestore listener failed (noticeBoard):', error)
     );
 
     return () => {
@@ -1340,8 +1328,10 @@ function JSMAppContent() {
         timestamp: Date.now(),
         isDeleted: false,
         deletedAt: null,
-      }).catch(() => {});
-    } catch (e) {}
+      }).catch((error) => console.error('[JSM] Activity log write failed:', error));
+    } catch (error) {
+      console.error('[JSM] Activity log setup failed:', error);
+    }
   }, []);
 
   const activeSubjects = useMemo(
