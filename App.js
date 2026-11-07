@@ -2656,7 +2656,12 @@ function JSMAppContent() {
         }, 180);
       }
     } catch (e) {
-      Alert.alert('Error', 'Could not save fee record.');
+      Alert.alert(
+        'Save not confirmed',
+        e?.code === 'jsm/write-timeout'
+          ? 'The fee save is still awaiting confirmation. Keep this form open and do not start a second fee record. You can retry Save safely; it will reuse the same record ID.'
+          : 'Could not save fee record. Check the details and connection before retrying.'
+      );
     } finally {
       savingLockRef.current = false;
     }
