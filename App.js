@@ -34,8 +34,6 @@ import * as Sharing from 'expo-sharing';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getFirestore,
-  initializeFirestore,
-  persistentLocalCache,
   collection,
   doc,
   addDoc,
@@ -84,12 +82,7 @@ const firebaseConfig = {
 };
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-let db;
-try {
-  db = initializeFirestore(app, { localCache: persistentLocalCache() });
-} catch (e) {
-  db = getFirestore(app);
-}
+const db = getFirestore(app);
 
 // ==========================================
 // 2. THEME, TYPOGRAPHY & PALETTE
@@ -274,23 +267,16 @@ const sanitizeDocRecord = (id, raw = {}, hasPendingWrites = false, colName = '')
   return base;
 };
 
-const withWriteTimeout = (promise, ms = 1200) => {
+const withWriteTimeout = (promise, ms = 15000) => {
   let timerId;
-  const timeoutPromise = new Promise((resolve) => {
-    timerId = setTimeout(() => resolve({ timedOutOffline: true }), ms);
+  const timeoutPromise = new Promise((_, reject) => {
+    timerId = setTimeout(() => {
+      const error = new Error('The save is taking longer than expected. Check your connection before retrying.');
+      error.code = 'jsm/write-timeout';
+      reject(error);
+    }, ms);
   });
-  return Promise.race([
-    promise
-      .then((res) => {
-        clearTimeout(timerId);
-        return res;
-      })
-      .catch((err) => {
-        clearTimeout(timerId);
-        throw err;
-      }),
-    timeoutPromise,
-  ]);
+  return Promise.race([Promise.resolve(promise), timeoutPromise]).finally(() => clearTimeout(timerId));
 };
 
 const getOffsetDateISO = (daysOffset = 0) => {
@@ -512,7 +498,9 @@ class ErrorBoundary extends Component {
   static getDerivedStateFromError(error) {
     return { hasError: true, errorMessage: safeString(error?.message, 'Unexpected UI error') };
   }
-  componentDidCatch() {}
+  componentDidCatch(error, info) {
+    console.error('[JSM] Unhandled render error:', error, info?.componentStack || '');
+  }
   render() {
     if (this.state.hasError) {
       return (
@@ -692,6 +680,7 @@ function JSMAppContent() {
   const drawerBackdropAnim = useRef(new Animated.Value(0)).current;
   const liveDotPulseAnim = useRef(new Animated.Value(1)).current;
   const savingLockRef = useRef(false);
+  const pendingFeeWriteIdRef = useRef(null);
   const isMountedRef = useRef(true);
   const pendingTimeoutsRef = useRef([]);
   const purgingIdsRef = useRef(new Set());
@@ -723,12 +712,16 @@ function JSMAppContent() {
   const [studentSearch, setStudentSearch] = useState('');
   const [studentFilter, setStudentFilter] = useState('All');
   const [collapsedSubjects, setCollapsedSubjects] = useState({});
+  const [studentDisplayLimit, setStudentDisplayLimit] = useState(50);
+  const [attendanceHistoryLimit, setAttendanceHistoryLimit] = useState(50);
+  const [trashDisplayLimit, setTrashDisplayLimit] = useState(50);
 
   const [attendanceViewMode, setAttendanceViewMode] = useState('Roster'); // 'Roster' | 'History'
   const [rosterDate, setRosterDate] = useState(getTodayISO());
   const [collapsedRosterSubjects, setCollapsedRosterSubjects] = useState({});
 
   const [feeLedgerTab, setFeeLedgerTab] = useState('Pending'); // 'Pending' | 'History'
+  const [feeDisplayLimit, setFeeDisplayLimit] = useState(50);
   const [feeSearchVisible, setFeeSearchVisible] = useState(false);
   const [feeSearchQuery, setFeeSearchQuery] = useState('');
 
@@ -1217,31 +1210,31 @@ function JSMAppContent() {
       collection(db, 'subjects'),
       { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('subjects', snap, setSubjects),
-      () => {}
+      (error) => console.error('[JSM] Firestore listener failed (subjects):', error)
     );
     const unsubStudents = onSnapshot(
       collection(db, 'students'),
       { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('students', snap, setStudents),
-      () => {}
+      (error) => console.error('[JSM] Firestore listener failed (students):', error)
     );
     const unsubLessons = onSnapshot(
       collection(db, 'lessons'),
       { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('lessons', snap, setLessons),
-      () => {}
+      (error) => console.error('[JSM] Firestore listener failed (lessons):', error)
     );
     const unsubAttendance = onSnapshot(
       collection(db, 'attendance'),
       { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('attendance', snap, setAttendance),
-      () => {}
+      (error) => console.error('[JSM] Firestore listener failed (attendance):', error)
     );
     const unsubFees = onSnapshot(
       collection(db, 'fees'),
       { includeMetadataChanges: true },
       (snap) => handleSnapshotWithAutoPurge('fees', snap, setFees),
-      () => {}
+      (error) => console.error('[JSM] Firestore listener failed (fees):', error)
     );
     const unsubActivities = onSnapshot(
       collection(db, 'activities'),
@@ -1267,7 +1260,7 @@ function JSMAppContent() {
         if (initialLoadDone.current) triggerLayoutAnimation();
         setActivities(list);
       },
-      () => {}
+      (error) => console.error('[JSM] Firestore listener failed (activities):', error)
     );
     const unsubNotice = onSnapshot(
       doc(db, 'settings', 'noticeBoard'),
@@ -1287,7 +1280,7 @@ function JSMAppContent() {
           setNoticeUpdatedAt('');
         }
       },
-      () => {}
+      (error) => console.error('[JSM] Firestore listener failed (noticeBoard):', error)
     );
 
     return () => {
@@ -1340,8 +1333,10 @@ function JSMAppContent() {
         timestamp: Date.now(),
         isDeleted: false,
         deletedAt: null,
-      }).catch(() => {});
-    } catch (e) {}
+      }).catch((error) => console.error('[JSM] Activity log write failed:', error));
+    } catch (error) {
+      console.error('[JSM] Activity log setup failed:', error);
+    }
   }, []);
 
   const activeSubjects = useMemo(
@@ -2635,8 +2630,10 @@ function JSMAppContent() {
           `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ₹${numericPaid}`
         );
       } else {
+        const feeWriteId = pendingFeeWriteIdRef.current || doc(collection(db, 'fees')).id;
+        pendingFeeWriteIdRef.current = feeWriteId;
         await withWriteTimeout(
-          addDoc(collection(db, 'fees'), {
+          setDoc(doc(db, 'fees', feeWriteId), {
             ...payload,
             timestamp: Date.now(),
             isDeleted: false,
@@ -2648,6 +2645,7 @@ function JSMAppContent() {
           `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ₹${numericPaid} (${payload.status})`
         );
       }
+      pendingFeeWriteIdRef.current = null;
       closeCalendarPicker();
       closeDropdownPicker();
       setFeeModal(false);
@@ -2658,7 +2656,12 @@ function JSMAppContent() {
         }, 180);
       }
     } catch (e) {
-      Alert.alert('Error', 'Could not save fee record.');
+      Alert.alert(
+        'Save not confirmed',
+        e?.code === 'jsm/write-timeout'
+          ? 'The fee save is still awaiting confirmation. Keep this form open and do not start a second fee record. You can retry Save safely; it will reuse the same record ID.'
+          : 'Could not save fee record. Check the details and connection before retrying.'
+      );
     } finally {
       savingLockRef.current = false;
     }
@@ -3577,7 +3580,8 @@ function JSMAppContent() {
       return true;
     });
     const activeSubjectIdSet = new Set(activeSubjects.map((s) => s.id));
-    const unassignedStudents = filteredStudents.filter((st) => !activeSubjectIdSet.has(st.subjectId));
+    const visibleStudents = filteredStudents.slice(0, studentDisplayLimit);
+    const unassignedStudents = visibleStudents.filter((st) => !activeSubjectIdSet.has(st.subjectId));
 
     const filterOptions = [
       { value: 'All', label: `All Students (${activeStudents.length})` },
@@ -3684,7 +3688,7 @@ function JSMAppContent() {
         ) : (
           <>
             {activeSubjects.map((subj) => {
-              const subjStudents = filteredStudents.filter((s) => s.subjectId === subj.id);
+              const subjStudents = visibleStudents.filter((s) => s.subjectId === subj.id);
               if ((query || studentFilter !== 'All') && subjStudents.length === 0) return null;
               const isCollapsed = Boolean(collapsedSubjects[subj.id]);
 
@@ -3749,6 +3753,11 @@ function JSMAppContent() {
                   </Surface>
                 )}
               </View>
+            )}
+            {visibleStudents.length < filteredStudents.length && (
+              <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setStudentDisplayLimit((n) => n + 50)}>
+                Load 50 more students ({filteredStudents.length - visibleStudents.length} remaining)
+              </PaperButton>
             )}
           </>
         )}
@@ -4304,10 +4313,11 @@ function JSMAppContent() {
     const filteredRecords = attendanceFilterAllMonths
       ? activeAttendance
       : activeAttendance.filter((a) => isWithinLastTwoLocalMonths(a.date));
+    const visibleHistoryRecords = filteredRecords.slice(0, attendanceHistoryLimit);
 
     const historyByDate = [];
     const dateBuckets = {};
-    filteredRecords.forEach((rec) => {
+    visibleHistoryRecords.forEach((rec) => {
       const dKey = rec.date || 'Unknown';
       if (!dateBuckets[dKey]) {
         dateBuckets[dKey] = [];
@@ -4618,6 +4628,11 @@ function JSMAppContent() {
                 </View>
               ))
             )}
+            {visibleHistoryRecords.length < filteredRecords.length && (
+              <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setAttendanceHistoryLimit((n) => n + 50)}>
+                Load 50 more records ({filteredRecords.length - visibleHistoryRecords.length} remaining)
+              </PaperButton>
+            )}
           </>
         )}
       </ScrollView>
@@ -4658,6 +4673,7 @@ function JSMAppContent() {
     });
 
     const displayedRecords = feeLedgerTab === 'Pending' ? pendingFeeRecords : historyFeeRecords;
+    const visibleFeeRecords = displayedRecords.slice(0, feeDisplayLimit);
 
     return (
       <ScrollView
@@ -4788,10 +4804,10 @@ function JSMAppContent() {
           </Surface>
         ) : (
           <Surface style={styles.directoryListSurface} elevation={1}>
-            {displayedRecords.map((fee, idx) => {
+            {visibleFeeRecords.map((fee, idx) => {
               const st = studentMap[fee.studentId];
               const subjName = safeString(subjectMap[st?.subjectId]?.name, 'Unassigned');
-              const isLast = idx === displayedRecords.length - 1;
+              const isLast = idx === visibleFeeRecords.length - 1;
               const dueVal = safeNumber(fee.balanceDue, 0);
               const paidVal = safeNumber(fee.amountPaid, 0);
               const hasDue = dueVal > 0 || fee.status === 'Unpaid' || fee.status === 'Partial';
@@ -4895,6 +4911,14 @@ function JSMAppContent() {
             })}
           </Surface>
         )}
+        {visibleFeeRecords.length < displayedRecords.length ? (
+          <TouchableOpacity
+            style={[styles.emptyStateActionBtn, { alignSelf: 'center', marginVertical: 14 }]}
+            onPress={() => setFeeDisplayLimit((current) => current + 50)}
+          >
+            <Text style={styles.emptyStateActionText}>Load 50 more ({displayedRecords.length - visibleFeeRecords.length} remaining)</Text>
+          </TouchableOpacity>
+        ) : null}
       </ScrollView>
     );
   };
@@ -4927,7 +4951,7 @@ function JSMAppContent() {
             <EmptyStateWatermark compact message="" />
           </Surface>
         ) : (
-          trashItems.map((item) => {
+          trashItems.slice(0, trashDisplayLimit).map((item) => {
             const daysLeft = getDaysRemainingInTrash(item.deletedAt);
             return (
               <ScalePressable
@@ -4959,6 +4983,11 @@ function JSMAppContent() {
               </ScalePressable>
             );
           })
+        )}
+        {trashItems.length > trashDisplayLimit && (
+          <PaperButton mode="outlined" textColor={COLORS.navy} onPress={() => setTrashDisplayLimit((n) => n + 50)}>
+            Load 50 more items ({trashItems.length - trashDisplayLimit} remaining)
+          </PaperButton>
         )}
       </ScrollView>
     );
@@ -4997,6 +5026,7 @@ function JSMAppContent() {
           Keyboard.dismiss();
           triggerHaptic(12);
           setShowFeeNote(false);
+          pendingFeeWriteIdRef.current = null;
           setFeeForm({
             id: null,
             studentId: selectedStudent.id,
@@ -5044,6 +5074,7 @@ function JSMAppContent() {
           if (activeStudents.length === 0)
             return Alert.alert('No Students', 'Enroll a student before recording fees.');
           setShowFeeNote(false);
+          pendingFeeWriteIdRef.current = null;
           setFeeForm({
             id: null,
             studentId: activeStudents[0]?.id || '',
@@ -6309,7 +6340,10 @@ function JSMAppContent() {
         onRequestClose={() => {
           if (dropdownPicker.visible) closeDropdownPicker();
           else if (calendarPicker.visible) closeCalendarPicker();
-          else setFeeModal(false);
+          else {
+            pendingFeeWriteIdRef.current = null;
+            setFeeModal(false);
+          }
         }}
       >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
