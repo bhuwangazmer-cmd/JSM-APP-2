@@ -2006,9 +2006,16 @@ function JSMAppContent() {
 
   const commitSubjectOrderList = async (reorderedList) => {
     try {
-      const batch = writeBatch(db);
-      reorderedList.forEach((subj, index) => batch.update(doc(db, 'subjects', subj.id), { order: index }));
-      await withWriteTimeout(batch.commit());
+      const CHUNK_SIZE = 450;
+      let offset = 0;
+      for (const subjectChunk of chunkArray(reorderedList, CHUNK_SIZE)) {
+        const batch = writeBatch(db);
+        subjectChunk.forEach((subj, index) =>
+          batch.update(doc(db, 'subjects', subj.id), { order: offset + index })
+        );
+        await withWriteTimeout(batch.commit());
+        offset += subjectChunk.length;
+      }
       logActivity('Reordered Subjects', 'Updated instrument display order');
     } catch (e) {
       Alert.alert('Error', 'Could not save new subject order.');

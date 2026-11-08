@@ -4,6 +4,7 @@
 
 - Fixed the recent-attendance month filter so it rejects future dates, malformed dates, and impossible calendar dates. The filter includes the current and immediately preceding calendar month.
 - Split bulk "All Present" attendance writes into batches of 450 operations, below Firestore's 500-write batch limit.
+- Split subject-order writes into batches of 450 operations so large subject lists stay within Firestore's write limit.
 - Added unit tests for the date filter and batch chunking helper.
 - Added an `npm test` script using Node's built-in test runner.
 - Updated the APK workflow to use `npm ci --legacy-peer-deps`, run tests before building, use read-only repository contents permission, and validate pull requests targeting `main`.

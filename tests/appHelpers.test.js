@@ -6,6 +6,12 @@ test('chunkArray splits large inputs without losing order', () => {
   assert.deepEqual(chunkArray([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]]);
 });
 
+test('chunkArray keeps Firestore write batches below the 500-operation limit', () => {
+  const chunks = chunkArray(Array.from({ length: 901 }, (_, index) => index), 450);
+  assert.deepEqual(chunks.map((chunk) => chunk.length), [450, 450, 1]);
+  assert.deepEqual(chunks.flat(), Array.from({ length: 901 }, (_, index) => index));
+});
+
 test('chunkArray handles empty input and rejects invalid sizes', () => {
   assert.deepEqual(chunkArray([], 450), []);
   assert.throws(() => chunkArray([1], 0), RangeError);
