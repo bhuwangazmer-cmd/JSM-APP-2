@@ -85,7 +85,8 @@ const triggerHaptic = (ms = 12) => {
 // 1. FIREBASE CONFIGURATION (JSM-APP-CDE22)
 // ==========================================
 const firebaseConfig = {
-  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || "AIzaSyBLbRyy9q5jwfuHlxi06DBiiWNtTK_koe8",
+  // This must come from the EAS environment; do not silently ship a stale key.
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || '',
   authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || "jsm-app-cde22.firebaseapp.com",
   projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || "jsm-app-cde22",
   storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || "jsm-app-cde22.firebasestorage.app",
@@ -6893,6 +6894,10 @@ function FirebaseSignInScreen() {
 
   const handleSignIn = async () => {
     if (!email.trim() || !password || submitting) return;
+    if (!firebaseConfig.apiKey) {
+      setErrorMessage('Firebase API key is not configured for this app. Set EXPO_PUBLIC_FIREBASE_API_KEY in the Expo preview environment, then publish a preview update.');
+      return;
+    }
     setSubmitting(true);
     setErrorMessage('');
     try {
@@ -6906,8 +6911,8 @@ function FirebaseSignInScreen() {
         message = 'Too many attempts. Please wait a while before trying again.';
       } else if (error?.code === 'auth/operation-not-allowed') {
         message = 'Email and password sign-in is not enabled for this Firebase project.';
-      } else if (error?.code === 'auth/api-key-not-valid') {
-        message = `Firebase rejected this app's API key before checking the account (project: ${firebaseConfig.projectId}). This is not a password error. Firebase does not say which key condition failed. Check that the key in this APK is active and belongs to this project, and that its application restrictions allow this app and its API restrictions include Identity Toolkit API and Token Service API. If those all match, download and install the APK from the latest successful GitHub Actions run to rule out an older build.`;
+      } else if (errorCode.startsWith('auth/api-key-not-valid')) {
+        message = `Firebase rejected this app's API key before checking the account (project: ${firebaseConfig.projectId}). This is not a password error. Firebase does not say whether the key is invalid, belongs to another project, or is blocked by a restriction. Set a valid EXPO_PUBLIC_FIREBASE_API_KEY in the EAS preview environment and publish a preview update.`;
       } else {
         message = 'Sign-in failed. Check your email and password and try again.';
       }

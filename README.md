@@ -22,10 +22,12 @@ Trash records remain available until a user explicitly restores or permanently d
 
 ## Android APK
 
-The `preview` EAS profile produces an internal APK. The GitHub Actions workflow builds it on pushes to `main` and manual dispatch; pull requests run tests and Expo diagnostics without access to the Expo token.
+The `preview` EAS profile produces an internal APK. Pushes and pull requests run tests and Expo diagnostics. To build an APK, manually run **Build APK** in GitHub Actions on `main`.
 
-The workflow requires the repository secret `EXPO_TOKEN` and valid EAS Android signing credentials. Successful APKs are uploaded as the `JSM-App-APK` workflow artifact.
+The APK workflow requires the repository secret `EXPO_TOKEN`, valid EAS Android signing credentials, and `EXPO_PUBLIC_FIREBASE_API_KEY` in the Expo project's `preview` environment. Before deploying, it checks the key against Firebase Authentication without creating an account. Successful APKs are uploaded as the `JSM-App-APK` workflow artifact for seven days.
+
+For JavaScript-only fixes, use **Publish Android Preview Update** in GitHub Actions instead of rebuilding the APK. It publishes to the `preview` channel used by the internal APKs and checks the key before publishing. In the Expo dashboard, open this project’s **Environment variables**, select `preview`, and add `EXPO_PUBLIC_FIREBASE_API_KEY` with Sensitive visibility. Use the valid API key for this Firebase project. Firebase client API keys are included in the app bundle; they are not passwords or access controls.
 
 ## Firebase security
 
-The client contains Firebase project configuration, but the repository does not define Firestore Security Rules or an app sign-in policy. Review and secure the deployed Firebase rules before using real student or fee data. Client-side validation and the Firebase API key are not access controls.
+The app uses Firebase email/password authentication and owner-only Firestore rules from `firestore.rules`. Confirm deployed rules match that file and the owner UID belongs to the intended Firebase Authentication account. Client-side validation and the Firebase API key are not access controls.

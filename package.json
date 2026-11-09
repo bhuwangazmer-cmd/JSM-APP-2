@@ -9,7 +9,8 @@
   "scripts": {
     "start": "expo start",
     "test": "node --test",
-    "doctor": "expo-doctor"
+    "doctor": "expo-doctor",
+    "verify:firebase-key": "node scripts/verifyFirebaseApiKey.js"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

@@ -15,19 +15,22 @@
 - Added React Native AsyncStorage for persistent Firebase Auth sessions.
 - Activity log writes now use numeric timestamps compatible with the original rules, and read/write failures are shown in the Activity Log instead of only being logged to the developer console.
 - Expo dependencies were upgraded incrementally to SDK 58. The splash screen uses its config plugin, OTA runtime versions use fingerprints, and CI uses the SDK-supported Node 22 line.
-- CI runs tests and Expo Doctor on pull requests, skips token-backed EAS builds for PR code, pins EAS CLI, and writes the APK outside the repository.
+- CI runs tests and Expo Doctor on pushes and pull requests; APK builds are now manual-only on `main`. A separate manual workflow publishes JavaScript-only changes to the `preview` update channel. EAS deployment steps validate that the preview Firebase key is configured first.
 - npm dependency overrides address the remaining audited transitive advisories.
 
 ## Still requires project-owner configuration or a larger design decision
 
-- The owner reports publishing the owner-only rules. The latest sign-in diagnostic and activity-log fixes are local changes and require a new APK before they are present on the device.
+- The owner reports publishing the owner-only rules. Deployed rules were not independently verified against `firestore.rules`.
+- Firebase sign-in was blocked by the API key: a direct, non-account-creating Firebase Auth endpoint check of the repository's configured key returned `API_KEY_INVALID`. The old APK workflow did not provide a Firebase key and silently bundled that fallback. The fallback was removed; the app now requires `EXPO_PUBLIC_FIREBASE_API_KEY` from EAS. A verifier checks the configured key before APK or OTA deployment. The owner must set a valid key in the Expo project's `preview` environment and manually run **Publish Android Preview Update**. Existing preview APKs can receive this JavaScript-only correction without rebuilding if they use Expo Updates and the `preview` channel.
+- Authentication and activity logging still require on-device verification after the preview update is published and downloaded.
 - Firestore collections are still listened to in full. True cursor pagination must preserve cross-screen aggregates, reports, and Trash behavior; simply adding `limit()` would silently hide older records.
-- The owner reports that an APK was built, but sign-in failed. Rebuild/install after the latest local changes, then verify authentication and activity logging on-device; gestures, offline writes, fee settlement, PDF sharing, OTA updates, and navigation still need device checks.
+- The owner reports that an APK was built, but sign-in failed. Verify authentication and activity logging after the preview update; gestures, offline writes, fee settlement, PDF sharing, and navigation still need device checks.
 
 ## Validation performed
 
 - Unit tests: 5/5 passed.
 - Expo Doctor: 20/20 checks passed after the sign-in/activity-log changes.
+- Firebase Auth API-key probe: rejected the repository's previously configured key with `API_KEY_INVALID`; the request used a dummy non-routable email and did not create an account.
 - Android Metro export passed with Hermes bytecode disabled. The Windows Hermes compiler subprocess returned `spawn UNKNOWN`; the Linux EAS build remains the authoritative APK check.
 - `npm audit`: 0 vulnerabilities after the SDK/dependency update and overrides.
 - `git diff --check` passed.
