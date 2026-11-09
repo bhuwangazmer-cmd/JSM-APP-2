@@ -1,22 +1,28 @@
-# Repository audit fixes
+# Repository hardening status
 
-## Implemented on this branch
+## Fixed in the repository
 
-- Fixed the recent-attendance month filter so it rejects future dates, malformed dates, and impossible calendar dates. The filter includes the current and immediately preceding calendar month.
-- Split bulk "All Present" attendance writes into batches of 450 operations, below Firestore's 500-write batch limit.
-- Split subject-order writes into batches of 450 operations so large subject lists stay within Firestore's write limit.
-- Added unit tests for the date filter and batch chunking helper.
-- Added an `npm test` script using Node's built-in test runner.
-- Updated the APK workflow to use `npm ci --legacy-peer-deps`, run tests before building, use read-only repository contents permission, and validate pull requests targeting `main`.
+- Firestore cache snapshots no longer trigger automatic age-based permanent purges. Trash remains until an explicit permanent-delete action. Orphan cleanup waits for server-confirmed collection snapshots and verifies the child and parent again inside a transaction.
+- Trash timestamps use server time. Student cascades tag linked records, process children before the parent, and restore tagged children with the parent. Permanent cascades also process children before parents.
+- New subject, student, lesson, and fee records reuse a stable document ID while a write is unresolved, preventing duplicate records after a timeout/retry.
+- Re-entered attendance no longer overwrites a soft-deleted record; it creates a new versioned record. Restore conflicts are explicit.
+- Fee balance settlement creates a separate, idempotent payment record and preserves the original transaction date. Monthly reports use `monthPaidFor` consistently.
+- Student-note edits use a Firestore transaction to detect concurrent edits and provide reload/replace choices. Late inline saves do not reset a different or edited draft.
+- Attendance grouping uses a prototype-free map.
+- Expo dependencies were upgraded incrementally to SDK 58. The splash screen uses its config plugin, OTA runtime versions use fingerprints, and CI uses the SDK-supported Node 22 line.
+- CI runs tests and Expo Doctor on pull requests, skips token-backed EAS builds for PR code, pins EAS CLI, and writes the APK outside the repository.
+- npm dependency overrides address the remaining audited transitive advisories.
 
-## Items requiring Firebase project access / owner decisions
+## Still requires project-owner configuration or a larger design decision
 
-- Firestore security rules are not present in this repository. Do not deploy guessed rules: the correct policy depends on the intended user/authentication model and data-sharing requirements. Review the deployed rules in Firebase Console and confirm unauthenticated clients cannot read or write student, attendance, lesson, fee, activity, settings, or notice-board documents.
-- The app currently initializes Firestore without a user sign-in flow. If this is intended to be a single-administrator app, define and implement the administrator authentication model before enforcing authenticated-only rules.
-- The repository's Firebase client configuration includes a public API key. Firebase web/mobile API keys are identifiers, not authorization boundaries; restrict the key as appropriate, and rely on Firestore Security Rules/App Check rather than treating the key as a secret.
-- Full Firestore query pagination remains a larger architectural change. Current UI limits only reduce rendered rows; collection listeners still load the collections in full. Converting these listeners safely requires cursor-based queries, listener lifecycle design, and changes to aggregates/reports/trash behavior.
-- Device-level verification remains required for offline writes, fee retry behavior, bulk attendance, PDF sharing, OTA updates, and Android navigation/gestures.
+- The app still has no sign-in flow, and no Firestore rules are tracked. Review the deployed rules and choose an administrator access policy before using real student or fee data. Do not deploy guessed rules: a deny-all ruleset would also disable the current app.
+- Firestore collections are still listened to in full. True cursor pagination must preserve cross-screen aggregates, reports, and Trash behavior; simply adding `limit()` would silently hide older records.
+- Full EAS Android build and on-device checks are still required, especially for gestures, offline writes, fee settlement, PDF sharing, OTA updates, and navigation.
 
-## Validation
+## Validation performed
 
-The pull-request workflow runs `npm ci --legacy-peer-deps`, `npm test`, and the local EAS Android APK build. Results must be checked after the workflow completes; source changes alone are not evidence that the APK builds or the app behaves correctly.
+- Expo Doctor: 20/20 checks passed.
+- `App.js` Babel transform passed.
+- Android Metro export passed with Hermes bytecode disabled. The Windows Hermes compiler subprocess returned `spawn UNKNOWN`; the Linux EAS build remains the authoritative APK check.
+- `npm audit`: 0 vulnerabilities after the SDK/dependency update and overrides.
+- Unit tests were not rerun during this implementation turn.

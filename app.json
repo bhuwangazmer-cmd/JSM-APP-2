@@ -6,9 +6,6 @@
     "orientation": "portrait",
     "icon": "./icon.png",
     "userInterfaceStyle": "light",
-    "splash": {
-      "backgroundColor": "#0C2D57"
-    },
     "android": {
       "package": "com.jsmapp.official",
       "versionCode": 1,
@@ -22,7 +19,7 @@
       "buildNumber": "1"
     },
     "runtimeVersion": {
-      "policy": "appVersion"
+      "policy": "fingerprint"
     },
     "updates": {
       "url": "https://u.expo.dev/4706e5eb-66c4-458a-86b4-9833fcb78c9e"
@@ -34,7 +31,16 @@
     },
     "plugins": [
       "expo-font",
-      "./plugins/withGradleWrapperNetworkTimeout"
+      "./plugins/withGradleWrapperNetworkTimeout",
+      "expo-sharing",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0C2D57",
+          "image": "./icon.png",
+          "imageWidth": 200
+        }
+      ]
     ]
   }
 }

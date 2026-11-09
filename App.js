@@ -39,8 +39,10 @@ import {
   doc,
   addDoc,
   updateDoc,
-  deleteDoc,
   setDoc,
+  serverTimestamp,
+  deleteField,
+  runTransaction,
   onSnapshot,
   writeBatch,
 } from 'firebase/firestore';
@@ -158,6 +160,14 @@ const safeNumber = (val, fallback = 0) => {
   return Number.isFinite(n) ? n : fallback;
 };
 
+const timestampToMillis = (value, fallback = 0) => {
+  if (value && typeof value.toMillis === 'function') {
+    const millis = value.toMillis();
+    return Number.isFinite(millis) ? millis : fallback;
+  }
+  return safeNumber(value, fallback);
+};
+
 const getInitials = (nameStr) => {
   const clean = safeString(nameStr).trim();
   if (!clean) return '?';
@@ -194,11 +204,11 @@ const sanitizeDocRecord = (id, raw = {}, hasPendingWrites = false, colName = '')
   const base = {
     ...data,
     id: safeString(id),
-    timestamp: safeNumber(data.timestamp, 0),
+    timestamp: timestampToMillis(data.timestamp, 0),
     deletedAt: isDeleted
-      ? safeNumber(data.deletedAt, safeNumber(data.timestamp, 0) || Date.now())
+      ? timestampToMillis(data.deletedAt, timestampToMillis(data.timestamp, 0) || Date.now())
       : data.deletedAt
-      ? safeNumber(data.deletedAt, null)
+      ? timestampToMillis(data.deletedAt, null)
       : null,
     isDeleted,
     _pendingSync: Boolean(hasPendingWrites),
@@ -280,6 +290,55 @@ const withWriteTimeout = (promise, ms = 15000) => {
   return Promise.race([Promise.resolve(promise), timeoutPromise]).finally(() => clearTimeout(timerId));
 };
 
+const createStableDocument = async (collectionName, fields, pendingWriteRef) => {
+  const signature = JSON.stringify(fields);
+  let pendingWrite = pendingWriteRef.current;
+
+  if (pendingWrite?.settled) {
+    const completedRef = doc(db, collectionName, pendingWrite.id);
+    pendingWriteRef.current = null;
+    if (pendingWrite.signature === signature) return completedRef;
+    pendingWrite = null;
+  }
+
+  if (pendingWrite && pendingWrite.signature !== signature) {
+    const error = new Error('A previous save is still awaiting confirmation. Retry it with the same details first.');
+    error.code = 'jsm/write-pending';
+    throw error;
+  }
+
+  if (!pendingWrite) {
+    pendingWrite = {
+      id: doc(collection(db, collectionName)).id,
+      signature,
+      settled: false,
+    };
+    pendingWriteRef.current = pendingWrite;
+  }
+
+  const pendingId = pendingWrite.id;
+  const documentRef = doc(db, collectionName, pendingId);
+  const writePromise = setDoc(documentRef, {
+    ...fields,
+    timestamp: serverTimestamp(),
+    isDeleted: false,
+    deletedAt: null,
+  });
+  const markPendingWriteSettled = () => {
+    if (pendingWriteRef.current?.id === pendingId) pendingWriteRef.current.settled = true;
+  };
+  const clearRejectedWrite = () => {
+    if (pendingWriteRef.current?.id === pendingId) pendingWriteRef.current = null;
+  };
+
+  // The timeout only changes what the UI awaits; Firestore may still finish the write.
+  // Keep the ID until that original write settles so a retry cannot create a second doc.
+  writePromise.then(markPendingWriteSettled, clearRejectedWrite);
+  await withWriteTimeout(writePromise);
+  if (pendingWriteRef.current?.id === pendingId) pendingWriteRef.current = null;
+  return documentRef;
+};
+
 const getOffsetDateISO = (daysOffset = 0) => {
   const d = new Date();
   d.setDate(d.getDate() + daysOffset);
@@ -341,11 +400,6 @@ const parseMonthYearSortKey = (label) => {
   return year * 12 + mIdx;
 };
 
-const getDaysRemainingInTrash = (deletedAtMs) => {
-  if (!deletedAtMs) return 30;
-  return Math.max(0, 30 - Math.floor((Date.now() - safeNumber(deletedAtMs, Date.now())) / (1000 * 60 * 60 * 24)));
-};
-
 const escapeHtml = (unsafe) =>
   safeString(unsafe)
     .replace(/&/g, '&amp;')
@@ -373,12 +427,16 @@ const commitBatchDeletes = async (entries) => {
 
 const commitBatchSoftDeletes = async (entries) => {
   const CHUNK_SIZE = 450;
-  const now = Date.now();
   for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
     const batch = writeBatch(db);
-    entries
-      .slice(i, i + CHUNK_SIZE)
-      .forEach((entry) => batch.update(doc(db, entry.col, entry.id), { isDeleted: true, deletedAt: now }));
+    entries.slice(i, i + CHUNK_SIZE).forEach((entry) => {
+      const update = {
+        isDeleted: true,
+        deletedAt: serverTimestamp(),
+        deletedWithParentId: entry.deletedWithParentId || deleteField(),
+      };
+      batch.update(doc(db, entry.col, entry.id), update);
+    });
     await withWriteTimeout(batch.commit());
   }
 };
@@ -667,7 +725,11 @@ function JSMAppContent() {
   const drawerBackdropAnim = useRef(new Animated.Value(0)).current;
   const liveDotPulseAnim = useRef(new Animated.Value(1)).current;
   const savingLockRef = useRef(false);
-  const pendingFeeWriteIdRef = useRef(null);
+  const pendingSubjectWriteRef = useRef(null);
+  const pendingStudentWriteRef = useRef(null);
+  const pendingLessonWriteRef = useRef(null);
+  const pendingFeeWriteRef = useRef(null);
+  const pendingSettlementWritesRef = useRef(new Map());
   const isMountedRef = useRef(true);
   const pendingTimeoutsRef = useRef([]);
   const purgingIdsRef = useRef(new Set());
@@ -925,6 +987,16 @@ function JSMAppContent() {
     status: 'Present',
     remarks: '',
   });
+  const inlineLessonDraftVersionRef = useRef(0);
+  const inlineAttendanceDraftVersionRef = useRef(0);
+  const updateInlineLessonForm = useCallback((next) => {
+    inlineLessonDraftVersionRef.current += 1;
+    setInlineLessonForm((previous) => (typeof next === 'function' ? next(previous) : next));
+  }, []);
+  const updateInlineAttendanceForm = useCallback((next) => {
+    inlineAttendanceDraftVersionRef.current += 1;
+    setInlineAttendanceForm((previous) => (typeof next === 'function' ? next(previous) : next));
+  }, []);
   const [attendanceModal, setAttendanceModal] = useState(false);
   const [attendanceFilterAllMonths, setAttendanceFilterAllMonths] = useState(false);
   const [attendanceModalForm, setAttendanceModalForm] = useState({
@@ -973,16 +1045,17 @@ function JSMAppContent() {
   });
 
   const activeTabRef = useRef(activeTab);
+  const selectedStudentIdRef = useRef(selectedStudentId);
   const profileTabRef = useRef(profileTab);
   const orderedSubjectsRef = useRef(orderedSubjects);
   const activeSubjectsRef = useRef([]);
-  const lessonsRef = useRef(lessons);
-  const attendanceRef = useRef(attendance);
-  const feesRef = useRef(fees);
 
   useEffect(() => {
     activeTabRef.current = activeTab;
   }, [activeTab]);
+  useEffect(() => {
+    selectedStudentIdRef.current = selectedStudentId;
+  }, [selectedStudentId]);
   useEffect(() => {
     profileTabRef.current = profileTab;
   }, [profileTab]);
@@ -990,13 +1063,12 @@ function JSMAppContent() {
     orderedSubjectsRef.current = orderedSubjects;
   }, [orderedSubjects]);
   useEffect(() => {
-    lessonsRef.current = lessons;
-  }, [lessons]);
-  useEffect(() => {
-    attendanceRef.current = attendance;
-  }, [attendance]);
-  useEffect(() => {
-    feesRef.current = fees;
+    pendingSettlementWritesRef.current.forEach((pending, feeId) => {
+      const currentRecord = fees.find((record) => record.id === feeId);
+      if (pending.settled && currentRecord && safeNumber(currentRecord.balanceDue, 0) > 0) {
+        pendingSettlementWritesRef.current.delete(feeId);
+      }
+    });
   }, [fees]);
 
   const closeCalendarPicker = useCallback(() => {
@@ -1147,23 +1219,15 @@ function JSMAppContent() {
 
   // Real-Time Firestore Listeners
   useEffect(() => {
-    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
     const timer = setTimeout(() => {
       initialLoadDone.current = true;
     }, 1000);
 
-    const safePurgeDoc = (colName, docId) => {
-      const key = `${colName}/${docId}`;
-      if (purgingIdsRef.current.has(key)) return;
-      purgingIdsRef.current.add(key);
-      deleteDoc(doc(db, colName, docId)).catch(() => {
-        purgingIdsRef.current.delete(key);
-      });
-    };
-
-    const handleSnapshotWithAutoPurge = (colName, snapshot, setter) => {
+    const handleSnapshot = (colName, snapshot, setter) => {
       if (!isMountedRef.current) return;
-      loadedColsRef.current[colName] = true;
+      const serverConfirmed =
+        snapshot.metadata?.fromCache === false && snapshot.metadata?.hasPendingWrites === false;
+      loadedColsRef.current[colName] = serverConfirmed;
       const records = [];
       const hasPending = Boolean(snapshot.metadata?.hasPendingWrites);
       setPendingSyncByCol((prev) =>
@@ -1172,22 +1236,9 @@ function JSMAppContent() {
 
       snapshot.forEach((docSnap) => {
         const clean = sanitizeDocRecord(docSnap.id, docSnap.data(), docSnap.metadata?.hasPendingWrites, colName);
-        if (clean.isDeleted && clean.deletedAt && Date.now() - clean.deletedAt > THIRTY_DAYS_MS) {
-          safePurgeDoc(colName, clean.id);
-          if (colName === 'students') {
-            lessonsRef.current
-              .filter((l) => l.studentId === clean.id)
-              .forEach((l) => safePurgeDoc('lessons', l.id));
-            attendanceRef.current
-              .filter((a) => a.studentId === clean.id)
-              .forEach((a) => safePurgeDoc('attendance', a.id));
-            feesRef.current
-              .filter((f) => f.studentId === clean.id)
-              .forEach((f) => safePurgeDoc('fees', f.id));
-          }
-        } else {
-          records.push(clean);
-        }
+        // Keep cached/pending records visible; never permanently delete data from an
+        // incomplete snapshot. Trash is purged only through an explicit user action.
+        records.push(clean);
       });
       if (initialLoadDone.current) triggerLayoutAnimation();
       setter(records);
@@ -1196,31 +1247,31 @@ function JSMAppContent() {
     const unsubSubjects = onSnapshot(
       collection(db, 'subjects'),
       { includeMetadataChanges: true },
-      (snap) => handleSnapshotWithAutoPurge('subjects', snap, setSubjects),
+      (snap) => handleSnapshot('subjects', snap, setSubjects),
       (error) => console.error('[JSM] Firestore listener failed (subjects):', error)
     );
     const unsubStudents = onSnapshot(
       collection(db, 'students'),
       { includeMetadataChanges: true },
-      (snap) => handleSnapshotWithAutoPurge('students', snap, setStudents),
+      (snap) => handleSnapshot('students', snap, setStudents),
       (error) => console.error('[JSM] Firestore listener failed (students):', error)
     );
     const unsubLessons = onSnapshot(
       collection(db, 'lessons'),
       { includeMetadataChanges: true },
-      (snap) => handleSnapshotWithAutoPurge('lessons', snap, setLessons),
+      (snap) => handleSnapshot('lessons', snap, setLessons),
       (error) => console.error('[JSM] Firestore listener failed (lessons):', error)
     );
     const unsubAttendance = onSnapshot(
       collection(db, 'attendance'),
       { includeMetadataChanges: true },
-      (snap) => handleSnapshotWithAutoPurge('attendance', snap, setAttendance),
+      (snap) => handleSnapshot('attendance', snap, setAttendance),
       (error) => console.error('[JSM] Firestore listener failed (attendance):', error)
     );
     const unsubFees = onSnapshot(
       collection(db, 'fees'),
       { includeMetadataChanges: true },
-      (snap) => handleSnapshotWithAutoPurge('fees', snap, setFees),
+      (snap) => handleSnapshot('fees', snap, setFees),
       (error) => console.error('[JSM] Firestore listener failed (fees):', error)
     );
     const unsubActivities = onSnapshot(
@@ -1235,13 +1286,7 @@ function JSMAppContent() {
         );
         snap.forEach((d) => {
           const clean = sanitizeDocRecord(d.id, d.data(), d.metadata?.hasPendingWrites, 'activities');
-          if (clean.isDeleted && clean.deletedAt && Date.now() - clean.deletedAt > THIRTY_DAYS_MS) {
-            safePurgeDoc('activities', clean.id);
-          } else if (!clean.isDeleted && clean.timestamp && Date.now() - clean.timestamp > THIRTY_DAYS_MS) {
-            safePurgeDoc('activities', clean.id);
-          } else {
-            list.push(clean);
-          }
+          list.push(clean);
         });
         list.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         if (initialLoadDone.current) triggerLayoutAnimation();
@@ -1287,22 +1332,30 @@ function JSMAppContent() {
     const { students: stLoaded, lessons: lLoaded, attendance: aLoaded, fees: fLoaded } = loadedColsRef.current;
     if (!stLoaded || !lLoaded || !aLoaded || !fLoaded) return;
     const validStudentIds = new Set(students.map((s) => s.id));
-    const purgeOrphan = (colName, id) => {
+    const purgeOrphan = (colName, id, studentId) => {
       const key = `${colName}/${id}`;
       if (purgingIdsRef.current.has(key)) return;
       purgingIdsRef.current.add(key);
-      deleteDoc(doc(db, colName, id)).catch(() => {
+      runTransaction(db, async (transaction) => {
+        const childRef = doc(db, colName, id);
+        const childSnapshot = await transaction.get(childRef);
+        if (!childSnapshot.exists() || childSnapshot.data()?.studentId !== studentId) return;
+        const parentSnapshot = await transaction.get(doc(db, 'students', studentId));
+        if (!parentSnapshot.exists()) transaction.delete(childRef);
+      })
+        .catch((error) => console.error(`[JSM] Orphan check failed (${colName}/${id}):`, error))
+        .finally(() => {
         purgingIdsRef.current.delete(key);
       });
     };
     lessons.forEach((l) => {
-      if (l.studentId && !validStudentIds.has(l.studentId)) purgeOrphan('lessons', l.id);
+      if (l.studentId && !validStudentIds.has(l.studentId)) purgeOrphan('lessons', l.id, l.studentId);
     });
     attendance.forEach((a) => {
-      if (a.studentId && !validStudentIds.has(a.studentId)) purgeOrphan('attendance', a.id);
+      if (a.studentId && !validStudentIds.has(a.studentId)) purgeOrphan('attendance', a.id, a.studentId);
     });
     fees.forEach((f) => {
-      if (f.studentId && !validStudentIds.has(f.studentId)) purgeOrphan('fees', f.id);
+      if (f.studentId && !validStudentIds.has(f.studentId)) purgeOrphan('fees', f.id, f.studentId);
     });
   }, [students, lessons, attendance, fees]);
 
@@ -1317,7 +1370,7 @@ function JSMAppContent() {
         title: safeString(actionTitle),
         subtitle: safeString(subtitle),
         dateISO: getTodayISO(),
-        timestamp: Date.now(),
+        timestamp: serverTimestamp(),
         isDeleted: false,
         deletedAt: null,
       }).catch((error) => console.error('[JSM] Activity log write failed:', error));
@@ -1386,6 +1439,17 @@ function JSMAppContent() {
     return map;
   }, [activeAttendance, rosterDate]);
 
+  const getNewAttendanceDocumentId = useCallback(
+    (studentId, date) => {
+      const baseId = `${studentId}_${date}`;
+      if (!attendance.some((record) => record.id === baseId)) return baseId;
+      let version = 1;
+      while (attendance.some((record) => record.id === `${baseId}_v${version}`)) version += 1;
+      return `${baseId}_v${version}`;
+    },
+    [attendance]
+  );
+
   useEffect(() => {
     activeSubjectsRef.current = activeSubjects;
     if (!dragInfoRef.current.active) {
@@ -1447,7 +1511,7 @@ function JSMAppContent() {
         ...activities
           .filter((x) => x.isDeleted)
           .map((x) => ({ ...x, _col: 'activities', _label: `Activity: ${safeString(x.title)}${x.subtitle ? ` (${x.subtitle})` : ''}` })),
-      ].sort((a, b) => safeNumber(b.deletedAt, 0) - safeNumber(a.deletedAt, 0)),
+      ].sort((a, b) => timestampToMillis(b.deletedAt, 0) - timestampToMillis(a.deletedAt, 0)),
     [subjects, students, lessons, attendance, fees, activities, studentMap]
   );
 
@@ -1470,21 +1534,28 @@ function JSMAppContent() {
   }, [activeStudents, selectedStudentId, studentReportModal.visible, studentReportModal.studentId]);
 
   const prevNoteStudentIdRef = useRef(null);
+  const noteBaseRef = useRef({ studentId: null, notes: '', priorityNote: false });
   useEffect(() => {
     if (selectedStudent && prevNoteStudentIdRef.current !== selectedStudent.id) {
       prevNoteStudentIdRef.current = selectedStudent.id;
       setNoteDraft(safeString(selectedStudent.notes));
       setPriorityDraft(Boolean(selectedStudent.priorityNote));
+      noteBaseRef.current = {
+        studentId: selectedStudent.id,
+        notes: safeString(selectedStudent.notes),
+        priorityNote: Boolean(selectedStudent.priorityNote),
+      };
     } else if (!selectedStudent) {
       prevNoteStudentIdRef.current = null;
+      noteBaseRef.current = { studentId: null, notes: '', priorityNote: false };
     }
   }, [selectedStudent]);
 
   useEffect(() => {
-    setInlineLessonForm({ date: getTodayISO(), technique: '', lesson: '', repertoire: '', assignment: '' });
-    setInlineAttendanceForm({ date: getTodayISO(), status: 'Present', remarks: '' });
+    updateInlineLessonForm({ date: getTodayISO(), technique: '', lesson: '', repertoire: '', assignment: '' });
+    updateInlineAttendanceForm({ date: getTodayISO(), status: 'Present', remarks: '' });
     setShowInlineAttNote(false);
-  }, [selectedStudentId]);
+  }, [selectedStudentId, updateInlineLessonForm, updateInlineAttendanceForm]);
 
   // Memoized O(1) Student Metrics Map
   const studentMetricsMap = useMemo(() => {
@@ -1653,7 +1724,7 @@ function JSMAppContent() {
                 f.feeType === 'Monthly Fee' && f.monthPaidFor ? ` (${escapeHtml(f.monthPaidFor)})` : ''
               }</td>
             <td>${escapeHtml(f.status)} • ${escapeHtml(f.mode)}</td>
-            <td>Paid: ₹${safeNumber(f.amountPaid, 0).toFixed(0)} | Due: ₹${safeNumber(f.balanceDue, 0).toFixed(0)}</td>
+            <td>Paid: ₹${safeNumber(f.amountPaid, 0).toFixed(2)} | Due: ₹${safeNumber(f.balanceDue, 0).toFixed(2)}</td>
           </tr>`
             )
             .join('');
@@ -1682,7 +1753,7 @@ function JSMAppContent() {
         <table><tbody>${lessonsRows}</tbody></table>
         <h2>ATTENDANCE (${stAtt.length})</h2>
         <table><tbody>${attRows}</tbody></table>
-        <h2>FEES (Paid: ₹${totalPaid.toFixed(0)} | Due: ₹${totalDue.toFixed(0)})</h2>
+        <h2>FEES (Paid: ₹${totalPaid.toFixed(2)} | Due: ₹${totalDue.toFixed(2)})</h2>
         <table><tbody>${feeRows}</tbody></table>
       </body></html>
     `;
@@ -1711,7 +1782,7 @@ function JSMAppContent() {
       if (masterDateFilter) return isoDate === masterDateFilter;
       if (masterMonthFilter !== 'ALL') {
         if (feeRecord && feeRecord.feeType === 'Monthly Fee' && feeRecord.monthPaidFor) {
-          return feeRecord.monthPaidFor === masterMonthFilter || getMonthYearFromISO(isoDate) === masterMonthFilter;
+          return feeRecord.monthPaidFor === masterMonthFilter;
         }
         return getMonthYearFromISO(isoDate) === masterMonthFilter;
       }
@@ -1775,9 +1846,9 @@ function JSMAppContent() {
             : '—'
         }</span></td>
           <td>P: ${row.presentCount} | A: ${row.absentCount} | R: ${row.reschedCount}</td>
-          <td>Paid: ₹${row.totalPaid.toFixed(0)}<br/><span style="color:${
+          <td>Paid: ₹${row.totalPaid.toFixed(2)}<br/><span style="color:${
           row.totalDue > 0 ? '#9E2A2B' : '#166534'
-        };font-size:11px;">Due: ₹${row.totalDue.toFixed(0)}</span></td>
+        };font-size:11px;">Due: ₹${row.totalDue.toFixed(2)}</span></td>
         </tr>`
       )
       .join('');
@@ -1946,18 +2017,21 @@ function JSMAppContent() {
         setStudentReportModal({ visible: false, studentId: null, dateFilter: '' });
       }
 
-      const entriesToSoftDelete = [{ col: collectionName, id: item.id }];
+      const entriesToSoftDelete = [];
       if (collectionName === 'students') {
         lessons
           .filter((l) => l.studentId === item.id && !l.isDeleted)
-          .forEach((l) => entriesToSoftDelete.push({ col: 'lessons', id: l.id }));
+          .forEach((l) => entriesToSoftDelete.push({ col: 'lessons', id: l.id, deletedWithParentId: item.id }));
         attendance
           .filter((a) => a.studentId === item.id && !a.isDeleted)
-          .forEach((a) => entriesToSoftDelete.push({ col: 'attendance', id: a.id }));
+          .forEach((a) => entriesToSoftDelete.push({ col: 'attendance', id: a.id, deletedWithParentId: item.id }));
         fees
           .filter((f) => f.studentId === item.id && !f.isDeleted)
-          .forEach((f) => entriesToSoftDelete.push({ col: 'fees', id: f.id }));
+          .forEach((f) => entriesToSoftDelete.push({ col: 'fees', id: f.id, deletedWithParentId: item.id }));
       }
+      // Hide the parent only after all child batches have been queued. If a batch fails,
+      // the student remains visible and the partial state can be retried or repaired.
+      entriesToSoftDelete.push({ col: collectionName, id: item.id });
 
       await commitBatchSoftDeletes(entriesToSoftDelete);
       if (collectionName !== 'activities') {
@@ -2205,20 +2279,23 @@ function JSMAppContent() {
       } else {
         const nextOrder =
           activeSubjects.reduce((maxOrd, s) => Math.max(maxOrd, safeNumber(s.order, 0)), -1) + 1;
-        await withWriteTimeout(
-          addDoc(collection(db, 'subjects'), {
-            name: trimmed,
-            order: nextOrder,
-            timestamp: Date.now(),
-            isDeleted: false,
-            deletedAt: null,
-          })
+        await createStableDocument(
+          'subjects',
+          { name: trimmed, order: nextOrder },
+          pendingSubjectWriteRef
         );
         setSubjectForm({ id: null, name: '' });
         logActivity('Added Subject', trimmed);
       }
     } catch (e) {
-      Alert.alert('Error', 'Could not save subject.');
+      Alert.alert(
+        e?.code === 'jsm/write-pending' ? 'Previous Save Pending' : 'Save Not Confirmed',
+        e?.code === 'jsm/write-pending'
+          ? 'The previous subject save is still unresolved. Retry it with the same name, or wait for the connection to recover before starting another subject.'
+          : e?.code === 'jsm/write-timeout'
+          ? 'The subject may still be saving. Keep this form open and retry with the same name; the retry will reuse the same record.'
+          : 'Could not save subject.'
+      );
     } finally {
       savingLockRef.current = false;
     }
@@ -2248,15 +2325,10 @@ function JSMAppContent() {
         await withWriteTimeout(updateDoc(doc(db, 'students', editingId), payload));
         logActivity('Updated Student', payload.name);
       } else {
-        await withWriteTimeout(
-          addDoc(collection(db, 'students'), {
-            ...payload,
-            notes: '',
-            priorityNote: false,
-            timestamp: Date.now(),
-            isDeleted: false,
-            deletedAt: null,
-          })
+        await createStableDocument(
+          'students',
+          { ...payload, notes: '', priorityNote: false },
+          pendingStudentWriteRef
         );
         logActivity('Enrolled Student', `${payload.name} (${safeString(subjectMap[payload.subjectId]?.name, 'Unassigned')})`);
       }
@@ -2272,7 +2344,14 @@ function JSMAppContent() {
         joinedDate: getTodayISO(),
       });
     } catch (e) {
-      Alert.alert('Error', 'Could not save student record.');
+      Alert.alert(
+        e?.code === 'jsm/write-pending' ? 'Previous Save Pending' : 'Save Not Confirmed',
+        e?.code === 'jsm/write-pending'
+          ? 'The previous student save is still unresolved. Retry it with the same details, or wait for the connection to recover before starting another student.'
+          : e?.code === 'jsm/write-timeout'
+          ? 'The student may still be saving. Keep this form open and retry with the same details; the retry will reuse the same record.'
+          : 'Could not save student record.'
+      );
     } finally {
       savingLockRef.current = false;
     }
@@ -2281,6 +2360,8 @@ function JSMAppContent() {
   const handleSaveInlineLesson = async () => {
     Keyboard.dismiss();
     if (!selectedStudentId) return;
+    const savedStudentId = selectedStudentId;
+    const savedDraftVersion = inlineLessonDraftVersionRef.current;
     const validDate = normalizeISODate(inlineLessonForm.date);
     if (!validDate) return Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
     if (
@@ -2296,24 +2377,33 @@ function JSMAppContent() {
       triggerLayoutAnimation();
       triggerHaptic(14);
       const payload = {
-        studentId: selectedStudentId,
+        studentId: savedStudentId,
         date: validDate,
         lesson: safeString(inlineLessonForm.lesson).trim(),
         technique: safeString(inlineLessonForm.technique).trim(),
         repertoire: safeString(inlineLessonForm.repertoire).trim(),
         assignment: safeString(inlineLessonForm.assignment).trim(),
-        timestamp: Date.now(),
-        isDeleted: false,
-        deletedAt: null,
       };
-      await withWriteTimeout(addDoc(collection(db, 'lessons'), payload));
-      setInlineLessonForm({ date: getTodayISO(), technique: '', lesson: '', repertoire: '', assignment: '' });
+      await createStableDocument('lessons', payload, pendingLessonWriteRef);
+      if (
+        selectedStudentIdRef.current === savedStudentId &&
+        inlineLessonDraftVersionRef.current === savedDraftVersion
+      ) {
+        updateInlineLessonForm({ date: getTodayISO(), technique: '', lesson: '', repertoire: '', assignment: '' });
+      }
       logActivity(
         'Logged Lesson',
-        `${safeString(studentMap[selectedStudentId]?.name, 'Student')} (${formatReadableLocalDate(validDate)})`
+        `${safeString(studentMap[savedStudentId]?.name, 'Student')} (${formatReadableLocalDate(validDate)})`
       );
     } catch (e) {
-      Alert.alert('Error', 'Could not log lesson.');
+      Alert.alert(
+        e?.code === 'jsm/write-pending' ? 'Previous Save Pending' : 'Save Not Confirmed',
+        e?.code === 'jsm/write-pending'
+          ? 'A previous lesson save is still unresolved. Retry it with the same details before starting another lesson.'
+          : e?.code === 'jsm/write-timeout'
+          ? 'The lesson may still be saving. Keep the same student and details, then retry; the retry will reuse the same record.'
+          : 'Could not log lesson.'
+      );
     } finally {
       savingLockRef.current = false;
     }
@@ -2362,6 +2452,8 @@ function JSMAppContent() {
   const handleSaveInlineAttendance = async () => {
     Keyboard.dismiss();
     if (!selectedStudentId) return;
+    const savedStudentId = selectedStudentId;
+    const savedDraftVersion = inlineAttendanceDraftVersionRef.current;
     const validDate = normalizeISODate(inlineAttendanceForm.date);
     if (!validDate) return Alert.alert('Validation', 'Please enter a valid date in YYYY-MM-DD format.');
     if (savingLockRef.current) return;
@@ -2372,7 +2464,7 @@ function JSMAppContent() {
       const statusVal = inlineAttendanceForm.status;
       const remarksVal = safeString(inlineAttendanceForm.remarks).trim();
       const existingRecord = activeAttendance.find(
-        (a) => a.studentId === selectedStudentId && a.date === validDate
+        (a) => a.studentId === savedStudentId && a.date === validDate
       );
       if (existingRecord) {
         await withWriteTimeout(
@@ -2383,14 +2475,14 @@ function JSMAppContent() {
           `${safeString(studentMap[selectedStudentId]?.name, 'Student')} • ${statusVal}`
         );
       } else {
-        const deterministicId = `${selectedStudentId}_${validDate}`;
+        const attendanceId = getNewAttendanceDocumentId(savedStudentId, validDate);
         await withWriteTimeout(
-          setDoc(doc(db, 'attendance', deterministicId), {
-            studentId: selectedStudentId,
+          setDoc(doc(db, 'attendance', attendanceId), {
+            studentId: savedStudentId,
             date: validDate,
             status: statusVal,
             remarks: remarksVal,
-            timestamp: Date.now(),
+            timestamp: serverTimestamp(),
             isDeleted: false,
             deletedAt: null,
           })
@@ -2400,8 +2492,13 @@ function JSMAppContent() {
           `${safeString(studentMap[selectedStudentId]?.name, 'Student')} • ${statusVal}`
         );
       }
-      setInlineAttendanceForm({ date: getTodayISO(), status: 'Present', remarks: '' });
-      setShowInlineAttNote(false);
+      if (
+        selectedStudentIdRef.current === savedStudentId &&
+        inlineAttendanceDraftVersionRef.current === savedDraftVersion
+      ) {
+        updateInlineAttendanceForm({ date: getTodayISO(), status: 'Present', remarks: '' });
+        setShowInlineAttNote(false);
+      }
     } catch (e) {
       Alert.alert('Error', 'Could not save attendance.');
     } finally {
@@ -2439,14 +2536,14 @@ function JSMAppContent() {
           })
         );
       } else {
-        const deterministicId = `${studentId}_${validDate}`;
+        const attendanceId = getNewAttendanceDocumentId(studentId, validDate);
         await withWriteTimeout(
-          setDoc(doc(db, 'attendance', deterministicId), {
+          setDoc(doc(db, 'attendance', attendanceId), {
             studentId,
             date: validDate,
             status: statusVal,
             remarks: '',
-            timestamp: Date.now(),
+            timestamp: serverTimestamp(),
             isDeleted: false,
             deletedAt: null,
           })
@@ -2473,7 +2570,6 @@ function JSMAppContent() {
     try {
       triggerHaptic(14);
       triggerLayoutAnimation();
-      const now = Date.now();
       // Firestore limits each write batch to 500 operations; leave headroom.
       for (const studentChunk of chunkArray(targetStudents, 450)) {
         const batch = writeBatch(db);
@@ -2482,13 +2578,13 @@ function JSMAppContent() {
           if (existing) {
             batch.update(doc(db, 'attendance', existing.id), { status: 'Present' });
           } else {
-            const deterministicId = `${st.id}_${validDate}`;
-            batch.set(doc(db, 'attendance', deterministicId), {
+            const attendanceId = getNewAttendanceDocumentId(st.id, validDate);
+            batch.set(doc(db, 'attendance', attendanceId), {
               studentId: st.id,
               date: validDate,
               status: 'Present',
               remarks: '',
-              timestamp: now,
+              timestamp: serverTimestamp(),
               isDeleted: false,
               deletedAt: null,
             });
@@ -2541,11 +2637,11 @@ function JSMAppContent() {
           `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ${payload.status}`
         );
       } else {
-        const deterministicId = `${payload.studentId}_${validDate}`;
+        const attendanceId = getNewAttendanceDocumentId(payload.studentId, validDate);
         await withWriteTimeout(
-          setDoc(doc(db, 'attendance', deterministicId), {
+          setDoc(doc(db, 'attendance', attendanceId), {
             ...payload,
-            timestamp: Date.now(),
+            timestamp: serverTimestamp(),
             isDeleted: false,
             deletedAt: null,
           })
@@ -2570,18 +2666,88 @@ function JSMAppContent() {
     Keyboard.dismiss();
     if (!selectedStudentId || savingLockRef.current) return;
     savingLockRef.current = true;
+    const studentId = selectedStudentId;
+    const savedNotes = safeString(noteDraft);
+    const savedPriority = Boolean(priorityDraft);
+    const baseline = noteBaseRef.current;
+    let conflictingNotes = null;
+
+    const saveNotesIfUnchanged = async (expected) => {
+      await runTransaction(db, async (transaction) => {
+        const studentRef = doc(db, 'students', studentId);
+        const studentSnapshot = await transaction.get(studentRef);
+        if (!studentSnapshot.exists()) {
+          const error = new Error('Student no longer exists.');
+          error.code = 'jsm/student-missing';
+          throw error;
+        }
+        const current = studentSnapshot.data() || {};
+        const currentNotes = safeString(current.notes);
+        const currentPriority = Boolean(current.priorityNote);
+        if (currentNotes !== expected.notes || currentPriority !== expected.priorityNote) {
+          conflictingNotes = { notes: currentNotes, priorityNote: currentPriority };
+          const error = new Error('Student notes changed on another device.');
+          error.code = 'jsm/note-conflict';
+          throw error;
+        }
+        transaction.update(studentRef, { notes: savedNotes, priorityNote: savedPriority });
+      });
+    };
+
     try {
       triggerLayoutAnimation();
       triggerHaptic(14);
-      await withWriteTimeout(
-        updateDoc(doc(db, 'students', selectedStudentId), {
-          notes: safeString(noteDraft),
-          priorityNote: Boolean(priorityDraft),
-        })
-      );
-      logActivity('Updated Student Notes', safeString(studentMap[selectedStudentId]?.name));
+      if (baseline.studentId !== studentId) {
+        Alert.alert('Notes Changed', 'Reopen the student profile before saving notes.');
+        return;
+      }
+      await withWriteTimeout(saveNotesIfUnchanged(baseline));
+      noteBaseRef.current = { studentId, notes: savedNotes, priorityNote: savedPriority };
+      logActivity('Updated Student Notes', safeString(studentMap[studentId]?.name));
     } catch (e) {
-      Alert.alert('Error', 'Could not update student notes.');
+      if (e?.code === 'jsm/note-conflict' && conflictingNotes) {
+        Alert.alert(
+          'Notes Changed on Another Device',
+          'Your draft is still available. Reload the latest version, or explicitly replace it with your draft.',
+          [
+            { text: 'Keep Editing', style: 'cancel' },
+            {
+              text: 'Reload Latest',
+              onPress: () => {
+                noteBaseRef.current = { studentId, ...conflictingNotes };
+                setNoteDraft(conflictingNotes.notes);
+                setPriorityDraft(conflictingNotes.priorityNote);
+              },
+            },
+            {
+              text: 'Replace Latest',
+              style: 'destructive',
+              onPress: async () => {
+                if (savingLockRef.current) return;
+                savingLockRef.current = true;
+                try {
+                  await withWriteTimeout(saveNotesIfUnchanged(conflictingNotes));
+                  noteBaseRef.current = { studentId, notes: savedNotes, priorityNote: savedPriority };
+                  logActivity('Updated Student Notes', safeString(studentMap[studentId]?.name));
+                } catch (overwriteError) {
+                  Alert.alert('Notes Changed Again', 'Reload the latest notes and review the changes before trying again.');
+                } finally {
+                  savingLockRef.current = false;
+                }
+              },
+            },
+          ]
+        );
+      } else {
+        Alert.alert(
+          'Notes Not Saved',
+          e?.code === 'jsm/write-timeout'
+            ? 'The notes save is still awaiting confirmation. Retry when the connection is stable.'
+            : e?.code === 'jsm/student-missing'
+            ? 'This student no longer exists.'
+            : 'Could not update student notes. A connection is required to check for concurrent edits safely.'
+        );
+      }
     } finally {
       savingLockRef.current = false;
     }
@@ -2603,12 +2769,16 @@ function JSMAppContent() {
     if (feeForm.status === 'Partial' && (numericPaid <= 0 || numericBalance <= 0))
       return Alert.alert('Validation', 'Partial payments require both Amount Paid and Balance Due to be greater than ₹0.');
     if (savingLockRef.current) return;
+    const editingId = feeForm.id;
+    const pendingSettlement = editingId ? pendingSettlementWritesRef.current.get(editingId) : null;
+    if (pendingSettlement && !pendingSettlement.settled) {
+      return Alert.alert('Settlement Pending', 'Wait for the existing fee settlement to finish before editing this record.');
+    }
     savingLockRef.current = true;
 
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
-      const editingId = feeForm.id;
       const payload = {
         studentId: feeForm.studentId,
         feeType: feeForm.feeType,
@@ -2622,27 +2792,18 @@ function JSMAppContent() {
       };
       if (editingId) {
         await withWriteTimeout(updateDoc(doc(db, 'fees', editingId), payload));
+        if (numericBalance > 0) pendingSettlementWritesRef.current.delete(editingId);
         logActivity(
           'Updated Fee Record',
           `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ₹${numericPaid}`
         );
       } else {
-        const feeWriteId = pendingFeeWriteIdRef.current || doc(collection(db, 'fees')).id;
-        pendingFeeWriteIdRef.current = feeWriteId;
-        await withWriteTimeout(
-          setDoc(doc(db, 'fees', feeWriteId), {
-            ...payload,
-            timestamp: Date.now(),
-            isDeleted: false,
-            deletedAt: null,
-          })
-        );
+        await createStableDocument('fees', payload, pendingFeeWriteRef);
         logActivity(
           'Recorded Fee',
           `${safeString(studentMap[payload.studentId]?.name, 'Student')} • ₹${numericPaid} (${payload.status})`
         );
       }
-      pendingFeeWriteIdRef.current = null;
       closeCalendarPicker();
       closeDropdownPicker();
       setFeeModal(false);
@@ -2655,7 +2816,7 @@ function JSMAppContent() {
     } catch (e) {
       Alert.alert(
         'Save not confirmed',
-        e?.code === 'jsm/write-timeout'
+        e?.code === 'jsm/write-timeout' || e?.code === 'jsm/write-pending'
           ? 'The fee save is still awaiting confirmation. Keep this form open and do not start a second fee record. You can retry Save safely; it will reuse the same record ID.'
           : 'Could not save fee record. Check the details and connection before retrying.'
       );
@@ -2672,7 +2833,7 @@ function JSMAppContent() {
     triggerHaptic(12);
     Alert.alert(
       'Settle Balance Due',
-      `Mark pending balance of ₹${dueAmt.toFixed(0)} as Paid for ${stName}?`,
+      `Record a settlement of ₹${dueAmt.toFixed(2)} for ${stName}?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -2680,18 +2841,63 @@ function JSMAppContent() {
           onPress: async () => {
             try {
               triggerLayoutAnimation();
-              const newPaidTotal = safeNumber(feeRecord.amountPaid, 0) + dueAmt;
-              await withWriteTimeout(
-                updateDoc(doc(db, 'fees', feeRecord.id), {
-                  amountPaid: newPaidTotal,
-                  balanceDue: 0,
-                  status: 'Paid',
-                  date: getTodayISO(),
-                })
-              );
-              logActivity('Settled Pending Fee', `${stName} • ₹${dueAmt.toFixed(0)}`);
+              const payment = {
+                studentId: feeRecord.studentId,
+                feeType: feeRecord.feeType,
+                monthPaidFor: safeString(feeRecord.monthPaidFor),
+                date: getTodayISO(),
+                mode: safeString(feeRecord.mode, 'UPI'),
+                status: 'Paid',
+                amountPaid: dueAmt,
+                balanceDue: 0,
+                remarks: `Settlement for fee record ${feeRecord.id}`,
+              };
+              let pending = pendingSettlementWritesRef.current.get(feeRecord.id);
+              if (pending?.settled) {
+                Alert.alert('Already Settled', 'This balance has already been settled. Refresh the fee ledger before trying again.');
+                return;
+              }
+              const signature = JSON.stringify(payment);
+              if (pending && pending.signature !== signature) {
+                throw Object.assign(new Error('A previous settlement is still awaiting confirmation.'), {
+                  code: 'jsm/write-pending',
+                });
+              }
+              if (!pending) {
+                pending = { id: doc(collection(db, 'fees')).id, signature };
+                pendingSettlementWritesRef.current.set(feeRecord.id, pending);
+              }
+
+              const batch = writeBatch(db);
+              batch.set(doc(db, 'fees', pending.id), {
+                ...payment,
+                timestamp: serverTimestamp(),
+                isDeleted: false,
+                deletedAt: null,
+              });
+              batch.update(doc(db, 'fees', feeRecord.id), { balanceDue: 0, status: 'Paid' });
+
+              const pendingId = pending.id;
+              const commitPromise = batch.commit();
+              const markSettled = () => {
+                const current = pendingSettlementWritesRef.current.get(feeRecord.id);
+                if (current?.id === pendingId) current.settled = true;
+              };
+              const clearFailed = () => {
+                if (pendingSettlementWritesRef.current.get(feeRecord.id)?.id === pendingId) {
+                  pendingSettlementWritesRef.current.delete(feeRecord.id);
+                }
+              };
+              commitPromise.then(markSettled, clearFailed);
+              await withWriteTimeout(commitPromise);
+              logActivity('Settled Pending Fee', `${stName} • ₹${dueAmt.toFixed(2)}`);
             } catch (e) {
-              Alert.alert('Error', 'Could not settle fee balance.');
+              Alert.alert(
+                'Settlement Not Confirmed',
+                e?.code === 'jsm/write-timeout' || e?.code === 'jsm/write-pending'
+                  ? 'The settlement may still be saving. Retry only this same settlement; it reuses the same payment record.'
+                  : 'Could not settle fee balance.'
+              );
             }
           },
         },
@@ -2725,6 +2931,46 @@ function JSMAppContent() {
     try {
       triggerLayoutAnimation();
       triggerHaptic(12);
+      if (item._col === 'students') {
+        const parentDeletedAt = timestampToMillis(item.deletedAt, 0);
+        const wasDeletedWithParent = (record) =>
+          record.deletedWithParentId === item.id ||
+          (record.isDeleted &&
+            parentDeletedAt > 0 &&
+            timestampToMillis(record.deletedAt, 0) === parentDeletedAt);
+        const linkedRecords = [
+          ...lessons
+            .filter((record) => record.studentId === item.id && wasDeletedWithParent(record))
+            .map((record) => ({ ...record, _col: 'lessons' })),
+          ...attendance
+            .filter((record) => record.studentId === item.id && wasDeletedWithParent(record))
+            .map((record) => ({ ...record, _col: 'attendance' })),
+          ...fees
+            .filter((record) => record.studentId === item.id && wasDeletedWithParent(record))
+            .map((record) => ({ ...record, _col: 'fees' })),
+        ];
+
+        for (const recordChunk of chunkArray(linkedRecords, 450)) {
+          const childBatch = writeBatch(db);
+          recordChunk.forEach((record) =>
+            childBatch.update(doc(db, record._col, record.id), {
+              isDeleted: false,
+              deletedAt: null,
+            })
+          );
+          await withWriteTimeout(childBatch.commit());
+        }
+
+        const parentBatch = writeBatch(db);
+        parentBatch.update(doc(db, 'students', item.id), { isDeleted: false, deletedAt: null });
+        if (item.subjectId && subjectMap[item.subjectId]?.isDeleted) {
+          parentBatch.update(doc(db, 'subjects', item.subjectId), { isDeleted: false, deletedAt: null });
+        }
+        await withWriteTimeout(parentBatch.commit());
+        logActivity('Restored from Trash', item._label);
+        return;
+      }
+
       const batch = writeBatch(db);
 
       if (item._col === 'attendance') {
@@ -2732,20 +2978,37 @@ function JSMAppContent() {
           (a) => a.studentId === item.studentId && a.date === item.date && a.id !== item.id
         );
         if (duplicateActive) {
-          batch.update(doc(db, 'attendance', duplicateActive.id), {
-            status: item.status,
-            remarks: item.remarks,
-          });
-          batch.delete(doc(db, 'attendance', item.id));
+          Alert.alert(
+            'Attendance Already Exists',
+            'Keep the current active record, or explicitly replace it with the record from Trash?',
+            [
+              { text: 'Keep Current', style: 'cancel' },
+              {
+                text: 'Replace Active',
+                style: 'destructive',
+                onPress: async () => {
+                  try {
+                    const replaceBatch = writeBatch(db);
+                    replaceBatch.update(doc(db, 'attendance', duplicateActive.id), {
+                      status: item.status,
+                      remarks: item.remarks,
+                    });
+                    replaceBatch.delete(doc(db, 'attendance', item.id));
+                    await withWriteTimeout(replaceBatch.commit());
+                    logActivity('Restored from Trash', item._label);
+                  } catch (error) {
+                    Alert.alert('Error', 'Could not replace the active attendance record.');
+                  }
+                },
+              },
+            ]
+          );
+          return;
         } else {
           batch.update(doc(db, 'attendance', item.id), { isDeleted: false, deletedAt: null });
         }
       } else {
         batch.update(doc(db, item._col, item.id), { isDeleted: false, deletedAt: null });
-      }
-
-      if (item._col === 'students' && item.subjectId && subjectMap[item.subjectId]?.isDeleted) {
-        batch.update(doc(db, 'subjects', item.subjectId), { isDeleted: false, deletedAt: null });
       }
 
       if (
@@ -2774,7 +3037,7 @@ function JSMAppContent() {
     try {
       triggerLayoutAnimation();
       triggerHaptic(18);
-      const docsToDelete = [{ col: item._col, id: item.id }];
+      const docsToDelete = [];
       if (item._col === 'students') {
         lessons.filter((l) => l.studentId === item.id).forEach((l) => docsToDelete.push({ col: 'lessons', id: l.id }));
         attendance
@@ -2782,6 +3045,7 @@ function JSMAppContent() {
           .forEach((a) => docsToDelete.push({ col: 'attendance', id: a.id }));
         fees.filter((f) => f.studentId === item.id).forEach((f) => docsToDelete.push({ col: 'fees', id: f.id }));
       }
+      docsToDelete.push({ col: item._col, id: item.id });
       await commitBatchDeletes(docsToDelete);
       if (item._col !== 'activities') {
         logActivity('Permanently Deleted from Firebase', item._label);
@@ -2821,7 +3085,10 @@ function JSMAppContent() {
                   .filter((f) => deletedStudentIds.has(f.studentId))
                   .forEach((f) => docsToDelete.set(`fees/${f.id}`, { col: 'fees', id: f.id }));
               }
-              await commitBatchDeletes(Array.from(docsToDelete.values()));
+              const orderedDeletes = Array.from(docsToDelete.values()).sort(
+                (a, b) => Number(a.col === 'students') - Number(b.col === 'students')
+              );
+              await commitBatchDeletes(orderedDeletes);
             } catch (e) {
               Alert.alert('Error', 'Failed to empty trash from Firebase.');
             }
@@ -3879,20 +4146,20 @@ function JSMAppContent() {
                 <Text style={styles.sectionTitle}>LOG LESSON</Text>
                 <QuickDateRow
                   currentDate={inlineLessonForm.date}
-                  onSelectDate={(d) => setInlineLessonForm({ ...inlineLessonForm, date: d })}
+                  onSelectDate={(d) => updateInlineLessonForm((prev) => ({ ...prev, date: d }))}
                   onOpenCalendar={openCalendarPicker}
                 />
                 <PaperInput
                   mode="outlined"
                   label="Date"
                   value={inlineLessonForm.date}
-                  onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, date: t })}
+                  onChangeText={(t) => updateInlineLessonForm((prev) => ({ ...prev, date: t }))}
                   right={
                     <PaperInput.Icon
                       icon="calendar-outline"
                       onPress={() =>
                         openCalendarPicker(inlineLessonForm.date, (d) =>
-                          setInlineLessonForm({ ...inlineLessonForm, date: d })
+                          updateInlineLessonForm((prev) => ({ ...prev, date: d }))
                         )
                       }
                     />
@@ -3905,7 +4172,7 @@ function JSMAppContent() {
                   mode="outlined"
                   label="Technique"
                   value={inlineLessonForm.technique}
-                  onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, technique: t })}
+                  onChangeText={(t) => updateInlineLessonForm((prev) => ({ ...prev, technique: t }))}
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
@@ -3914,7 +4181,7 @@ function JSMAppContent() {
                   mode="outlined"
                   label="Lesson"
                   value={inlineLessonForm.lesson}
-                  onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, lesson: t })}
+                  onChangeText={(t) => updateInlineLessonForm((prev) => ({ ...prev, lesson: t }))}
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
@@ -3923,7 +4190,7 @@ function JSMAppContent() {
                   mode="outlined"
                   label="Repertoire"
                   value={inlineLessonForm.repertoire}
-                  onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, repertoire: t })}
+                  onChangeText={(t) => updateInlineLessonForm((prev) => ({ ...prev, repertoire: t }))}
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
@@ -3932,7 +4199,7 @@ function JSMAppContent() {
                   mode="outlined"
                   label="Assignment"
                   value={inlineLessonForm.assignment}
-                  onChangeText={(t) => setInlineLessonForm({ ...inlineLessonForm, assignment: t })}
+                  onChangeText={(t) => updateInlineLessonForm((prev) => ({ ...prev, assignment: t }))}
                   outlineColor={COLORS.border}
                   activeOutlineColor={COLORS.navy}
                   style={styles.tintedInput}
@@ -4009,20 +4276,20 @@ function JSMAppContent() {
                 <Text style={styles.sectionTitle}>MARK ATTENDANCE</Text>
                 <QuickDateRow
                   currentDate={inlineAttendanceForm.date}
-                  onSelectDate={(d) => setInlineAttendanceForm({ ...inlineAttendanceForm, date: d })}
+                  onSelectDate={(d) => updateInlineAttendanceForm((prev) => ({ ...prev, date: d }))}
                   onOpenCalendar={openCalendarPicker}
                 />
                 <PaperInput
                   mode="outlined"
                   label="Date"
                   value={inlineAttendanceForm.date}
-                  onChangeText={(t) => setInlineAttendanceForm({ ...inlineAttendanceForm, date: t })}
+                  onChangeText={(t) => updateInlineAttendanceForm((prev) => ({ ...prev, date: t }))}
                   right={
                     <PaperInput.Icon
                       icon="calendar-outline"
                       onPress={() =>
                         openCalendarPicker(inlineAttendanceForm.date, (d) =>
-                          setInlineAttendanceForm({ ...inlineAttendanceForm, date: d })
+                          updateInlineAttendanceForm((prev) => ({ ...prev, date: d }))
                         )
                       }
                     />
@@ -4039,7 +4306,7 @@ function JSMAppContent() {
                       'Attendance Status',
                       ATTENDANCE_STATUSES.map((s) => ({ label: s, value: s })),
                       inlineAttendanceForm.status,
-                      (val) => setInlineAttendanceForm({ ...inlineAttendanceForm, status: val })
+                      (val) => updateInlineAttendanceForm((prev) => ({ ...prev, status: val }))
                     )
                   }
                 />
@@ -4048,13 +4315,13 @@ function JSMAppContent() {
                     mode="outlined"
                     label="Note / Remarks"
                     value={inlineAttendanceForm.remarks}
-                    onChangeText={(t) => setInlineAttendanceForm({ ...inlineAttendanceForm, remarks: t })}
+                    onChangeText={(t) => updateInlineAttendanceForm((prev) => ({ ...prev, remarks: t }))}
                     right={
                       <PaperInput.Icon
                         icon="close"
                         onPress={() => {
                           triggerLayoutAnimation();
-                          setInlineAttendanceForm({ ...inlineAttendanceForm, remarks: '' });
+                          updateInlineAttendanceForm((prev) => ({ ...prev, remarks: '' }));
                           setShowInlineAttNote(false);
                         }}
                       />
@@ -4313,7 +4580,7 @@ function JSMAppContent() {
     const visibleHistoryRecords = filteredRecords.slice(0, attendanceHistoryLimit);
 
     const historyByDate = [];
-    const dateBuckets = {};
+    const dateBuckets = Object.create(null);
     visibleHistoryRecords.forEach((rec) => {
       const dKey = rec.date || 'Unknown';
       if (!dateBuckets[dKey]) {
@@ -4741,7 +5008,7 @@ function JSMAppContent() {
           >
             <Text style={[styles.ledgerSummaryLabel, { color: COLORS.navy }]}>PENDING DUES</Text>
             <Text style={[styles.ledgerSummaryValGold, { color: COLORS.danger }]}>
-              ₹{globalFeeTotals.pending.toFixed(0)}
+              ₹{globalFeeTotals.pending.toFixed(2)}
             </Text>
           </TouchableOpacity>
 
@@ -4763,7 +5030,7 @@ function JSMAppContent() {
           >
             <SmoothNavyGradient />
             <Text style={styles.ledgerSummaryLabel}>TOTAL COLLECTED</Text>
-            <Text style={styles.ledgerSummaryValGold}>₹{globalFeeTotals.collected.toFixed(0)}</Text>
+            <Text style={styles.ledgerSummaryValGold}>₹{globalFeeTotals.collected.toFixed(2)}</Text>
           </TouchableOpacity>
         </View>
 
@@ -4949,13 +5216,12 @@ function JSMAppContent() {
           </Surface>
         ) : (
           trashItems.slice(0, trashDisplayLimit).map((item) => {
-            const daysLeft = getDaysRemainingInTrash(item.deletedAt);
             return (
               <ScalePressable
                 key={`${item._col}-${item.id}`}
                 onPress={() => {
                   triggerHaptic(10);
-                  Alert.alert(item._label, `${daysLeft} days remaining before permanent purge.`, [
+                  Alert.alert(item._label, 'This item stays in Trash until you restore it or permanently delete it.', [
                     { text: 'Cancel', style: 'cancel' },
                     { text: 'Restore', onPress: () => handleRestoreTrashItem(item) },
                     {
@@ -4974,7 +5240,7 @@ function JSMAppContent() {
                     </Text>
                   </View>
                   <View style={styles.daysRemainingBadge}>
-                    <Text style={styles.daysRemainingText}>{daysLeft}d left</Text>
+                    <Text style={styles.daysRemainingText}>In Trash</Text>
                   </View>
                 </Surface>
               </ScalePressable>
@@ -5023,7 +5289,6 @@ function JSMAppContent() {
           Keyboard.dismiss();
           triggerHaptic(12);
           setShowFeeNote(false);
-          pendingFeeWriteIdRef.current = null;
           setFeeForm({
             id: null,
             studentId: selectedStudent.id,
@@ -5071,7 +5336,6 @@ function JSMAppContent() {
           if (activeStudents.length === 0)
             return Alert.alert('No Students', 'Enroll a student before recording fees.');
           setShowFeeNote(false);
-          pendingFeeWriteIdRef.current = null;
           setFeeForm({
             id: null,
             studentId: activeStudents[0]?.id || '',
@@ -6338,7 +6602,6 @@ function JSMAppContent() {
           if (dropdownPicker.visible) closeDropdownPicker();
           else if (calendarPicker.visible) closeCalendarPicker();
           else {
-            pendingFeeWriteIdRef.current = null;
             setFeeModal(false);
           }
         }}
