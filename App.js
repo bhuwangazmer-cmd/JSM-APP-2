@@ -6906,6 +6906,8 @@ function FirebaseSignInScreen() {
         message = 'Too many attempts. Please wait a while before trying again.';
       } else if (error?.code === 'auth/operation-not-allowed') {
         message = 'Email and password sign-in is not enabled for this Firebase project.';
+      } else if (error?.code === 'auth/api-key-not-valid') {
+        message = `Firebase rejected this app's API key before checking the account (project: ${firebaseConfig.projectId}). This is not a password error. Firebase does not say which key condition failed. Check that the key in this APK is active and belongs to this project, and that its application restrictions allow this app and its API restrictions include Identity Toolkit API and Token Service API. If those all match, download and install the APK from the latest successful GitHub Actions run to rule out an older build.`;
       } else {
         message = 'Sign-in failed. Check your email and password and try again.';
       }
