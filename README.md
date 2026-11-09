@@ -30,4 +30,4 @@ For JavaScript-only fixes, use **Publish Android Preview Update** in GitHub Acti
 
 ## Firebase security
 
-The app uses Firebase email/password authentication and owner-only Firestore rules from `firestore.rules`. Confirm deployed rules match that file and the owner UID belongs to the intended Firebase Authentication account. Client-side validation and the Firebase API key are not access controls.
+The app automatically creates and persists an anonymous Firebase Authentication session; it no longer asks for an email or password. Firestore remains owner-only. On first launch, the app displays the new anonymous user's UID if the published rules have not approved it yet. Add that exact UID to the owner-only rule in `firestore.rules` and publish the rules—never allow all users or public access. Firebase Auth still requires valid project configuration. The anonymous session is stored on the device; clearing app data or reinstalling can create a different UID and require updating the rules again. Keep the existing email/password provider enabled as a separate recovery option.

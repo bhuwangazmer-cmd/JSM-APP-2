@@ -39,8 +39,7 @@ import {
   initializeAuth,
   getReactNativePersistence,
   onAuthStateChanged,
-  signInWithEmailAndPassword,
-  signOut,
+  signInAnonymously,
 } from 'firebase/auth';
 import {
   getFirestore,
@@ -49,6 +48,7 @@ import {
   addDoc,
   updateDoc,
   setDoc,
+  getDocFromServer,
   serverTimestamp,
   deleteField,
   runTransaction,
@@ -5596,21 +5596,6 @@ function JSMAppContent() {
                       </>
                     )}
                   </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.drawerNavItem}
-                    onPress={() => {
-                      closeDrawer(async () => {
-                        try {
-                          await signOut(auth);
-                        } catch (error) {
-                          Alert.alert('Sign out failed', 'Please check your connection and try again.');
-                        }
-                      });
-                    }}
-                  >
-                    <Ionicons name="log-out-outline" size={18} color={COLORS.danger} />
-                    <Text style={[styles.drawerNavText, { color: COLORS.danger }]}>Sign out</Text>
-                  </TouchableOpacity>
                 </ScrollView>
               </Animated.View>
             </PanGestureHandler>
@@ -6886,104 +6871,14 @@ function JSMAppContent() {
   );
 }
 
-function FirebaseSignInScreen() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [errorMessage, setErrorMessage] = useState('');
-
-  const handleSignIn = async () => {
-    if (!email.trim() || !password || submitting) return;
-    if (!firebaseConfig.apiKey) {
-      setErrorMessage('Firebase API key is not configured for this app. Set EXPO_PUBLIC_FIREBASE_API_KEY in the Expo preview environment, then publish a preview update.');
-      return;
-    }
-    setSubmitting(true);
-    setErrorMessage('');
-    try {
-      await signInWithEmailAndPassword(auth, email.trim(), password);
-    } catch (error) {
-      const errorCode = safeString(error?.code, 'auth/unknown');
-      let message;
-      if (error?.code === 'auth/network-request-failed') {
-        message = 'Could not connect. Check your internet connection and try again.';
-      } else if (error?.code === 'auth/too-many-requests') {
-        message = 'Too many attempts. Please wait a while before trying again.';
-      } else if (error?.code === 'auth/operation-not-allowed') {
-        message = 'Email and password sign-in is not enabled for this Firebase project.';
-      } else if (errorCode.startsWith('auth/api-key-not-valid')) {
-        message = `Firebase rejected this app's API key before checking the account (project: ${firebaseConfig.projectId}). This is not a password error. Firebase does not say whether the key is invalid, belongs to another project, or is blocked by a restriction. Set a valid EXPO_PUBLIC_FIREBASE_API_KEY in the EAS preview environment and publish a preview update.`;
-      } else {
-        message = 'Sign-in failed. Check your email and password and try again.';
-      }
-      setErrorMessage(`${message} (Firebase code: ${errorCode})`);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.ivory }}>
-      <KeyboardAvoidingView
-        style={{ flex: 1, justifyContent: 'center', padding: 24 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
-        <View style={{ width: '100%', maxWidth: 440, alignSelf: 'center', gap: 16 }}>
-          <Text style={{ color: COLORS.navy, fontSize: 30, fontWeight: '800', textAlign: 'center' }}>
-            JSM
-          </Text>
-          <Text style={{ color: COLORS.charcoal, fontSize: 16, textAlign: 'center', marginBottom: 8 }}>
-            Sign in to access your private school records.
-          </Text>
-          <PaperInput
-            mode="outlined"
-            label="Email"
-            value={email}
-            onChangeText={setEmail}
-            keyboardType="email-address"
-            autoCapitalize="none"
-            autoCorrect={false}
-            autoComplete="email"
-            returnKeyType="next"
-            disabled={submitting}
-          />
-          <PaperInput
-            mode="outlined"
-            label="Password"
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            autoCapitalize="none"
-            autoComplete="current-password"
-            returnKeyType="go"
-            onSubmitEditing={handleSignIn}
-            disabled={submitting}
-          />
-          {errorMessage ? (
-            <Text accessibilityRole="alert" style={{ color: COLORS.danger, fontSize: 14 }}>
-              {errorMessage}
-            </Text>
-          ) : null}
-          <PaperButton
-            mode="contained"
-            onPress={handleSignIn}
-            loading={submitting}
-            disabled={submitting || !email.trim() || !password}
-            buttonColor={COLORS.navy}
-            textColor={COLORS.white}
-            accessibilityLabel="Sign in to JSM"
-          >
-            Sign in
-          </PaperButton>
-        </View>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
-  );
-}
-
 function FirebaseAuthGate() {
   const [user, setUser] = useState(auth.currentUser);
   const [authReady, setAuthReady] = useState(Boolean(auth.currentUser));
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [retryCount, setRetryCount] = useState(0);
+  const [dataAccessState, setDataAccessState] = useState(auth.currentUser ? 'checking' : 'pending');
+  const [dataAccessRetryCount, setDataAccessRetryCount] = useState(0);
 
   useEffect(() => {
     return onAuthStateChanged(
@@ -6991,12 +6886,66 @@ function FirebaseAuthGate() {
       (nextUser) => {
         setUser(nextUser);
         setAuthReady(true);
+        setDataAccessState(nextUser ? 'checking' : 'pending');
       },
-      () => setAuthReady(true)
+      (error) => {
+        setAuthReady(true);
+        setAuthError(getAnonymousSignInError(error));
+      }
     );
   }, []);
 
-  if (!authReady) {
+  useEffect(() => {
+    if (!authReady || user) return undefined;
+
+    let isActive = true;
+    setAuthError('');
+
+    if (!firebaseConfig.apiKey) {
+      setAuthError('Firebase is not configured in this app build. Anonymous sign-in needs the correct Firebase project configuration.');
+      return undefined;
+    }
+
+    setIsSigningIn(true);
+    signInAnonymously(auth)
+      .catch((error) => {
+        if (isActive) setAuthError(getAnonymousSignInError(error));
+      })
+      .finally(() => {
+        if (isActive) setIsSigningIn(false);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [authReady, user, retryCount]);
+
+  useEffect(() => {
+    if (!user) return undefined;
+
+    let isActive = true;
+    setDataAccessState('checking');
+    getDocFromServer(doc(db, 'settings', 'noticeBoard'))
+      .then(() => {
+        if (isActive) setDataAccessState('allowed');
+      })
+      .catch((error) => {
+        if (!isActive) return;
+        if (error?.code === 'permission-denied') {
+          setDataAccessState('rules');
+        } else if (['unavailable', 'deadline-exceeded', 'network-request-failed'].includes(error?.code)) {
+          setDataAccessState('offline');
+        } else {
+          setDataAccessState('error');
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [user, dataAccessRetryCount]);
+
+  if (!authReady || (!user && isSigningIn) || (user && dataAccessState === 'checking')) {
     return (
       <SafeAreaView
         style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.navy }}
@@ -7007,7 +6956,76 @@ function FirebaseAuthGate() {
     );
   }
 
-  return user ? <JSMAppContent /> : <FirebaseSignInScreen />;
+  if (user && ['allowed', 'offline'].includes(dataAccessState)) return <JSMAppContent />;
+
+  if (user && dataAccessState === 'rules') {
+    return (
+      <SafeAreaView style={{ flex: 1, justifyContent: 'center', padding: 28, backgroundColor: COLORS.ivory }}>
+        <View style={{ width: '100%', maxWidth: 460, alignSelf: 'center', gap: 16 }}>
+          <Text style={{ color: COLORS.navy, fontSize: 26, fontWeight: '800', textAlign: 'center' }}>JSM setup</Text>
+          <Text style={{ color: COLORS.charcoal, fontSize: 15, textAlign: 'center' }}>
+            Automatic sign-in is working, but Firestore has not approved this account yet. Keep your rules private; add this exact account ID to the owner-only rule, publish it, then tap Check again.
+          </Text>
+          <Text selectable style={{ color: COLORS.navy, fontSize: 17, fontWeight: '700', textAlign: 'center' }}>
+            {user.uid}
+          </Text>
+          <PaperButton
+            mode="contained"
+            onPress={() => setDataAccessRetryCount((count) => count + 1)}
+            buttonColor={COLORS.navy}
+            textColor={COLORS.white}
+            accessibilityLabel="Check Firestore access again"
+          >
+            Check again
+          </PaperButton>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView
+      style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 28, backgroundColor: COLORS.ivory }}
+    >
+      <View style={{ width: '100%', maxWidth: 440, alignItems: 'center', gap: 16 }}>
+        <Text style={{ color: COLORS.navy, fontSize: 30, fontWeight: '800' }}>JSM</Text>
+        <Text accessibilityRole="alert" style={{ color: COLORS.danger, fontSize: 15, textAlign: 'center' }}>
+          {user
+            ? 'Could not verify access to Firebase. Check your connection, then try again.'
+            : authError || 'Could not connect to Firebase. Check your internet connection and try again.'}
+        </Text>
+        <PaperButton
+          mode="contained"
+          onPress={() => {
+            if (user) setDataAccessRetryCount((count) => count + 1);
+            else setRetryCount((count) => count + 1);
+          }}
+          buttonColor={COLORS.navy}
+          textColor={COLORS.white}
+          accessibilityLabel="Retry secure connection"
+        >
+          Retry connection
+        </PaperButton>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+function getAnonymousSignInError(error) {
+  const errorCode = safeString(error?.code, 'auth/unknown');
+  if (errorCode === 'auth/network-request-failed') {
+    return 'Cannot reach Firebase. Check your internet connection, then tap Retry connection.';
+  }
+  if (errorCode === 'auth/operation-not-allowed') {
+    return 'Anonymous sign-in is not enabled for this Firebase project. Enable the Anonymous provider in Firebase Authentication.';
+  }
+  if (errorCode.startsWith('auth/api-key-not-valid')) {
+    return `Firebase rejected this app's configuration (project: ${firebaseConfig.projectId}). Anonymous sign-in uses the same Firebase connection and cannot bypass this error. (Firebase code: ${errorCode})`;
+  }
+  if (errorCode === 'auth/app-not-authorized') {
+    return 'Firebase has not authorized this Android app. Check that the Android app is registered in the correct Firebase project.';
+  }
+  return `Could not connect to Firebase. (Firebase code: ${errorCode})`;
 }
 
 export default function App() {
