@@ -10,23 +10,25 @@
 - Student-note edits use a Firestore transaction to detect concurrent edits and provide reload/replace choices. Late inline saves do not reset a different or edited draft.
 - Attendance grouping uses a prototype-free map.
 - The app now uses persistent Firebase email/password authentication, gates all app screens behind sign-in, and provides a sign-out action.
+- Sign-in failures now display the Firebase error code (without exposing credentials) to make configuration and credential problems diagnosable.
 - Added owner-only Firestore rules for the seven app collections, retaining the existing field checks and accepting Firestore timestamps where the app writes server timestamps. The rules use the project owner's Firebase Auth UID.
 - Added React Native AsyncStorage for persistent Firebase Auth sessions.
+- Activity log writes now use numeric timestamps compatible with the original rules, and read/write failures are shown in the Activity Log instead of only being logged to the developer console.
 - Expo dependencies were upgraded incrementally to SDK 58. The splash screen uses its config plugin, OTA runtime versions use fingerprints, and CI uses the SDK-supported Node 22 line.
 - CI runs tests and Expo Doctor on pull requests, skips token-backed EAS builds for PR code, pins EAS CLI, and writes the APK outside the repository.
 - npm dependency overrides address the remaining audited transitive advisories.
 
 ## Still requires project-owner configuration or a larger design decision
 
-- The owner-only sign-in and rules are prepared in the repository but are not deployed to Firebase. Install/run this updated app, confirm sign-in with the Firebase Auth account whose UID is in `firestore.rules`, test the rules, then publish them in Firebase Console. Until published, the deployed Firebase rules remain unchanged.
+- The owner reports publishing the owner-only rules. The latest sign-in diagnostic and activity-log fixes are local changes and require a new APK before they are present on the device.
 - Firestore collections are still listened to in full. True cursor pagination must preserve cross-screen aggregates, reports, and Trash behavior; simply adding `limit()` would silently hide older records.
-- Full EAS Android build and on-device checks are still required, especially for authentication persistence, gestures, offline writes, fee settlement, PDF sharing, OTA updates, and navigation.
+- The owner reports that an APK was built, but sign-in failed. Rebuild/install after the latest local changes, then verify authentication and activity logging on-device; gestures, offline writes, fee settlement, PDF sharing, OTA updates, and navigation still need device checks.
 
 ## Validation performed
 
-- Expo Doctor: 20/20 checks passed.
 - Unit tests: 5/5 passed.
+- Expo Doctor: 20/20 checks passed after the sign-in/activity-log changes.
 - Android Metro export passed with Hermes bytecode disabled. The Windows Hermes compiler subprocess returned `spawn UNKNOWN`; the Linux EAS build remains the authoritative APK check.
 - `npm audit`: 0 vulnerabilities after the SDK/dependency update and overrides.
 - `git diff --check` passed.
-- The Firestore Emulator was not run in this environment; Firebase rules must still be tested before publishing.
+- The Firestore Emulator was not run in this environment; the owner reports publishing the rules, but their live state was not independently verified.

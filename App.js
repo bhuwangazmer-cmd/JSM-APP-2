@@ -957,6 +957,7 @@ function JSMAppContent() {
   const [attendance, setAttendance] = useState([]);
   const [fees, setFees] = useState([]);
   const [activities, setActivities] = useState([]);
+  const [activityLogError, setActivityLogError] = useState('');
   const [noticeText, setNoticeText] = useState('');
   const [noticeUpdatedAt, setNoticeUpdatedAt] = useState('');
 
@@ -1297,6 +1298,7 @@ function JSMAppContent() {
       { includeMetadataChanges: true },
       (snap) => {
         if (!isMountedRef.current) return;
+        setActivityLogError('');
         const list = [];
         const hasPending = Boolean(snap.metadata?.hasPendingWrites);
         setPendingSyncByCol((prev) =>
@@ -1310,7 +1312,10 @@ function JSMAppContent() {
         if (initialLoadDone.current) triggerLayoutAnimation();
         setActivities(list);
       },
-      (error) => console.error('[JSM] Firestore listener failed (activities):', error)
+      (error) => {
+        console.error('[JSM] Firestore listener failed (activities):', error);
+        setActivityLogError(`Could not read activity log (${error?.code || 'unknown error'}).`);
+      }
     );
     const unsubNotice = onSnapshot(
       doc(db, 'settings', 'noticeBoard'),
@@ -1388,12 +1393,19 @@ function JSMAppContent() {
         title: safeString(actionTitle),
         subtitle: safeString(subtitle),
         dateISO: getTodayISO(),
-        timestamp: serverTimestamp(),
+        // Keep this numeric for compatibility with the existing Firestore rules.
+        timestamp: Date.now(),
         isDeleted: false,
         deletedAt: null,
-      }).catch((error) => console.error('[JSM] Activity log write failed:', error));
+      })
+        .then(() => setActivityLogError(''))
+        .catch((error) => {
+          console.error('[JSM] Activity log write failed:', error);
+          setActivityLogError(`Could not save activity (${error?.code || 'unknown error'}).`);
+        });
     } catch (error) {
       console.error('[JSM] Activity log setup failed:', error);
+      setActivityLogError(`Could not save activity (${error?.code || 'unknown error'}).`);
     }
   }, []);
 
@@ -6122,6 +6134,15 @@ function JSMAppContent() {
               ) : null}
             </View>
 
+            {activityLogError ? (
+              <Text
+                accessibilityRole="alert"
+                style={{ color: COLORS.danger, fontSize: 13, paddingHorizontal: 18, paddingTop: 10 }}
+              >
+                {activityLogError}
+              </Text>
+            ) : null}
+
             <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
               {displayedActivities.length === 0 ? (
                 <Surface style={styles.whiteCard} elevation={2}>
@@ -6877,15 +6898,18 @@ function FirebaseSignInScreen() {
     try {
       await signInWithEmailAndPassword(auth, email.trim(), password);
     } catch (error) {
+      const errorCode = safeString(error?.code, 'auth/unknown');
+      let message;
       if (error?.code === 'auth/network-request-failed') {
-        setErrorMessage('Could not connect. Check your internet connection and try again.');
+        message = 'Could not connect. Check your internet connection and try again.';
       } else if (error?.code === 'auth/too-many-requests') {
-        setErrorMessage('Too many attempts. Please wait a while before trying again.');
+        message = 'Too many attempts. Please wait a while before trying again.';
       } else if (error?.code === 'auth/operation-not-allowed') {
-        setErrorMessage('Email and password sign-in is not enabled for this Firebase project.');
+        message = 'Email and password sign-in is not enabled for this Firebase project.';
       } else {
-        setErrorMessage('Sign-in failed. Check your email and password and try again.');
+        message = 'Sign-in failed. Check your email and password and try again.';
       }
+      setErrorMessage(`${message} (Firebase code: ${errorCode})`);
     } finally {
       setSubmitting(false);
     }
