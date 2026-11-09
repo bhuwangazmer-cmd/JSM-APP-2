@@ -1,0 +1,75 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isOwner() {
+      return request.auth != null
+        && request.auth.uid == 'OScQq1qwRTPMjkVQL5LAmiag3Us1';
+    }
+
+    match /subjects/{subjectId} {
+      allow read, delete: if isOwner();
+      allow create, update: if isOwner()
+        && request.resource.data.keys().hasAll(['name', 'order', 'isDeleted', 'timestamp'])
+        && request.resource.data.name is string
+        && request.resource.data.order is number
+        && request.resource.data.isDeleted is bool
+        && (request.resource.data.timestamp is timestamp || request.resource.data.timestamp is number);
+    }
+
+    match /students/{studentId} {
+      allow read, delete: if isOwner();
+      allow create, update: if isOwner()
+        && request.resource.data.keys().hasAll(['name', 'subjectId', 'joinedDate', 'isDeleted'])
+        && request.resource.data.name is string
+        && request.resource.data.subjectId is string
+        && request.resource.data.joinedDate is string
+        && request.resource.data.isDeleted is bool;
+    }
+
+    match /fees/{feeId} {
+      allow read, delete: if isOwner();
+      allow create, update: if isOwner()
+        && request.resource.data.keys().hasAll(['studentId', 'amountPaid', 'balanceDue', 'status', 'feeType'])
+        && request.resource.data.studentId is string
+        && request.resource.data.amountPaid is number
+        && request.resource.data.balanceDue is number
+        && request.resource.data.feeType in ['Monthly Fee', 'Admission Fee', 'Exam Fee', 'Instrument / Book']
+        && request.resource.data.status in ['Paid', 'Partial', 'Unpaid'];
+    }
+
+    match /attendance/{attendanceId} {
+      allow read, delete: if isOwner();
+      allow create, update: if isOwner()
+        && request.resource.data.keys().hasAll(['studentId', 'date', 'status'])
+        && request.resource.data.studentId is string
+        && request.resource.data.date is string
+        && request.resource.data.status in ['Present', 'Absent', 'Tardy', 'Rescheduled'];
+    }
+
+    match /lessons/{lessonId} {
+      allow read, delete: if isOwner();
+      allow create, update: if isOwner()
+        && request.resource.data.keys().hasAll(['studentId', 'date', 'isDeleted'])
+        && request.resource.data.studentId is string
+        && request.resource.data.date is string
+        && request.resource.data.isDeleted is bool;
+    }
+
+    match /activities/{activityId} {
+      allow read, delete: if isOwner();
+      allow create, update: if isOwner()
+        && request.resource.data.keys().hasAll(['title', 'dateISO', 'timestamp'])
+        && request.resource.data.title is string
+        && request.resource.data.dateISO is string
+        && (request.resource.data.timestamp is timestamp || request.resource.data.timestamp is number);
+    }
+
+    match /settings/{docId} {
+      allow read, delete: if isOwner();
+      allow create, update: if isOwner()
+        && docId == 'noticeBoard'
+        && request.resource.data.keys().hasAll(['text'])
+        && request.resource.data.text is string;
+    }
+  }
+}

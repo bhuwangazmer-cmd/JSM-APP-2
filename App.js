@@ -33,6 +33,15 @@ import * as Updates from 'expo-updates';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { initializeApp, getApps, getApp } from 'firebase/app';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  getAuth,
+  initializeAuth,
+  getReactNativePersistence,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+} from 'firebase/auth';
 import {
   getFirestore,
   collection,
@@ -85,6 +94,15 @@ const firebaseConfig = {
 };
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+let auth;
+try {
+  auth = initializeAuth(app, {
+    persistence: getReactNativePersistence(AsyncStorage),
+  });
+} catch (error) {
+  // Firebase may already be initialized during Expo Fast Refresh.
+  auth = getAuth(app);
+}
 const db = getFirestore(app);
 
 // ==========================================
@@ -5565,6 +5583,21 @@ function JSMAppContent() {
                       </>
                     )}
                   </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.drawerNavItem}
+                    onPress={() => {
+                      closeDrawer(async () => {
+                        try {
+                          await signOut(auth);
+                        } catch (error) {
+                          Alert.alert('Sign out failed', 'Please check your connection and try again.');
+                        }
+                      });
+                    }}
+                  >
+                    <Ionicons name="log-out-outline" size={18} color={COLORS.danger} />
+                    <Text style={[styles.drawerNavText, { color: COLORS.danger }]}>Sign out</Text>
+                  </TouchableOpacity>
                 </ScrollView>
               </Animated.View>
             </PanGestureHandler>
@@ -6831,13 +6864,128 @@ function JSMAppContent() {
   );
 }
 
+function FirebaseSignInScreen() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+
+  const handleSignIn = async () => {
+    if (!email.trim() || !password || submitting) return;
+    setSubmitting(true);
+    setErrorMessage('');
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+    } catch (error) {
+      if (error?.code === 'auth/network-request-failed') {
+        setErrorMessage('Could not connect. Check your internet connection and try again.');
+      } else if (error?.code === 'auth/too-many-requests') {
+        setErrorMessage('Too many attempts. Please wait a while before trying again.');
+      } else if (error?.code === 'auth/operation-not-allowed') {
+        setErrorMessage('Email and password sign-in is not enabled for this Firebase project.');
+      } else {
+        setErrorMessage('Sign-in failed. Check your email and password and try again.');
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.ivory }}>
+      <KeyboardAvoidingView
+        style={{ flex: 1, justifyContent: 'center', padding: 24 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <View style={{ width: '100%', maxWidth: 440, alignSelf: 'center', gap: 16 }}>
+          <Text style={{ color: COLORS.navy, fontSize: 30, fontWeight: '800', textAlign: 'center' }}>
+            JSM
+          </Text>
+          <Text style={{ color: COLORS.charcoal, fontSize: 16, textAlign: 'center', marginBottom: 8 }}>
+            Sign in to access your private school records.
+          </Text>
+          <PaperInput
+            mode="outlined"
+            label="Email"
+            value={email}
+            onChangeText={setEmail}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="email"
+            returnKeyType="next"
+            disabled={submitting}
+          />
+          <PaperInput
+            mode="outlined"
+            label="Password"
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            autoComplete="current-password"
+            returnKeyType="go"
+            onSubmitEditing={handleSignIn}
+            disabled={submitting}
+          />
+          {errorMessage ? (
+            <Text accessibilityRole="alert" style={{ color: COLORS.danger, fontSize: 14 }}>
+              {errorMessage}
+            </Text>
+          ) : null}
+          <PaperButton
+            mode="contained"
+            onPress={handleSignIn}
+            loading={submitting}
+            disabled={submitting || !email.trim() || !password}
+            buttonColor={COLORS.navy}
+            textColor={COLORS.white}
+            accessibilityLabel="Sign in to JSM"
+          >
+            Sign in
+          </PaperButton>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+function FirebaseAuthGate() {
+  const [user, setUser] = useState(auth.currentUser);
+  const [authReady, setAuthReady] = useState(Boolean(auth.currentUser));
+
+  useEffect(() => {
+    return onAuthStateChanged(
+      auth,
+      (nextUser) => {
+        setUser(nextUser);
+        setAuthReady(true);
+      },
+      () => setAuthReady(true)
+    );
+  }, []);
+
+  if (!authReady) {
+    return (
+      <SafeAreaView
+        style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.navy }}
+      >
+        <ActivityIndicator size="large" color={COLORS.gold} />
+        <Text style={{ color: COLORS.cream, marginTop: 14 }}>Checking sign-in…</Text>
+      </SafeAreaView>
+    );
+  }
+
+  return user ? <JSMAppContent /> : <FirebaseSignInScreen />;
+}
+
 export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <PaperProvider theme={jsmTheme}>
           <ErrorBoundary>
-            <JSMAppContent />
+            <FirebaseAuthGate />
           </ErrorBoundary>
         </PaperProvider>
       </SafeAreaProvider>
