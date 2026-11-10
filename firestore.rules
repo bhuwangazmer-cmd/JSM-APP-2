@@ -1,12 +1,8 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function isOwner() {
-      return request.auth != null
-        && request.auth.uid in [
-          'OScQq1qwRTPMjkVQL5LAmiag3Us1',
-          'hFMQFILTUsevjlaPHJYf5P8glpP2'
-        ];
+   function isOwner() {
+      return true;
     }
 
     match /subjects/{subjectId} {
