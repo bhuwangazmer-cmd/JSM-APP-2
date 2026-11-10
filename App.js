@@ -6880,7 +6880,9 @@ function FirebaseAuthGate() {
   const [dataAccessState, setDataAccessState] = useState(auth.currentUser ? 'checking' : 'pending');
   const [dataAccessRetryCount, setDataAccessRetryCount] = useState(0);
   const [authTokenProjectId, setAuthTokenProjectId] = useState('Checking…');
+  const [authTokenUid, setAuthTokenUid] = useState('Checking…');
   const [firestoreErrorDiagnostic, setFirestoreErrorDiagnostic] = useState({ code: '', message: '' });
+  const [firestoreRestDiagnostic, setFirestoreRestDiagnostic] = useState({ status: 'Not checked', detail: '' });
 
   useEffect(() => {
     return onAuthStateChanged(
@@ -6928,11 +6930,16 @@ function FirebaseAuthGate() {
     let isActive = true;
     setDataAccessState('checking');
     setAuthTokenProjectId('Checking…');
+    setAuthTokenUid('Checking…');
     setFirestoreErrorDiagnostic({ code: '', message: '' });
+    setFirestoreRestDiagnostic({ status: 'Not checked', detail: '' });
 
     user.getIdTokenResult()
       .then((tokenResult) => {
         if (isActive) {
+          setAuthTokenUid(
+            typeof tokenResult?.claims?.sub === 'string' ? tokenResult.claims.sub : 'Unavailable in token'
+          );
           setAuthTokenProjectId(
             typeof tokenResult?.claims?.aud === 'string' ? tokenResult.claims.aud : 'Unavailable in token'
           );
@@ -6940,6 +6947,7 @@ function FirebaseAuthGate() {
       })
       .catch((error) => {
         if (isActive) {
+          setAuthTokenUid(`Unavailable (${safeString(error?.code, 'unknown error')})`);
           setAuthTokenProjectId(`Unavailable (${safeString(error?.code, 'unknown error')})`);
         }
       });
@@ -6954,6 +6962,21 @@ function FirebaseAuthGate() {
           code: safeString(error?.code, 'unknown'),
           message: safeString(error?.message, 'No error details were returned.'),
         });
+        if (error?.code === 'permission-denied') {
+          setFirestoreRestDiagnostic({ status: 'Checking…', detail: '' });
+          diagnoseFirestoreRestAccess(user)
+            .then((diagnostic) => {
+              if (isActive) setFirestoreRestDiagnostic(diagnostic);
+            })
+            .catch((restError) => {
+              if (isActive) {
+                setFirestoreRestDiagnostic({
+                  status: 'Check failed',
+                  detail: safeString(restError?.message, 'The direct check could not reach Firestore.'),
+                });
+              }
+            });
+        }
         if (error?.code === 'permission-denied') {
           setDataAccessState('rules');
         } else if (['unavailable', 'deadline-exceeded', 'network-request-failed'].includes(error?.code)) {
@@ -7001,6 +7024,7 @@ function FirebaseAuthGate() {
             </Text>
             <View style={{ backgroundColor: '#F1F3F5', borderRadius: 12, padding: 12, gap: 7 }}>
               <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Account UID: {user.uid}</Text>
+              <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Token UID: {authTokenUid}</Text>
               <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>App Firebase project: {effectiveProjectId}</Text>
               <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Firebase App ID: {app.options.appId || 'Missing'}</Text>
               <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Signed-in account project: {authTokenProjectId}</Text>
@@ -7008,6 +7032,10 @@ function FirebaseAuthGate() {
               <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Firestore database: (default)</Text>
               <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Firestore error code: {firestoreErrorDiagnostic.code || 'Not available'}</Text>
               <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Firestore details: {firestoreErrorDiagnostic.message || 'Not available'}</Text>
+              <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Direct Firestore check: {firestoreRestDiagnostic.status}</Text>
+              {firestoreRestDiagnostic.detail ? (
+                <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Direct check details: {firestoreRestDiagnostic.detail}</Text>
+              ) : null}
             </View>
             <PaperButton
               mode="contained"
@@ -7050,6 +7078,29 @@ function FirebaseAuthGate() {
       </View>
     </SafeAreaView>
   );
+}
+
+async function diagnoseFirestoreRestAccess(user) {
+  const idToken = await user.getIdToken();
+  const apiKey = app.options.apiKey;
+  const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(app.options.projectId)}/databases/(default)/documents/settings/noticeBoard?key=${encodeURIComponent(apiKey)}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+  const body = await response.json().catch(() => ({}));
+
+  if (response.ok) {
+    return { status: `HTTP ${response.status} — read allowed`, detail: 'The direct authenticated read succeeded.' };
+  }
+  if (response.status === 404) {
+    return { status: 'HTTP 404 — document not found', detail: 'Firestore accepted the read, but the noticeBoard document does not exist yet.' };
+  }
+
+  return {
+    status: `HTTP ${response.status} — denied`,
+    detail: safeString(body?.error?.message || body?.error?.status, 'Firestore returned no additional details.'),
+  };
 }
 
 function getAnonymousSignInError(error) {
