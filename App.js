@@ -6879,6 +6879,8 @@ function FirebaseAuthGate() {
   const [retryCount, setRetryCount] = useState(0);
   const [dataAccessState, setDataAccessState] = useState(auth.currentUser ? 'checking' : 'pending');
   const [dataAccessRetryCount, setDataAccessRetryCount] = useState(0);
+  const [authTokenProjectId, setAuthTokenProjectId] = useState('Checking…');
+  const [firestoreErrorDiagnostic, setFirestoreErrorDiagnostic] = useState({ code: '', message: '' });
 
   useEffect(() => {
     return onAuthStateChanged(
@@ -6925,12 +6927,33 @@ function FirebaseAuthGate() {
 
     let isActive = true;
     setDataAccessState('checking');
+    setAuthTokenProjectId('Checking…');
+    setFirestoreErrorDiagnostic({ code: '', message: '' });
+
+    user.getIdTokenResult()
+      .then((tokenResult) => {
+        if (isActive) {
+          setAuthTokenProjectId(
+            typeof tokenResult?.claims?.aud === 'string' ? tokenResult.claims.aud : 'Unavailable in token'
+          );
+        }
+      })
+      .catch((error) => {
+        if (isActive) {
+          setAuthTokenProjectId(`Unavailable (${safeString(error?.code, 'unknown error')})`);
+        }
+      });
+
     getDocFromServer(doc(db, 'settings', 'noticeBoard'))
       .then(() => {
         if (isActive) setDataAccessState('allowed');
       })
       .catch((error) => {
         if (!isActive) return;
+        setFirestoreErrorDiagnostic({
+          code: safeString(error?.code, 'unknown'),
+          message: safeString(error?.message, 'No error details were returned.'),
+        });
         if (error?.code === 'permission-denied') {
           setDataAccessState('rules');
         } else if (['unavailable', 'deadline-exceeded', 'network-request-failed'].includes(error?.code)) {
@@ -6959,26 +6982,44 @@ function FirebaseAuthGate() {
   if (user && ['allowed', 'offline'].includes(dataAccessState)) return <JSMAppContent />;
 
   if (user && dataAccessState === 'rules') {
+    const effectiveProjectId = app.options.projectId || 'Missing';
+    const projectMatch = authTokenProjectId === 'Checking…'
+      ? 'Checking'
+      : authTokenProjectId === 'Unavailable in token' || authTokenProjectId.startsWith('Unavailable (')
+        ? 'Could not verify'
+        : authTokenProjectId === effectiveProjectId
+          ? 'Yes'
+          : 'No';
+
     return (
-      <SafeAreaView style={{ flex: 1, justifyContent: 'center', padding: 28, backgroundColor: COLORS.ivory }}>
-        <View style={{ width: '100%', maxWidth: 460, alignSelf: 'center', gap: 16 }}>
-          <Text style={{ color: COLORS.navy, fontSize: 26, fontWeight: '800', textAlign: 'center' }}>JSM setup</Text>
-          <Text style={{ color: COLORS.charcoal, fontSize: 15, textAlign: 'center' }}>
-            Automatic sign-in is working, but Firestore has not approved this account yet. Keep your rules private; add this exact account ID to the owner-only rule, publish it, then tap Check again.
-          </Text>
-          <Text selectable style={{ color: COLORS.navy, fontSize: 17, fontWeight: '700', textAlign: 'center' }}>
-            {user.uid}
-          </Text>
-          <PaperButton
-            mode="contained"
-            onPress={() => setDataAccessRetryCount((count) => count + 1)}
-            buttonColor={COLORS.navy}
-            textColor={COLORS.white}
-            accessibilityLabel="Check Firestore access again"
-          >
-            Check again
-          </PaperButton>
-        </View>
+      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.ivory }}>
+        <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 28 }}>
+          <View style={{ width: '100%', maxWidth: 460, alignSelf: 'center', gap: 14 }}>
+            <Text style={{ color: COLORS.navy, fontSize: 26, fontWeight: '800', textAlign: 'center' }}>JSM setup</Text>
+            <Text style={{ color: COLORS.charcoal, fontSize: 15, textAlign: 'center' }}>
+              Automatic sign-in succeeded, but Firestore denied its read. These diagnostics identify the Firebase project and exact error. Do not make your rules public.
+            </Text>
+            <View style={{ backgroundColor: '#F1F3F5', borderRadius: 12, padding: 12, gap: 7 }}>
+              <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Account UID: {user.uid}</Text>
+              <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>App Firebase project: {effectiveProjectId}</Text>
+              <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Firebase App ID: {app.options.appId || 'Missing'}</Text>
+              <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Signed-in account project: {authTokenProjectId}</Text>
+              <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Project IDs match: {projectMatch}</Text>
+              <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Firestore database: (default)</Text>
+              <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Firestore error code: {firestoreErrorDiagnostic.code || 'Not available'}</Text>
+              <Text selectable style={{ color: COLORS.charcoal, fontSize: 13 }}>Firestore details: {firestoreErrorDiagnostic.message || 'Not available'}</Text>
+            </View>
+            <PaperButton
+              mode="contained"
+              onPress={() => setDataAccessRetryCount((count) => count + 1)}
+              buttonColor={COLORS.navy}
+              textColor={COLORS.white}
+              accessibilityLabel="Check Firestore access again"
+            >
+              Check again
+            </PaperButton>
+          </View>
+        </ScrollView>
       </SafeAreaView>
     );
   }
