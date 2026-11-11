@@ -3,9 +3,9 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function isOwner() {
       // Keep this line active until Step 1B is finished:
-      return true;
+      
       // After Step 1B, delete "return true;" above and uncomment the line below:
-      // return request.auth != null && request.auth.uid in ['PASTE_YOUR_UID_HERE'];
+       return request.auth != null && request.auth.uid in ['pRA4BBUVEeV78rELLBNIhOAgMxA2'];
     }
 
     match /subjects/{subjectId} {
