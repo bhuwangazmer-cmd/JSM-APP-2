@@ -33,6 +33,13 @@ import * as Updates from 'expo-updates';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { initializeApp, getApps, getApp } from 'firebase/app';
+import {
+  initializeAuth,
+  getAuth,
+  getReactNativePersistence,
+  onAuthStateChanged,
+  signInAnonymously,
+} from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   getFirestore,
@@ -88,6 +95,13 @@ const firebaseConfig = {
 };
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+const auth = (() => {
+  try {
+    return initializeAuth(app, { persistence: getReactNativePersistence(AsyncStorage) });
+  } catch (e) {
+    return getAuth(app);
+  }
+})();
 const db = getFirestore(app);
 
 // ==========================================
@@ -1221,8 +1235,34 @@ function JSMAppContent() {
     closeDrawer,
   ]);
 
+const [authUid, setAuthUid] = useState(null);
+  const [authStatusText, setAuthStatusText] = useState('Signing in...');
+
+  useEffect(() => {
+    if (!firebaseConfig.apiKey) {
+      setAuthStatusText('Missing EXPO_PUBLIC_FIREBASE_API_KEY');
+      return;
+    }
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      if (!isMountedRef.current) return;
+      if (user) {
+        setAuthUid(user.uid);
+        setAuthStatusText(`UID: ${user.uid}`);
+      } else {
+        signInAnonymously(auth).catch((error) => {
+          console.error('[JSM] Anonymous sign-in failed:', error);
+          if (isMountedRef.current) {
+            setAuthStatusText(`Auth Error: ${error?.code || 'Sign-in failed'}`);
+          }
+        });
+      }
+    });
+    return () => unsubAuth();
+  }, []);
+
   // Real-Time Firestore Listeners
   useEffect(() => {
+    if (!authUid) return;
     const timer = setTimeout(() => {
       initialLoadDone.current = true;
     }, 1000);
@@ -1330,10 +1370,10 @@ function JSMAppContent() {
       unsubLessons();
       unsubAttendance();
       unsubFees();
-      unsubActivities();
+unsubActivities();
       unsubNotice();
     };
-  }, []);
+  }, [authUid]);
 
   // Cross-collection orphan cleanup after initial load of all collections
   useEffect(() => {
@@ -5499,11 +5539,14 @@ function JSMAppContent() {
               }}
             >
               <Animated.View style={[styles.drawerContainer, { transform: [{ translateX: drawerSlideAnim }] }]}>
-                <View style={styles.drawerHeader}>
+            <View style={styles.drawerHeader}>
                   <SmoothNavyGradient />
                   <Text style={styles.crestBadgeText}>★ JSM ★</Text>
                   <Text style={styles.drawerTitle}>Music School Portal</Text>
                   <Text style={styles.drawerSub}>Est. 2022 • Official Edition</Text>
+                  <Text selectable style={[styles.drawerSub, { color: COLORS.gold, marginTop: 6, fontSize: 11 }]}>
+                    {authStatusText}
+                  </Text>
                 </View>
                 <ScrollView contentContainerStyle={{ padding: 18, gap: 10 }} keyboardShouldPersistTaps="handled">
                   {[
