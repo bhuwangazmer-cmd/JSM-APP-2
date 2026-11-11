@@ -1,18 +1,26 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-   function isOwner() {
+    function isOwner() {
+      // Keep this line active until Step 1B is finished:
       return true;
+      // After Step 1B, delete "return true;" above and uncomment the line below:
+      // return request.auth != null && request.auth.uid in ['PASTE_YOUR_UID_HERE'];
     }
 
     match /subjects/{subjectId} {
       allow read, delete: if isOwner();
-      allow create, update: if isOwner()
+      allow create: if isOwner()
         && request.resource.data.keys().hasAll(['name', 'order', 'isDeleted', 'timestamp'])
         && request.resource.data.name is string
         && request.resource.data.order is number
         && request.resource.data.isDeleted is bool
         && (request.resource.data.timestamp is timestamp || request.resource.data.timestamp is number);
+      allow update: if isOwner()
+        && request.resource.data.keys().hasAll(['name', 'order', 'isDeleted'])
+        && request.resource.data.name is string
+        && request.resource.data.order is number
+        && request.resource.data.isDeleted is bool;
     }
 
     match /students/{studentId} {
@@ -28,10 +36,11 @@ service cloud.firestore {
     match /fees/{feeId} {
       allow read, delete: if isOwner();
       allow create, update: if isOwner()
-        && request.resource.data.keys().hasAll(['studentId', 'amountPaid', 'balanceDue', 'status', 'feeType'])
+        && request.resource.data.keys().hasAll(['studentId', 'amountPaid', 'balanceDue', 'status', 'feeType', 'isDeleted'])
         && request.resource.data.studentId is string
         && request.resource.data.amountPaid is number
         && request.resource.data.balanceDue is number
+        && request.resource.data.isDeleted is bool
         && request.resource.data.feeType in ['Monthly Fee', 'Admission Fee', 'Exam Fee', 'Instrument / Book']
         && request.resource.data.status in ['Paid', 'Partial', 'Unpaid'];
     }
@@ -39,9 +48,10 @@ service cloud.firestore {
     match /attendance/{attendanceId} {
       allow read, delete: if isOwner();
       allow create, update: if isOwner()
-        && request.resource.data.keys().hasAll(['studentId', 'date', 'status'])
+        && request.resource.data.keys().hasAll(['studentId', 'date', 'status', 'isDeleted'])
         && request.resource.data.studentId is string
         && request.resource.data.date is string
+        && request.resource.data.isDeleted is bool
         && request.resource.data.status in ['Present', 'Absent', 'Tardy', 'Rescheduled'];
     }
 
@@ -57,9 +67,10 @@ service cloud.firestore {
     match /activities/{activityId} {
       allow read, delete: if isOwner();
       allow create, update: if isOwner()
-        && request.resource.data.keys().hasAll(['title', 'dateISO', 'timestamp'])
+        && request.resource.data.keys().hasAll(['title', 'dateISO', 'timestamp', 'isDeleted'])
         && request.resource.data.title is string
         && request.resource.data.dateISO is string
+        && request.resource.data.isDeleted is bool
         && (request.resource.data.timestamp is timestamp || request.resource.data.timestamp is number);
     }
 
