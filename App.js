@@ -3005,12 +3005,13 @@ unsubActivities();
             .map((record) => ({ ...record, _col: 'fees' })),
         ];
 
-        for (const recordChunk of chunkArray(linkedRecords, 450)) {
+     for (const recordChunk of chunkArray(linkedRecords, 450)) {
           const childBatch = writeBatch(db);
           recordChunk.forEach((record) =>
             childBatch.update(doc(db, record._col, record.id), {
               isDeleted: false,
               deletedAt: null,
+              deletedWithParentId: deleteField(),
             })
           );
           await withWriteTimeout(childBatch.commit());
