@@ -307,6 +307,7 @@ const withWriteTimeout = (promise, ms = 15000) => {
   return Promise.race([Promise.resolve(promise), timeoutPromise]).finally(() => clearTimeout(timerId));
 };
 
+const isNetworkOnlineRef = { current: true };
 const createStableDocument = async (collectionName, fields, pendingWriteRef) => {
   const signature = JSON.stringify(fields);
   let pendingWrite = pendingWriteRef.current;
@@ -348,9 +349,13 @@ const createStableDocument = async (collectionName, fields, pendingWriteRef) => 
     if (pendingWriteRef.current?.id === pendingId) pendingWriteRef.current = null;
   };
 
-  // The timeout only changes what the UI awaits; Firestore may still finish the write.
+// The timeout only changes what the UI awaits; Firestore may still finish the write.
   // Keep the ID until that original write settles so a retry cannot create a second doc.
   writePromise.then(markPendingWriteSettled, clearRejectedWrite);
+  if (!isNetworkOnlineRef.current) {
+    pendingWriteRef.current = null;
+    return documentRef;
+  }
   await withWriteTimeout(writePromise);
   if (pendingWriteRef.current?.id === pendingId) pendingWriteRef.current = null;
   return documentRef;
@@ -758,8 +763,7 @@ function JSMAppContent() {
     fees: false,
   });
 
-  const [isNetworkOnline, setIsNetworkOnline] = useState(true);
-  const isNetworkOnlineRef = useRef(true);
+const [isNetworkOnline, setIsNetworkOnline] = useState(true);
   const [pendingSyncByCol, setPendingSyncByCol] = useState({});
 
   const [masterListModal, setMasterListModal] = useState(false);
